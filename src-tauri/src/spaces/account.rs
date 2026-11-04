@@ -203,11 +203,13 @@ fn cli_name(provider: Provider) -> &'static str {
 /// folder (the usage-limit card) gets the Space's login for such a session. Space 1 with none set keeps the
 /// CLI's own login, as every session did before Spaces; another Space
 /// refuses. A session with no row yet (never saved, or its first save not
-/// committed) is in the Space it would join. A child whose CLI keeps no
-/// login profile starts as it was asked.
+/// committed) is in the Space it would join, from `window`, the Space of the
+/// window that asks (ADE-244). A child whose CLI keeps no login profile
+/// starts as it was asked.
 pub(super) fn resolve(
     store: &SessionStore,
     session_id: &str,
+    window: &str,
     _provider: Option<Provider>,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
@@ -215,7 +217,7 @@ pub(super) fn resolve(
         return Ok(target);
     };
     let (space_id, project) = with_conn(store, |conn| {
-        let space_id = membership::space_for_row(conn, session_id, None)?;
+        let space_id = membership::space_for_row(conn, session_id, None, window)?;
         let folder: Option<String> = conn
             .query_row(
                 "SELECT cwd FROM sessions WHERE id = ?1",
@@ -234,19 +236,25 @@ pub(super) fn resolve(
 
 /// The login a helper of no stored session that keeps its caller's folder
 /// starts with (ADE-209): the login of `space_id`, the Space it was judged
-/// as, by [`resolve`]'s rule for a session with no row in that folder. With
-/// no login named it is `provider`'s (the CLI it runs), as if the window had
-/// sent `default`, so it never runs as the CLI's own login in another Space.
+/// as, by [`resolve`]'s rule for its unsaved `owner`: the project of the
+/// automation run it is, else its folder's. With no login named it is
+/// `provider`'s (the CLI it runs), as if the window had sent `default`, so it
+/// never runs as the CLI's own login in another Space.
 pub(super) fn resolve_in(
     store: &SessionStore,
     space_id: &str,
+    owner: Option<&str>,
     provider: Option<Provider>,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
-    match default_login(&target, provider) {
-        Some(provider) => space_login(store, space_id, None, provider, target),
-        None => Ok(target),
-    }
+    let Some(provider) = default_login(&target, provider) else {
+        return Ok(target);
+    };
+    let project = match owner {
+        Some(owner) => with_conn(store, |conn| membership::automation_project(conn, owner))?,
+        None => None,
+    };
+    space_login(store, space_id, project, provider, target)
 }
 
 /// The CLI whose login the spawn hook picks: the one `target` names with

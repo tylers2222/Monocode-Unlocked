@@ -121,12 +121,12 @@ pub fn spaces_lease_release(
 }
 
 /// The Space a helper of no stored session that keeps its caller's folder
-/// (the ownerless-helper rule, ADE-189) is judged as (ADE-209). One that
+/// (the ownerless-helper rule, ADE-189) is judged as (ADE-209): `window`, the
+/// Space of the window that called, for a call that names no owner. One that
 /// names an `owner` that is no stored session (an unsaved tab) is in the
-/// Space that session's row would join ([`membership::space_for_row`]),
-/// whichever window calls. Only a call that names no owner at all is
-/// `window`'s, the Space of the window that called. `None` when `owner` is a
-/// stored session: it is placed as one.
+/// Space that session's row would join ([`membership::space_for_row`]): its
+/// parent's, else `window`'s, the window that will save it (ADE-244). `None`
+/// when `owner` is a stored session: it is placed as one.
 pub(super) fn unsaved_space(
     store: &SessionStore,
     owner: Option<&str>,
@@ -139,7 +139,7 @@ pub(super) fn unsaved_space(
         if session_of(conn, owner)?.is_some() {
             return Ok(None);
         }
-        membership::space_for_row(conn, owner, None).map(Some)
+        membership::space_for_row(conn, owner, None, window).map(Some)
     })
 }
 
