@@ -5,7 +5,7 @@
 # the review stops the verdict. A later push makes a new head with no `review/agent`
 # status, so the verdict lapses on every push.
 # A success or failure summary must be a verdict that scripts/process/merge_rule.py reads:
-# "rN clean: xB/yM/zm <note>" or "rN changes needed: xB/yM/zm <note>", N a plain integer.
+# "rN clean: xB/yM/zm <note>" or "rN changes needed: xB/yM/zm <note>", N the round (r2, r2b).
 # The script refuses any other summary before it calls GitHub. A pending summary is free text.
 # Usage: scripts/gate/review-status.sh <pr> <reviewed-sha> <success|failure|pending> <summary>
 # GATE_REPO overrides the repository (default tylers2222/Monocode-Unlocked).
