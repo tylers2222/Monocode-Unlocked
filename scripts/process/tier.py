@@ -33,7 +33,7 @@ T3_PATH = re.compile(r'session_store|mono_messages|mono_gate|ask_gate|asks\.rs|a
 PURE_DIR = re.compile(r'/model/|^scripts/')
 NOT_CODE_LINE = re.compile(r'^\s*(//|/\*|\*|#|"|\'|`|$)')
 T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|useSyncExternalStore|useCallback|useMemo)\b'
-                     r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
+                     r'|\binvoke\(|\blisten\(|#\[tauri::command(\([^)]*\))?\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
                      r'|' + CONCURRENCY_CODE + r'|setTimeout|setInterval|clock_gettime')
 # A source file that can hold a multi-line string: a JS/TS file with a backtick anywhere
 # (a template literal), a Rust file with any string (a plain Rust string can span lines too).
