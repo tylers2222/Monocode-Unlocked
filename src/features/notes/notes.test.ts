@@ -109,6 +109,13 @@ describe("note mentions", () => {
       noteMentionLabel(note({ id: "abc", slug: "auth", title: "Auth" })),
     ).toBe("note/auth");
   });
+
+  it("maps the same notes array to the same file array", () => {
+    const notes = [note({ id: "abc", slug: "auth", title: "Auth" })];
+    const files = notesAsProjectFiles(notes);
+    expect(notesAsProjectFiles(notes)).toBe(files);
+    expect(notesAsProjectFiles([...notes])).not.toBe(files);
+  });
 });
 
 describe("composeNoteMessage", () => {

@@ -17,6 +17,8 @@ type Listener = () => void;
 
 // Tabs in separate worktrees should not evict each other's file index.
 const cache = new Map<string, ProjectFile[]>();
+// Invalidated listings stay cached so an unchanged rescan can keep the array.
+const stale = new Set<string>();
 const inflight = new Map<string, Promise<ProjectFile[]>>();
 let lastCwd: string | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -41,16 +43,17 @@ export function subscribeProjectFiles(listener: Listener): () => void {
 }
 
 export function peekProjectFiles(cwd: string): ProjectFile[] | null {
-  return cache.get(cwd) ?? null;
+  return stale.has(cwd) ? null : (cache.get(cwd) ?? null);
 }
 
 export function invalidateProjectFiles(cwd?: string) {
   if (cwd) {
-    if (!cache.has(cwd) && !inflight.has(cwd)) return;
-    cache.delete(cwd);
+    if (peekProjectFiles(cwd) == null && !inflight.has(cwd)) return;
+    stale.add(cwd);
     inflight.delete(cwd);
   } else {
     cache.clear();
+    stale.clear();
     inflight.clear();
     lastCwd = null;
     if (refreshTimer != null) {
@@ -117,7 +120,7 @@ export function loadProjectFiles(
 ): Promise<ProjectFile[]> {
   if (!looksLikeProject(cwd)) return Promise.resolve([]);
   lastCwd = cwd;
-  const cached = cache.get(cwd);
+  const cached = peekProjectFiles(cwd);
   if (!refresh && cached) {
     // Bound retained listings by least-recently-used worktree.
     cache.delete(cwd);
@@ -131,17 +134,42 @@ export function loadProjectFiles(
     .then((files) => {
       // A refresh or invalidation supersedes only this checkout's scan.
       if (inflight.get(cwd) !== promise) return files;
+      const prior = cache.get(cwd);
+      const wasStale = stale.delete(cwd);
+      // Keep an unchanged listing's identity so nothing derived from it rebuilds.
+      const listing = prior && sameListing(prior, files) ? prior : files;
       cache.delete(cwd);
-      cache.set(cwd, files);
-      if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
-      notifyProjectFilesChanged();
-      return files;
+      cache.set(cwd, listing);
+      if (cache.size > CACHE_LIMIT) {
+        const oldest = cache.keys().next().value!;
+        cache.delete(oldest);
+        stale.delete(oldest);
+      }
+      if (listing !== prior || wasStale) notifyProjectFilesChanged();
+      return listing;
     })
     .finally(() => {
       if (inflight.get(cwd) === promise) inflight.delete(cwd);
     });
   inflight.set(cwd, promise);
   return promise;
+}
+
+function sameListing(a: ProjectFile[], b: ProjectFile[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.path !== y.path ||
+      x.relative !== y.relative ||
+      x.name !== y.name ||
+      !x.isDir !== !y.isDir
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export type RankedFile = ProjectFile & FuzzyHit;

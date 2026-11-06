@@ -227,6 +227,92 @@ describe("loadProjectFiles", () => {
     stop();
   });
 
+  it("keeps the published array and stays quiet when a rescan finds the same files", async () => {
+    const dir = {
+      name: "apps",
+      path: "/Users/me/project/apps",
+      relative: "apps",
+      isDir: true,
+    };
+    list.mockResolvedValue([...files, dir]);
+    const listed = await loadProjectFiles(cwd);
+    // A missing isDir and isDir: false both mean a file.
+    list.mockResolvedValue([
+      ...files.map((file) => ({ ...file, isDir: false })),
+      { ...dir },
+    ]);
+    const onChange = vi.fn();
+    const stop = subscribeProjectFiles(onChange);
+
+    expect(await loadProjectFiles(cwd, true)).toBe(listed);
+    expect(peekProjectFiles(cwd)).toBe(listed);
+    expect(onChange).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it.each([
+    ["path", { path: "/Users/me/project/apps/web/src/Main.tsx" }],
+    ["relative", { relative: "apps/web/src/Main.tsx" }],
+    ["name", { name: "Main.tsx" }],
+    ["isDir", { isDir: true }],
+  ])(
+    "publishes a new array and notifies once when only %s changes",
+    async (_field, change) => {
+      await loadProjectFiles(cwd);
+      const next = files.map((file, index) =>
+        index === 1 ? { ...file, ...change } : { ...file },
+      );
+      list.mockResolvedValue(next);
+      const onChange = vi.fn();
+      const stop = subscribeProjectFiles(onChange);
+
+      expect(await loadProjectFiles(cwd, true)).toBe(next);
+      expect(peekProjectFiles(cwd)).toBe(next);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      stop();
+    },
+  );
+
+  it("publishes a new array and notifies once when a file is added", async () => {
+    await loadProjectFiles(cwd);
+    const next = [...files, extra];
+    list.mockResolvedValue(next);
+    const onChange = vi.fn();
+    const stop = subscribeProjectFiles(onChange);
+
+    expect(await loadProjectFiles(cwd, true)).toBe(next);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("keeps the array after an invalidation and notifies once on the unchanged rescan", async () => {
+    await loadProjectFiles(cwd);
+    list.mockResolvedValue(files.map((file) => ({ ...file })));
+    const onChange = vi.fn();
+    const stop = subscribeProjectFiles(onChange);
+
+    invalidateProjectFiles(cwd);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(await loadProjectFiles(cwd)).toBe(files);
+    expect(peekProjectFiles(cwd)).toBe(files);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("does not notify when invalidating a worktree that has no listing", async () => {
+    const onChange = vi.fn();
+    const stop = subscribeProjectFiles(onChange);
+    invalidateProjectFiles("/Users/me/never-listed");
+    expect(onChange).not.toHaveBeenCalled();
+
+    await loadProjectFiles(cwd);
+    onChange.mockClear();
+    invalidateProjectFiles(cwd);
+    invalidateProjectFiles(cwd);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
   it("reloads after a directory change", async () => {
     vi.useFakeTimers();
     await loadProjectFiles(cwd);

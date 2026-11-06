@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectFile } from "../../../platform/tauri/fs";
+import { notesAsProjectFiles, type Note } from "../../notes/notes";
 import { loadProjectFiles } from "./fileIndex";
 import {
   applyFileMentionsToTurn,
   buildMentionIndex,
   fileMentionParts,
   fileMentionsInText,
+  mentionIndexBuildCount,
   mentionLabel,
   mentionTokenAt,
   rankMentionFiles,
   replaceMentionToken,
+  sharedMentionIndex,
   withMentionDirectories,
 } from "./fileMentions";
 
@@ -399,5 +402,60 @@ describe("applyFileMentionsToTurn", () => {
       "/p",
     );
     expect(out).toBe("look at @notes/read-me.md~2");
+  });
+});
+
+describe("sharedMentionIndex", () => {
+  const notes: Note[] = [
+    {
+      id: "abc",
+      slug: "auth",
+      title: "Auth",
+      body: "",
+      tags: [],
+      slugPending: false,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ];
+
+  it("builds one index per listing and reuses it", () => {
+    const listing = [...files];
+    const before = mentionIndexBuildCount();
+    const shared = sharedMentionIndex(listing);
+    expect(mentionIndexBuildCount()).toBe(before + 1);
+    expect(sharedMentionIndex(listing)).toBe(shared);
+    expect(sharedMentionIndex(listing, [])).toBe(shared);
+    expect(sharedMentionIndex(listing, [])).toBe(shared);
+    expect(mentionIndexBuildCount()).toBe(before + 1);
+    expect([...shared.labels.keys()]).toEqual([...index.labels.keys()]);
+  });
+
+  it("builds a new index for a new listing", () => {
+    const listing = [...files];
+    const shared = sharedMentionIndex(listing);
+    expect(sharedMentionIndex([...files])).not.toBe(shared);
+    expect(sharedMentionIndex(listing)).toBe(shared);
+  });
+
+  it("includes note entries when notes are passed", () => {
+    const listing = [...files];
+    const noteFiles = notesAsProjectFiles(notes);
+    const withNotes = sharedMentionIndex(listing, noteFiles);
+    expect(withNotes.labels.get("note/auth")).toBe(noteFiles[0]);
+    expect(withNotes.labels.get("Composer.tsx")).toBe(files[2]);
+    expect(sharedMentionIndex(listing, noteFiles)).toBe(withNotes);
+    expect(sharedMentionIndex(listing).labels.has("note/auth")).toBe(false);
+  });
+
+  it("counts index builds only in dev builds", () => {
+    vi.stubEnv("DEV", false);
+    try {
+      const before = mentionIndexBuildCount();
+      buildMentionIndex(files);
+      expect(mentionIndexBuildCount()).toBe(before);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

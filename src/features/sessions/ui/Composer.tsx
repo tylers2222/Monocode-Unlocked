@@ -45,7 +45,7 @@ import {
   subscribeProjectFiles,
 } from "../../files/model/fileIndex";
 import {
-  buildMentionIndex,
+  sharedMentionIndex,
   fileMentionParts,
   mentionLabel,
   mentionTokenAt,
@@ -608,13 +608,13 @@ export function Composer({
     // The indent can rewrap the first line after the input already resized.
     if (ref.current) resizeComposer(ref.current);
   }, [modeIndent]);
-  const mentionFiles = useMemo(
-    () => (notesEnabled ? [...files, ...notesAsProjectFiles(notes)] : files),
-    [files, notes, notesEnabled],
-  );
   const mentionIndex = useMemo(
-    () => buildMentionIndex(mentionFiles),
-    [mentionFiles],
+    () =>
+      sharedMentionIndex(
+        files,
+        notesEnabled ? notesAsProjectFiles(notes) : undefined,
+      ),
+    [files, notes, notesEnabled],
   );
   const mentionIndexRef = useRef<MentionIndex>(mentionIndex);
   mentionIndexRef.current = mentionIndex;

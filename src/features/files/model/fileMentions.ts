@@ -76,7 +76,40 @@ export function replaceMentionToken(
   return `${text.slice(0, token.start)}@${label}${spacer}${rest}`;
 }
 
+const sharedIndexes = new WeakMap<
+  ProjectFile[],
+  WeakMap<ProjectFile[], MentionIndex>
+>();
+
+/** One index per listing, shared by every Composer that shows it. */
+export function sharedMentionIndex(
+  files: ProjectFile[],
+  extras: ProjectFile[] = [],
+): MentionIndex {
+  // Every empty extras list shares one key: the listing itself.
+  const key = extras.length === 0 ? files : extras;
+  let byExtras = sharedIndexes.get(files);
+  if (!byExtras) {
+    byExtras = new WeakMap();
+    sharedIndexes.set(files, byExtras);
+  }
+  let index = byExtras.get(key);
+  if (!index) {
+    index = buildMentionIndex([...files, ...extras]);
+    byExtras.set(key, index);
+  }
+  return index;
+}
+
+let mentionIndexBuilds = 0;
+
+/** Dev builds only: how many indexes were built (tests/browser ade252 spec). */
+export function mentionIndexBuildCount(): number {
+  return mentionIndexBuilds;
+}
+
 export function buildMentionIndex(files: ProjectFile[]): MentionIndex {
+  if (import.meta.env.DEV) mentionIndexBuilds += 1;
   const entries = withMentionDirectories(files).filter((file) =>
     isMentionableRelative(file.relative),
   );
@@ -207,7 +240,7 @@ export async function applyFileMentionsToTurn(
   const files = await loadProjectFiles(cwd).catch(() => []);
   if (files.length === 0) return text;
 
-  const index = buildMentionIndex(files);
+  const index = sharedMentionIndex(files);
   const lines = fileMentionsInText(text, index.labels)
     .filter((hit) => hit.label !== hit.file.relative)
     .map((hit) => `- @${hit.label} → ${hit.file.relative}`);
