@@ -76,7 +76,6 @@ export function replaceMentionToken(
   return `${text.slice(0, token.start)}@${label}${spacer}${rest}`;
 }
 
-const NO_EXTRAS: ProjectFile[] = [];
 const sharedIndexes = new WeakMap<
   ProjectFile[],
   WeakMap<ProjectFile[], MentionIndex>
@@ -85,21 +84,19 @@ const sharedIndexes = new WeakMap<
 /** One index per listing, shared by every Composer that shows it. */
 export function sharedMentionIndex(
   files: ProjectFile[],
-  extras: ProjectFile[] = NO_EXTRAS,
+  extras: ProjectFile[] = [],
 ): MentionIndex {
-  // Every empty extras list shares one key.
-  if (extras.length === 0) extras = NO_EXTRAS;
+  // Every empty extras list shares one key: the listing itself.
+  const key = extras.length === 0 ? files : extras;
   let byExtras = sharedIndexes.get(files);
   if (!byExtras) {
     byExtras = new WeakMap();
     sharedIndexes.set(files, byExtras);
   }
-  let index = byExtras.get(extras);
+  let index = byExtras.get(key);
   if (!index) {
-    index = buildMentionIndex(
-      extras === NO_EXTRAS ? files : [...files, ...extras],
-    );
-    byExtras.set(extras, index);
+    index = buildMentionIndex([...files, ...extras]);
+    byExtras.set(key, index);
   }
   return index;
 }

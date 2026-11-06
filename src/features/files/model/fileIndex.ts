@@ -49,7 +49,7 @@ export function peekProjectFiles(cwd: string): ProjectFile[] | null {
 export function invalidateProjectFiles(cwd?: string) {
   if (cwd) {
     if (peekProjectFiles(cwd) == null && !inflight.has(cwd)) return;
-    if (cache.has(cwd)) stale.add(cwd);
+    stale.add(cwd);
     inflight.delete(cwd);
   } else {
     cache.clear();
