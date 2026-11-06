@@ -188,7 +188,12 @@ import {
   taggedMcpServers,
   type McpTag,
 } from "../model/mcpPicker";
-import { getComposerMcpTags, setComposerMcpTags } from "../model/draftCache";
+import {
+  getComposerMcpTags,
+  getComposerStash,
+  setComposerMcpTags,
+  setComposerStash,
+} from "../model/draftCache";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
   getCachedMcpSettings,
@@ -423,8 +428,14 @@ export function Composer({
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
-  const attachmentsRef = useRef<Attachment[]>([]);
-  const borrowedAttachmentIdsRef = useRef(new Set<string>());
+  // What this session's Composer left unsent when its pane was last hidden.
+  const [stash] = useState(() =>
+    sessionId ? getComposerStash(sessionId) : undefined,
+  );
+  const attachmentsRef = useRef<Attachment[]>(stash?.attachments ?? []);
+  const borrowedAttachmentIdsRef = useRef(
+    new Set(stash?.borrowedAttachmentIds),
+  );
   const attachmentLifecycleRef = useRef(0);
   const consumedQuoteId = useRef<number | null>(null);
   const draftRevisionRef = useRef(0);
@@ -470,21 +481,28 @@ export function Composer({
   const [hasValue, setHasValue] = useState(
     () =>
       (initialDraft ?? "").trim().length > 0 ||
+      !!stash?.attachments.length ||
       !!inboxCard ||
       !!noteCard ||
       !!handoffCard,
   );
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    attachmentsRef.current,
+  );
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
-  const [planSelected, setPlanSelected] = useState(false);
-  const [operatorSelected, setOperatorSelected] = useState(false);
-  const [orchestrationSelected, setOrchestrationSelected] = useState(false);
+  const [planSelected, setPlanSelected] = useState(stash?.plan ?? false);
+  const [operatorSelected, setOperatorSelected] = useState(
+    stash?.operator ?? false,
+  );
+  const [orchestrationSelected, setOrchestrationSelected] = useState(
+    stash?.orchestration ?? false,
+  );
   const choice = intent?.choice;
   useEffect(() => {
     if (choice?.kind === "picked") ref.current?.focus();
   }, [choice]);
-  const [draftSelected, setDraftSelected] = useState(false);
+  const [draftSelected, setDraftSelected] = useState(stash?.draft ?? false);
   const [slash, setSlash] = useState<SlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
   const [creatingSkill, setCreatingSkill] = useState(false);
@@ -535,6 +553,14 @@ export function Composer({
   mentionRef.current = mention;
 
   attachmentsRef.current = attachments;
+  const modes = {
+    plan: planSelected,
+    operator: operatorSelected,
+    orchestration: orchestrationSelected,
+    draft: draftSelected,
+  };
+  const modesRef = useRef(modes);
+  modesRef.current = modes;
 
   const mentionOpen =
     !remote && mention !== null && (looksLikeProject(cwd) || notesEnabled);
@@ -812,7 +838,19 @@ export function Composer({
   );
   useEffect(() => {
     const lifecycle = ++attachmentLifecycleRef.current;
+    // While mounted this instance owns the unsent work; an unmount hands it
+    // back to the cache for the next Composer of the session.
+    if (sessionId) setComposerStash(sessionId, null);
     return () => {
+      if (sessionId) {
+        pasteGenerationRef.current += 1;
+        setComposerStash(sessionId, {
+          attachments: attachmentsRef.current,
+          borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
+          ...modesRef.current,
+        });
+        return;
+      }
       queueMicrotask(() => {
         if (attachmentLifecycleRef.current !== lifecycle) return;
         pasteGenerationRef.current += 1;
@@ -825,7 +863,7 @@ export function Composer({
         borrowedAttachmentIdsRef.current.clear();
       });
     };
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     if (harnessSupportsAttachments(harness)) return;

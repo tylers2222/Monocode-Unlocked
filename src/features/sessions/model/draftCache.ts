@@ -17,10 +17,23 @@
  * separate, larger change (touches the Rust-side session_upsert schema
  * too).
  */
+import type { Attachment } from "./session";
 import type { McpTag } from "./mcpPicker";
+
+/** What a Composer holds besides its text, kept while its pane is hidden. */
+export type ComposerStash = {
+  attachments: Attachment[];
+  /** Files lent by a recalled turn, whose previews the turn still owns. */
+  borrowedAttachmentIds: string[];
+  plan: boolean;
+  operator: boolean;
+  orchestration: boolean;
+  draft: boolean;
+};
 
 const drafts = new Map<string, string>();
 const mcpTags = new Map<string, McpTag[]>();
+const stashes = new Map<string, ComposerStash>();
 
 export function getComposerDraft(sessionId: string): string | undefined {
   return drafts.get(sessionId);
@@ -47,7 +60,31 @@ export function setComposerMcpTags(sessionId: string, tags: McpTag[]): void {
   }
 }
 
+export function getComposerStash(sessionId: string): ComposerStash | undefined {
+  return stashes.get(sessionId);
+}
+
+/** A stash holding nothing unsent is dropped. */
+export function setComposerStash(
+  sessionId: string,
+  stash: ComposerStash | null,
+): void {
+  if (
+    stash &&
+    (stash.attachments.length > 0 ||
+      stash.plan ||
+      stash.operator ||
+      stash.orchestration ||
+      stash.draft)
+  ) {
+    stashes.set(sessionId, stash);
+  } else {
+    stashes.delete(sessionId);
+  }
+}
+
 export function clearComposerDraft(sessionId: string): void {
   drafts.delete(sessionId);
   mcpTags.delete(sessionId);
+  stashes.delete(sessionId);
 }

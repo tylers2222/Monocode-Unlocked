@@ -643,6 +643,127 @@ describe("Composer question focus", () => {
     }
   });
 
+  it("keeps unsent files and the picked mode while its pane is hidden", async () => {
+    const createObjectURL = vi.fn(() => "blob:kept");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    const onSubmit = vi.fn(() => true);
+    const plusMenu = async () => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Add files or choose a mode"]',
+          )!
+          .click(),
+      );
+      return Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((button) => button.textContent?.includes("Plan mode"))!;
+    };
+    try {
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-one",
+      );
+      const shot = new File(["png"], "shot.png", { type: "image/png" });
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          getData: () => "",
+          files: [shot],
+          items: [{ kind: "file", type: shot.type, getAsFile: () => shot }],
+        },
+      });
+      await act(async () => {
+        container.querySelector("textarea")!.dispatchEvent(paste);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      const plan = await plusMenu();
+      await act(async () => plan.click());
+
+      // Hiding the pane unmounts this Composer; another session's mounts.
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-two",
+      );
+      expect(
+        container.querySelector('[aria-label="Remove shot.png"]'),
+      ).toBeNull();
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-one",
+      );
+      expect(
+        container.querySelector('[aria-label="Remove shot.png"]'),
+      ).not.toBeNull();
+      expect((await plusMenu()).getAttribute("aria-pressed")).toBe("true");
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+          .click(),
+      );
+      expect(onSubmit).toHaveBeenLastCalledWith(
+        "",
+        [
+          expect.objectContaining({
+            name: "shot.png",
+            previewUrl: "blob:kept",
+          }),
+        ],
+        expect.objectContaining({ intent: "plan" }),
+      );
+
+      // A sent stash is gone: the next Composer of the session starts empty.
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-two",
+      );
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-one",
+      );
+      expect(
+        container.querySelector('[aria-label="Remove shot.png"]'),
+      ).toBeNull();
+      expect((await plusMenu()).getAttribute("aria-pressed")).toBe("false");
+    } finally {
+      clearComposerDraft("hidden-one");
+      clearComposerDraft("hidden-two");
+    }
+  });
+
   it("keeps the draft when onBtwCommand rejects the command", async () => {
     const onBtwCommand = vi.fn(() => false);
     const onSubmit = vi.fn();
@@ -2056,7 +2177,9 @@ describe("Composer message target", () => {
     async (typed, sent, mode) => {
       const onSubmit = vi.fn(() => true);
       await renderWith({ steering: true }, onSubmit);
-      expect(container.querySelector('[data-composer-intent="turn"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-composer-intent="turn"]'),
+      ).not.toBeNull();
       await typeText(typed);
       expect(container.querySelector("[data-composer-intent]")).toBeNull();
       // The turn the bar showed has ended: a mode still sends, as a new turn.

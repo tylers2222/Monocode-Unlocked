@@ -382,3 +382,42 @@ it.each([
     expect(content.style.transform).toBe("");
   },
 );
+
+it("parks a hidden pane's transcript and drops its composer until it shows again", () => {
+  const pool = new TranscriptPool();
+  const render = (visible: boolean) =>
+    act(() =>
+      root.render(
+        createElement(
+          "div",
+          null,
+          createElement(SessionPane, { ...props(pool), visible }),
+          createElement(TranscriptPoolOutlet, { pool }),
+        ),
+      ),
+    );
+  render(true);
+  const scroller = container.querySelector(".agent-transcript");
+  expect(scroller).not.toBeNull();
+  expect(probes.composer).toHaveBeenCalled();
+
+  probes.composer.mockClear();
+  render(false);
+  expect(container.querySelector(".agent-transcript")).toBeNull();
+  expect(probes.composer).not.toHaveBeenCalled();
+
+  render(true);
+  expect(container.querySelector(".agent-transcript")).toBe(scroller);
+  expect(probes.composer).toHaveBeenCalled();
+});
+
+it("keeps a hidden pane without a pool mounted, as the inbox needs", () => {
+  act(() => root.render(createElement(SessionPane, props())));
+  const scroller = container.querySelector(".agent-transcript");
+  probes.composer.mockClear();
+  act(() =>
+    root.render(createElement(SessionPane, { ...props(), visible: false })),
+  );
+  expect(container.querySelector(".agent-transcript")).toBe(scroller);
+  expect(probes.composer).toHaveBeenCalled();
+});
