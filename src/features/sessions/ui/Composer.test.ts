@@ -5,6 +5,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mcpInvoke = vi.hoisted(() => vi.fn());
+const LISTED_CWD = "/repo-listed";
+const listed = vi.hoisted(() => ({
+  files: [] as { name: string; path: string; relative: string }[],
+}));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("@tauri-apps/api/core")>();
@@ -13,7 +17,10 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => {
     invoke: (command: string, args?: unknown) =>
       command === "mcp_discover" || command === "claude_mcp_list"
         ? mcpInvoke(command, args)
-        : original.invoke(command, args),
+        : command === "list_project_files" &&
+            (args as { cwd?: string } | undefined)?.cwd === LISTED_CWD
+          ? Promise.resolve(listed.files)
+          : original.invoke(command, args),
   };
 });
 
@@ -35,6 +42,7 @@ vi.mock("../../source-control/hooks/useProjectBranches", () => ({
 }));
 
 import { Composer, ComposerAction } from "./Composer";
+import { loadProjectFiles } from "../../files/model/fileIndex";
 import {
   clearMcpSettingsCache,
   loadMcpSettings,
@@ -1748,6 +1756,64 @@ describe("Composer question focus", () => {
     } finally {
       window.removeEventListener("monocode:open-mcp-settings", onOpen);
     }
+  });
+});
+
+describe("Composer file mentions", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  const file = (relative: string) => ({
+    name: relative.split("/").pop()!,
+    path: `${LISTED_CWD}/${relative}`,
+    relative,
+  });
+  const mentioned = () =>
+    [...container.querySelectorAll(".composer-highlight .text-mention")].map(
+      (node) => node.textContent,
+    );
+
+  it("recognizes a file mention once a refreshed listing adds the file", async () => {
+    listed.files = [file("src/app.ts")];
+    await act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "claude-sonnet",
+          runtimeMode: "supervised",
+          executionCwd: LISTED_CWD,
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          initialDraft: "see @app.ts and @login.ts",
+          onFocus: vi.fn(),
+          onCwdChange: vi.fn(),
+          onModelChange: vi.fn(),
+          onRuntimeModeChange: vi.fn(),
+          onSubmit: vi.fn(),
+        }),
+      ),
+    );
+    expect(mentioned()).toEqual(["@app.ts"]);
+
+    listed.files = [file("src/app.ts"), file("src/login.ts")];
+    await act(async () => {
+      await loadProjectFiles(LISTED_CWD, true);
+    });
+    expect(mentioned()).toEqual(["@app.ts", "@login.ts"]);
   });
 });
 
