@@ -96,7 +96,10 @@ async function openSession(page: Page, title: string) {
 }
 
 async function startTurn(page: Page, app: AppShell, sessionId: string) {
-  const composer = page.getByPlaceholder("Ask, build, / for commands");
+  // Hidden tabs keep their Composers mounted; only the active one is a textbox.
+  const composer = page.getByRole("textbox", {
+    name: "Ask, build, / for commands",
+  });
   await composer.fill("Tidy the login page");
   await composer.press("Enter");
   await expect
