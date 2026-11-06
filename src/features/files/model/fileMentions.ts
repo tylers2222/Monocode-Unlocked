@@ -76,6 +76,34 @@ export function replaceMentionToken(
   return `${text.slice(0, token.start)}@${label}${spacer}${rest}`;
 }
 
+const NO_EXTRAS: ProjectFile[] = [];
+const sharedIndexes = new WeakMap<
+  ProjectFile[],
+  WeakMap<ProjectFile[], MentionIndex>
+>();
+
+/** One index per listing, shared by every Composer that shows it. */
+export function sharedMentionIndex(
+  files: ProjectFile[],
+  extras: ProjectFile[] = NO_EXTRAS,
+): MentionIndex {
+  // Every empty extras list shares one key.
+  if (extras.length === 0) extras = NO_EXTRAS;
+  let byExtras = sharedIndexes.get(files);
+  if (!byExtras) {
+    byExtras = new WeakMap();
+    sharedIndexes.set(files, byExtras);
+  }
+  let index = byExtras.get(extras);
+  if (!index) {
+    index = buildMentionIndex(
+      extras === NO_EXTRAS ? files : [...files, ...extras],
+    );
+    byExtras.set(extras, index);
+  }
+  return index;
+}
+
 let mentionIndexBuilds = 0;
 
 /** Dev builds only: how many indexes were built (tests/browser ade252 spec). */
@@ -215,7 +243,7 @@ export async function applyFileMentionsToTurn(
   const files = await loadProjectFiles(cwd).catch(() => []);
   if (files.length === 0) return text;
 
-  const index = buildMentionIndex(files);
+  const index = sharedMentionIndex(files);
   const lines = fileMentionsInText(text, index.labels)
     .filter((hit) => hit.label !== hit.file.relative)
     .map((hit) => `- @${hit.label} → ${hit.file.relative}`);

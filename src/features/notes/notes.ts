@@ -160,12 +160,20 @@ export function noteMentionLabel(note: Note): string {
   return `${NOTE_MENTION_PREFIX}${note.slug}`;
 }
 
+const noteFiles = new WeakMap<Note[], ProjectFile[]>();
+
+/** Same notes array in, same file array out, so derived indexes are shared. */
 export function notesAsProjectFiles(notes: Note[]): ProjectFile[] {
-  return notes.map((note) => ({
-    name: note.title,
-    path: `${NOTE_PATH_PREFIX}${note.id}`,
-    relative: noteMentionLabel(note),
-  }));
+  let files = noteFiles.get(notes);
+  if (!files) {
+    files = notes.map((note) => ({
+      name: note.title,
+      path: `${NOTE_PATH_PREFIX}${note.id}`,
+      relative: noteMentionLabel(note),
+    }));
+    noteFiles.set(notes, files);
+  }
+  return files;
 }
 
 export function rankNoteFiles(
