@@ -3,7 +3,7 @@ import type { SessionSummary } from "../../src/features/sessions/data/sessionSto
 import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 
 const PROJECT = "/Users/test/acme";
-const MONOS = ["Pip", "Moss", "Fern", "Juno", "Kit", "Wren"];
+const TITLES = ["Login", "Docs", "Billing", "Search", "Onboarding", "Exports"];
 const UNCHANGED_TOOL_CALLS = 3;
 
 declare global {
@@ -12,13 +12,13 @@ declare global {
   }
 }
 
-const chat = (id: string): SessionSummary => ({
-  id,
+const chat = (title: string): SessionSummary => ({
+  id: title.toLowerCase(),
   cwd: PROJECT,
   harness: "pi",
   model: "pi:anthropic/claude-sonnet-4-5",
   runtimeMode: "supervised",
-  title: id,
+  title,
   createdAt: 1,
   updatedAt: 1,
 });
@@ -82,9 +82,21 @@ async function piRequests(page: Page, sessionId: string, type: string) {
     .filter((request) => request.type === type);
 }
 
+/** Each session has a transcript, so opening one never replaces another tab. */
+async function openSession(page: Page, title: string) {
+  await page
+    .getByRole("complementary")
+    .getByRole("button", { name: new RegExp(`^(?!Archive ).* ${title}$`) })
+    .click();
+  await expect(
+    page
+      .getByRole("banner")
+      .getByRole("button", { name: `acme · ${title}`, exact: true }),
+  ).toBeVisible();
+}
+
 async function startTurn(page: Page, app: AppShell, sessionId: string) {
-  await page.getByRole("button", { name: /^Pip, / }).click();
-  const composer = page.getByPlaceholder("Message Pip");
+  const composer = page.getByPlaceholder("Ask, build, / for commands");
   await composer.fill("Tidy the login page");
   await composer.press("Enter");
   await expect
@@ -140,37 +152,34 @@ test("Composers in one project share one mention index across file rescans", asy
       (_, i) => `src/module-${i}/index.ts`,
     );
   });
-  const sessionIds = MONOS.map((name) => `mono-chat-${name.toLowerCase()}`);
   await app.mount(
-    {
-      projects: [PROJECT],
-      sessions: sessionIds.map(chat),
-      monos: MONOS.map((name, i) => ({
-        id: `mono-${i}`,
-        role: "mono",
-        data: {
-          name,
-          mascot: "ghost",
-          sessionId: sessionIds[i],
-          projects: [PROJECT],
-        },
-      })),
-    },
+    { projects: [PROJECT], sessions: TITLES.map(chat) },
     { handlers },
   );
-  await startTurn(page, app, sessionIds[0]!);
+  await page.evaluate(
+    (ids) => {
+      for (const id of ids)
+        window.appBackend!.store.blocks[id] = [
+          { id: `${id}-1`, role: "user", text: "Start here" },
+        ];
+    },
+    TITLES.map((title) => chat(title).id),
+  );
+  for (const title of TITLES) await openSession(page, title);
   expect(
     await page.locator("textarea").count(),
-    "a Composer is mounted for every Mono",
-  ).toBeGreaterThanOrEqual(MONOS.length);
+    "a Composer is mounted for every open tab",
+  ).toBeGreaterThanOrEqual(TITLES.length);
+  const active = chat(TITLES.at(-1)!).id;
+  await startTurn(page, app, active);
 
   // Warm-up: the first rescan settles any load still in flight from mount.
-  await completeShellCall(page, app, sessionIds[0]!, "call-warm");
+  await completeShellCall(page, app, active, "call-warm");
   const base = await builds(page);
   expect(base, "the dev counter sees the app's own builds").toBeGreaterThan(0);
 
   for (let i = 0; i < UNCHANGED_TOOL_CALLS; i++) {
-    await completeShellCall(page, app, sessionIds[0]!, `call-same-${i}`);
+    await completeShellCall(page, app, active, `call-same-${i}`);
   }
   expect(
     (await builds(page)) - base,
@@ -178,7 +187,7 @@ test("Composers in one project share one mention index across file rescans", asy
   ).toBe(0);
 
   await page.evaluate(() => window.ade252Listing!.push("src/login.ts"));
-  await completeShellCall(page, app, sessionIds[0]!, "call-added");
+  await completeShellCall(page, app, active, "call-added");
   await expect
     .poll(
       async () => (await builds(page)) - base,
