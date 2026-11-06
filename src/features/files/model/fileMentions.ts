@@ -76,7 +76,15 @@ export function replaceMentionToken(
   return `${text.slice(0, token.start)}@${label}${spacer}${rest}`;
 }
 
+let mentionIndexBuilds = 0;
+
+/** Dev builds only: how many indexes were built (tests/browser ade252 spec). */
+export function mentionIndexBuildCount(): number {
+  return mentionIndexBuilds;
+}
+
 export function buildMentionIndex(files: ProjectFile[]): MentionIndex {
+  if (import.meta.env.DEV) mentionIndexBuilds += 1;
   const entries = withMentionDirectories(files).filter((file) =>
     isMentionableRelative(file.relative),
   );
