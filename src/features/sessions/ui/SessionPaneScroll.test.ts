@@ -421,3 +421,89 @@ it("keeps a hidden pane without a pool mounted, as the inbox needs", () => {
   expect(container.querySelector(".agent-transcript")).toBe(scroller);
   expect(probes.composer).toHaveBeenCalled();
 });
+
+it("keeps a parked transcript's distance from the bottom when its pane comes back", () => {
+  const pool = new TranscriptPool();
+  const render = (pane: "shown" | "hidden" | "detached") =>
+    act(() =>
+      root.render(
+        createElement(
+          "div",
+          null,
+          pane === "detached"
+            ? null
+            : createElement(SessionPane, {
+                ...props(pool),
+                visible: pane === "shown",
+              }),
+          createElement(TranscriptPoolOutlet, { pool }),
+        ),
+      ),
+    );
+  render("shown");
+  const scroller =
+    container.querySelector<HTMLDivElement>(".agent-transcript")!;
+  let top = 0;
+  Object.defineProperties(scroller, {
+    scrollHeight: { get: () => (scroller.isConnected ? 1400 : 0) },
+    clientHeight: { get: () => (scroller.isConnected ? 400 : 0) },
+    clientWidth: { get: () => 640 },
+    scrollTop: {
+      get: () => top,
+      set: (value: number) => {
+        top = Math.max(0, Math.min(value, scroller.isConnected ? 1000 : 0));
+      },
+    },
+  });
+  const distanceFromBottom = () =>
+    scroller.scrollHeight - scroller.clientHeight - top;
+  act(() => {
+    for (const observer of observers) {
+      if (observer.targets.includes(scroller)) observer.resize();
+    }
+  });
+  expect(distanceFromBottom()).toBe(0);
+  act(() => {
+    scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -700 }));
+    top -= 700;
+    scroller.dispatchEvent(new Event("scroll"));
+  });
+  expect(distanceFromBottom()).toBe(700);
+
+  render("hidden");
+  // Idle detach drops the hidden session, so its pane mounts again on return.
+  render("detached");
+  top = 0;
+  probes.composer.mockClear();
+  render("shown");
+
+  expect(container.querySelector(".agent-transcript")).toBe(scroller);
+  expect(container.querySelector("[data-session-composer]")).not.toBeNull();
+  expect(probes.composer).toHaveBeenCalled();
+  expect(distanceFromBottom()).toBe(700);
+  expect(container.querySelector("[data-jump-to-bottom]")).not.toBeNull();
+
+  // A new prompt still returns the reader to the latest turn.
+  const pane = props(pool);
+  act(() =>
+    root.render(
+      createElement(
+        "div",
+        null,
+        createElement(SessionPane, {
+          ...pane,
+          session: {
+            ...pane.session,
+            blocks: [
+              ...pane.session.blocks,
+              { id: "next", role: "user", text: "And then?" },
+            ],
+          },
+        }),
+        createElement(TranscriptPoolOutlet, { pool }),
+      ),
+    ),
+  );
+  expect(distanceFromBottom()).toBe(0);
+  expect(container.querySelector("[data-jump-to-bottom]")).toBeNull();
+});

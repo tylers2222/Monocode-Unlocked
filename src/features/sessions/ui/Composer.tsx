@@ -433,12 +433,13 @@ export function Composer({
   const [stash] = useState(() =>
     sessionId ? getComposerStash(sessionId) : undefined,
   );
-  const keep = useCallback(
-    (patch: Partial<ComposerStash>) => {
-      if (sessionId) updateComposerStash(sessionId, patch);
-    },
-    [sessionId],
-  );
+  // Read at write time, so every setter below stays stable and none can keep
+  // writing to the session this Composer had when the setter was made.
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  const keep = useCallback((patch: Partial<ComposerStash>) => {
+    if (sessionIdRef.current) updateComposerStash(sessionIdRef.current, patch);
+  }, []);
   const attachmentsRef = useRef<Attachment[]>(stash?.attachments ?? []);
   const borrowedAttachmentIdsRef = useRef(
     new Set(stash?.borrowedAttachmentIds),
@@ -496,16 +497,13 @@ export function Composer({
   const [attachments, setAttachmentsState] = useState<Attachment[]>(
     attachmentsRef.current,
   );
-  const setAttachments = useCallback(
-    (next: Attachment[]) => {
-      keep({
-        attachments: next,
-        borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
-      });
-      setAttachmentsState(next);
-    },
-    [keep],
-  );
+  const setAttachments = useCallback((next: Attachment[]) => {
+    keep({
+      attachments: next,
+      borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
+    });
+    setAttachmentsState(next);
+  }, []);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanState] = useState(stash?.plan ?? false);
@@ -537,7 +535,7 @@ export function Composer({
       setOrchestrationSelected: mode("orchestration", setOrchestrationState),
       setDraftSelected: mode("draft", setDraftState),
     };
-  }, [keep]);
+  }, []);
   const choice = intent?.choice;
   useEffect(() => {
     if (choice?.kind === "picked") ref.current?.focus();
