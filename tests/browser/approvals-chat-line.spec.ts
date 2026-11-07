@@ -318,6 +318,10 @@ test("a decision waits in the busy Giga's queue, then shows once as its sent lin
   expect((await prompts(page)).at(-1)!.message).toContain(REPORT);
   await endTurn(app, "Reviewing S2.");
   await expect(page.getByText("Reviewing S2.")).toBeVisible();
+  // The opened "What the agent got" panels push the first turn past the
+  // transcript's offscreen buffer, which detaches its DOM. A viewport tall
+  // enough to keep every turn attached lets the order below read them all.
+  await page.setViewportSize({ width: 1000, height: 2400 });
   await expect(page.getByText("The S1 migration tests pass.")).toBeVisible();
   const order = await page
     .locator("[data-mono-notice], [data-chat-message-role='assistant']")
@@ -438,12 +442,18 @@ test("a bidi override in a heading cannot reorder the decision line", async ({
   expect(
     await shown.evaluate((element) => getComputedStyle(element).direction),
   ).toBe("rtl");
-  const [headingBox, choseBox] = [
-    await shown.boundingBox(),
-    await chose.boundingBox(),
-  ];
-  expect(Math.abs(choseBox!.y - headingBox!.y)).toBeLessThan(2);
-  expect(choseBox!.x).toBeGreaterThanOrEqual(headingBox!.x + headingBox!.width);
+  // Both boxes come from one frame: the bottom-aligned chat is still easing
+  // the new line into place, so two separate reads see different offsets.
+  const [headingBox, choseBox] = await shown.evaluate(
+    (element, other) =>
+      [element, other!].map((node) => {
+        const { x, y, width } = node.getBoundingClientRect();
+        return { x, y, width };
+      }),
+    await chose.elementHandle(),
+  );
+  expect(Math.abs(choseBox.y - headingBox.y)).toBeLessThan(2);
+  expect(choseBox.x).toBeGreaterThanOrEqual(headingBox.x + headingBox.width);
   await expect(lines(page).locator("p")).toHaveText(
     `${TONES.approved.label} · APR-${decided.number} “${heading}” · chose “Ship it”`,
   );
