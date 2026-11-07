@@ -296,6 +296,18 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_codex_state_db_whose_sidecar_is_not_a_file() {
+        let fixture = Fixture::new();
+        std::fs::create_dir_all(fixture.from()).unwrap();
+        std::fs::write(fixture.from().join("state_5.sqlite"), b"").unwrap();
+        std::fs::create_dir(fixture.from().join("state_5.sqlite-wal")).unwrap();
+
+        let error = descendant_threads(&fixture.from(), "root-1").unwrap_err();
+
+        assert!(error.ends_with("state_5.sqlite-wal is not a file"), "{error}");
+    }
+
+    #[test]
     fn carries_a_codex_rollout_and_its_inherited_history() {
         let fixture = Fixture::new();
         let write = |dir: &str, id: &str, base: Option<&str>| {
