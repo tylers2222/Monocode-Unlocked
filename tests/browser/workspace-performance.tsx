@@ -216,6 +216,14 @@ const fixtureInvoke = async (
     return;
   if (command === "spaces_list")
     return [{ id: "space-1", name: "Space 1", color: null, createdAt: 1 }];
+  if (command === "spaces_settings_get")
+    return { activeSpaceId: "space-1", routeGrantTtlMs: 21_600_000 };
+  if (command === "spaces_project_get") return "space-1";
+  if (
+    command === "spaces_logins_list" ||
+    command === "spaces_project_logins_list"
+  )
+    return [];
   if (command === "approvals_open_counts") return { total: 0, byProject: {} };
   throw new Error(`Unavailable fixture service: ${command}`);
 };
