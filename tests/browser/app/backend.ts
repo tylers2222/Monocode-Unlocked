@@ -1059,6 +1059,9 @@ export function installBackend(
     "monocode.recentProjects",
     JSON.stringify(store.projects.map((path) => ({ path, openedAt: 1 }))),
   );
+  // Upstream's Focused layout invitation sits over the window's top right;
+  // layout-opt-in.spec.ts covers it on the workspace-performance rig.
+  localStorage.setItem("monocode.newLayoutPromptDismissed", "1");
   const backend: AppBackend = {
     store,
     calls: [],

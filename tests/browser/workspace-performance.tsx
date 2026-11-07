@@ -277,6 +277,8 @@ Object.assign(window, {
   workspaceSessions: sessions,
 });
 const { default: App } = await import("../../src/app/App");
+const { restoreWorkspacePins } =
+  await import("../../src/features/workspace/model/workspaceSnapshot");
 createRoot(document.getElementById("root")!).render(
   <Profiler
     id="workspace"
@@ -294,6 +296,9 @@ createRoot(document.getElementById("root")!).render(
               tabs,
               activeTabId: tabs[0].id,
               projectCwd: projectRoot,
+              // The boot loader pins restored tabs to their project, so all
+              // six show in its default workspace, not each in its worktree.
+              pins: restoreWorkspacePins(tabs, sessions),
             }
       }
     />
