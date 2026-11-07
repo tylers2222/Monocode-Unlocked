@@ -95,7 +95,7 @@ it("ends what a reload of the window left before it loads any session", async ()
     return null;
   });
   const { loadBootWorkspace } = await import("./appLifecycle");
-  const booting = loadBootWorkspace();
+  const booting = loadBootWorkspace(Promise.resolve());
   open();
   await booting;
   expect(order[0]).toBe("control_window_booted");
@@ -127,6 +127,33 @@ it("still boots when the Mono roster fails to load", async () => {
   expect(resumed?.sessions.map((session) => session.id)).toEqual(
     sessions.map((session) => session.id),
   );
+});
+
+// Review r2 (V4 N7). Defect: a roster that rejects while boot waits on
+// `control_window_booted` has no handler yet, so it surfaces as unhandled.
+it("handles a Mono roster that fails while the window is still booting", async () => {
+  savedWorkspace();
+  let open!: () => void;
+  const ended = new Promise<void>((resolve) => (open = resolve));
+  core.invoke.mockImplementation(async (command: string) => {
+    if (command === "control_window_booted") await ended;
+    return null;
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const { loadBootWorkspace } = await import("./appLifecycle");
+    const booting = loadBootWorkspace(
+      Promise.reject(new Error("monos_list failed")),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    open();
+    await booting;
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  expect(unhandled).toEqual([]);
 });
 
 // With no saved workspace, the chats that were running come back one tab each.
