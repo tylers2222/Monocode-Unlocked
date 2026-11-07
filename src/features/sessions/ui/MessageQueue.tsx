@@ -119,7 +119,7 @@ export function MessageQueue({
             <div className="py-1 text-[11px] text-content/70">
               Notice from the app · not sent yet
             </div>
-            <div className="divide-y divide-stroke">
+            <div className="divide-y divide-content/5">
               {notices.map(({ id, notice, error }) => (
                 <NoticeRow
                   key={id}
@@ -132,7 +132,7 @@ export function MessageQueue({
             </div>
           </>
         ) : null}
-        <div className="divide-y divide-stroke empty:hidden [.divide-y+&]:border-t [.divide-y+&]:border-stroke">
+        <div className="divide-y divide-content/5 empty:hidden [.divide-y+&]:border-t [.divide-y+&]:border-content/5">
           {decisions.map(({ id, decision, error }) => (
             <QueuedDecisionRow
               key={id}
@@ -153,7 +153,7 @@ export function MessageQueue({
             role="status"
             className={`py-1 text-[11px] text-content/50 ${
               notices.length + decisions.length > 0
-                ? "border-t border-stroke"
+                ? "border-t border-content/5"
                 : ""
             }`}
           >
@@ -314,7 +314,7 @@ function NoticeRow({
   const sentence = noticeSentence(notice);
   return (
     <div className="text-[12px]">
-      <div className="flex min-h-7 items-center gap-2">
+      <div className="flex min-h-8 items-center gap-2.5">
         <Bell className="size-3.5 shrink-0 text-amber-400" />
         <div
           className="min-w-0 flex-1 truncate py-1 text-content/80"
