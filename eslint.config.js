@@ -10,6 +10,10 @@ export default defineConfig(
       "**/target/**",
       "**/gen/**",
       "vendor/**",
+      // The mobile job lints the Expo app with mobile/eslint.config.js.
+      "mobile/**",
+      // esbuild bundles of scripts/native-editor and scripts/native-settings.
+      "crates/*/assets/**",
       "coverage/**",
       "playwright-report/**",
       "test-results/**",

@@ -45,6 +45,7 @@ import {
 } from "./timeline";
 
 type Props = {
+  tabbed?: boolean;
   besideRail?: boolean;
   compactRail?: boolean;
   /** The project the page opens on: the one with the selected session. */
@@ -93,6 +94,7 @@ function projectSummary({ settings, milestones }: ProjectMilestones): string {
 }
 
 export function MilestonesView({
+  tabbed = false,
   besideRail = false,
   compactRail = false,
   cwd,
@@ -110,6 +112,7 @@ export function MilestonesView({
       compactRail={compactRail}
       onClose={onClose}
       onToggleSidebar={onToggleSidebar}
+      tabbed={tabbed}
     >
       <MilestonesContent cwd={cwd} recents={recents} sessions={sessions} />
     </PageFrame>
