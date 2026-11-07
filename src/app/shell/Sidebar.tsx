@@ -2138,6 +2138,7 @@ function SidebarComponent({
     y: number;
   } | null>(null);
   const insetInboxTrigger = useRef<HTMLElement | null>(null);
+  const approvals = useApprovalsBadge();
   useEffect(() => {
     if (!inset || !panelOpen || !sidebarAvailable) setInsetInboxMenu(null);
   }, [inset, panelOpen, sidebarAvailable]);
@@ -2488,6 +2489,20 @@ function SidebarComponent({
           icon: Zap,
           active: automationsActive,
           onClick: onOpenAutomations,
+        },
+        onOpenMilestones && {
+          label: "Milestones",
+          icon: Flag,
+          active: milestonesActive,
+          onClick: onOpenMilestones,
+        },
+        onOpenApprovals && {
+          label: "Approvals",
+          icon: CheckCircle,
+          active: approvalsActive,
+          badge: approvals.pill,
+          ariaLabel: approvals.label,
+          onClick: onOpenApprovals,
         },
       ]}
     />
@@ -4395,7 +4410,9 @@ type SidebarNavItem = {
   icon: IconComponent;
   shortcut?: string;
   active?: boolean;
+  badge?: string;
   dot?: boolean;
+  ariaLabel?: string;
   onClick: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
 };
@@ -4431,21 +4448,15 @@ function SidebarNavList({
           <div className="mt-0.5" />
         </>
       ) : null}
-      {shown.map(
-        ({ label, icon, shortcut, active, dot, onClick, onOpenContextMenu }) => (
-          <RailAction
-            key={label}
-            label={label}
-            icon={icon}
-            shortcut={shortcut}
-            active={active}
-            dot={dot}
-            ariaLabel={dot ? `${label}, new items` : undefined}
-            onClick={onClick}
-            onOpenContextMenu={onOpenContextMenu}
-          />
-        ),
-      )}
+      {shown.map((item) => (
+        <RailAction
+          key={item.label}
+          {...item}
+          ariaLabel={
+            item.ariaLabel ?? (item.dot ? `${item.label}, new items` : undefined)
+          }
+        />
+      ))}
     </nav>
   );
 }
