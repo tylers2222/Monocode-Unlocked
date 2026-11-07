@@ -103,7 +103,7 @@ void Promise.all([
   homeDirPrimed,
   providerBinaryPathsPrimed,
   monosPrimed,
-  loadBootWorkspace(),
+  loadBootWorkspace(monosPrimed),
   appLoaded,
   loadProviderAccounts(),
   // The rail shows only the active Space: read it before the first render.
