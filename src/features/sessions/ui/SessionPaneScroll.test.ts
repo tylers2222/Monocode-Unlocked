@@ -86,11 +86,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // happy-dom rejects `finished` unhandled when an unmount cancels an animation.
-  act(() => {
-    for (const el of container.querySelectorAll("*"))
-      for (const animation of el.getAnimations()) animation.finish();
-  });
   act(() => root.unmount());
   container.remove();
   localStorage.clear();
@@ -511,4 +506,11 @@ it("keeps a parked transcript's distance from the bottom when its pane comes bac
   );
   expect(distanceFromBottom()).toBe(0);
   expect(container.querySelector("[data-jump-to-bottom]")).toBeNull();
+
+  // The prompt's entrance would be cancelled by the unmount, and happy-dom
+  // rejects that animation's `finished` with nobody listening.
+  for (const animation of scroller
+    .querySelector('[data-chat-message="next"]')!
+    .getAnimations())
+    animation.finish();
 });
