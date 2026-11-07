@@ -35,6 +35,15 @@ describe("tabCopy", () => {
     },
   );
 
+  it.each(["Milestones", "Approvals"])(
+    "names the %s page the Automations tab shows",
+    (page) => {
+      expect(
+        tabCopy(tab({ appView: "automations", title: page, sessionCount: 0 })),
+      ).toEqual({ headline: page, meta: "", tooltip: page });
+    },
+  );
+
   it("layers conversation and file when split across panes", () => {
     const focusedSession = tabCopy(
       tab({
