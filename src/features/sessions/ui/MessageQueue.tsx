@@ -335,7 +335,7 @@ function NoticeRow({
         </button>
       </div>
       {error ? (
-        <p role="alert" className="pb-1 pl-[22px] text-red-400">
+        <p role="alert" className="pb-1 pl-6 text-red-400">
           {error}
         </p>
       ) : null}
