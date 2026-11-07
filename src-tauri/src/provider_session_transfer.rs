@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
-use crate::codex_agent_state::{apply_agent_edges, closed_agent_edges, state_db};
+use crate::codex_agent_state::{apply_agent_edges, closed_agent_edges, open_state, state_db};
 use crate::codex_mono_store::{
     copy_durable, find_thread, history_base, rollout_dest, rollout_matches, validate_thread_id,
 };
@@ -187,11 +187,7 @@ fn descendant_threads(sqlite_home: &Path, id: &str) -> Result<Vec<String>, Strin
     let Some(path) = state_db(sqlite_home)? else {
         return Ok(Vec::new());
     };
-    let db =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| e.to_string())?;
-    db.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
+    let db = open_state(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let exists: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges')",
@@ -304,7 +300,10 @@ mod tests {
 
         let error = descendant_threads(&fixture.from(), "root-1").unwrap_err();
 
-        assert!(error.ends_with("state_5.sqlite-wal is not a file"), "{error}");
+        assert!(
+            error.ends_with("state_5.sqlite-wal is not a file"),
+            "{error}"
+        );
     }
 
     #[test]
