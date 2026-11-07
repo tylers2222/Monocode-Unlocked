@@ -212,3 +212,55 @@ it("draws notices, decisions and queued messages as one list", () => {
     expect(row.classList).toContain("gap-2.5");
   }
 });
+
+// Review r2 (V4 m2, N8). The notice's 14px bell and 10px gap put its sentence
+// 24px in, and upstream's queued row draws the queue's one icon tint.
+it("lines a failed notice's error up with its sentence and tints decisions like queued rows", () => {
+  const id = "m_dddddddddddd" as MessageId;
+  const container = document.createElement("div");
+  container.innerHTML = renderToStaticMarkup(
+    createElement(MessageQueue, {
+      messages: [
+        {
+          id: noticeRequestId(id, "unanswered"),
+          appRequestId: noticeRequestId(id, "unanswered"),
+          text: renderMonoNotice(
+            { id, body: "Nightly check", status: "unanswered" },
+            "Monocode General",
+          ),
+          attachments: [],
+          waitForIdle: true,
+          error: "Send failed",
+        },
+        { id: "queued", text: "Then ship it", attachments: [] },
+      ],
+      decisions: [
+        {
+          id: "decision",
+          decision: {
+            number: 7,
+            heading: "Ship the sync",
+            verdict: "approved",
+            note: null,
+            chosen: [],
+          },
+        },
+      ],
+      variant: "messages",
+    }),
+  );
+  const notice = container
+    .querySelector('[aria-label="Remove notice"]')!
+    .closest(".text-\\[12px\\]")!;
+  expect(notice.querySelector('[role="alert"]')!.classList).toContain("pl-6");
+
+  const tint = (icon: Element) =>
+    [...icon.classList].filter((name) => name.startsWith("text-"));
+  const queued = [...container.querySelectorAll("div")].find(
+    (row) => row.textContent === "Then ship it" && row.querySelector("svg"),
+  )!;
+  const decision = container.querySelector("[data-queued-decision]")!;
+  expect(tint(decision.querySelector("svg")!)).toEqual(
+    tint(queued.querySelector("svg")!),
+  );
+});
