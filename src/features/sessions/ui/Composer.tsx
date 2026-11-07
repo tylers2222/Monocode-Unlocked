@@ -188,7 +188,13 @@ import {
   taggedMcpServers,
   type McpTag,
 } from "../model/mcpPicker";
-import { getComposerMcpTags, setComposerMcpTags } from "../model/draftCache";
+import {
+  getComposerMcpTags,
+  getComposerStash,
+  setComposerMcpTags,
+  updateComposerStash,
+  type ComposerStash,
+} from "../model/draftCache";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
   getCachedMcpSettings,
@@ -423,8 +429,18 @@ export function Composer({
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
-  const attachmentsRef = useRef<Attachment[]>([]);
-  const borrowedAttachmentIdsRef = useRef(new Set<string>());
+  // Unsent files and modes, written through to the cache on every change.
+  const [stash] = useState(() =>
+    sessionId ? getComposerStash(sessionId) : undefined,
+  );
+  // Read at write time, so every setter below stays stable and none can keep
+  // writing to the session this Composer had when the setter was made.
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  const attachmentsRef = useRef<Attachment[]>(stash?.attachments ?? []);
+  const borrowedAttachmentIdsRef = useRef(
+    new Set(stash?.borrowedAttachmentIds),
+  );
   const attachmentLifecycleRef = useRef(0);
   const consumedQuoteId = useRef<number | null>(null);
   const draftRevisionRef = useRef(0);
@@ -470,21 +486,65 @@ export function Composer({
   const [hasValue, setHasValue] = useState(
     () =>
       (initialDraft ?? "").trim().length > 0 ||
+      !!stash?.attachments.length ||
       !!inboxCard ||
       !!noteCard ||
       !!handoffCard,
   );
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachmentsState] = useState<Attachment[]>(
+    attachmentsRef.current,
+  );
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
-  const [planSelected, setPlanSelected] = useState(false);
-  const [operatorSelected, setOperatorSelected] = useState(false);
-  const [orchestrationSelected, setOrchestrationSelected] = useState(false);
+  const [planSelected, setPlanState] = useState(stash?.plan ?? false);
+  const [operatorSelected, setOperatorState] = useState(
+    stash?.operator ?? false,
+  );
+  const [orchestrationSelected, setOrchestrationState] = useState(
+    stash?.orchestration ?? false,
+  );
+  const [draftSelected, setDraftState] = useState(stash?.draft ?? false);
+  const [
+    {
+      setAttachments,
+      setPlanSelected,
+      setOperatorSelected,
+      setOrchestrationSelected,
+      setDraftSelected,
+    },
+  ] = useState(() => {
+    const keep = (patch: Partial<ComposerStash>) => {
+      if (sessionIdRef.current) {
+        updateComposerStash(sessionIdRef.current, patch);
+      }
+    };
+    const mode =
+      (
+        key: "plan" | "operator" | "orchestration" | "draft",
+        set: (on: boolean) => void,
+      ) =>
+      (on: boolean) => {
+        keep({ [key]: on });
+        set(on);
+      };
+    return {
+      setAttachments: (next: Attachment[]) => {
+        keep({
+          attachments: next,
+          borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
+        });
+        setAttachmentsState(next);
+      },
+      setPlanSelected: mode("plan", setPlanState),
+      setOperatorSelected: mode("operator", setOperatorState),
+      setOrchestrationSelected: mode("orchestration", setOrchestrationState),
+      setDraftSelected: mode("draft", setDraftState),
+    };
+  });
   const choice = intent?.choice;
   useEffect(() => {
     if (choice?.kind === "picked") ref.current?.focus();
   }, [choice]);
-  const [draftSelected, setDraftSelected] = useState(false);
   const [slash, setSlash] = useState<SlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
   const [creatingSkill, setCreatingSkill] = useState(false);
@@ -813,6 +873,11 @@ export function Composer({
   useEffect(() => {
     const lifecycle = ++attachmentLifecycleRef.current;
     return () => {
+      // A session's unsent files stay in the draft cache for its next Composer.
+      if (sessionId) {
+        pasteGenerationRef.current += 1;
+        return;
+      }
       queueMicrotask(() => {
         if (attachmentLifecycleRef.current !== lifecycle) return;
         pasteGenerationRef.current += 1;
@@ -825,7 +890,7 @@ export function Composer({
         borrowedAttachmentIdsRef.current.clear();
       });
     };
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     if (harnessSupportsAttachments(harness)) return;

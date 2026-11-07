@@ -69,6 +69,7 @@ import {
 } from "../../sessions/model/models";
 import type { OrchestrationProposal } from "../model/orchestrationPlan";
 import { invoke } from "@tauri-apps/api/core";
+import { clearComposerDraft } from "../../sessions/model/draftCache";
 
 const emptyRuns: OrchestrationRun[] = [];
 let container: HTMLDivElement;
@@ -128,6 +129,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   emptyRuns.length = 0;
+  // A Composer keeps a session's unsent mode and files in the draft cache.
+  clearComposerDraft("lead");
 });
 const button = (text: string) =>
   [...document.querySelectorAll("button")].find((element) =>

@@ -51,7 +51,9 @@ import type { ComposerTurnOptions, Attachment } from "../model/session";
 import {
   clearComposerDraft,
   getComposerDraft,
+  getComposerStash,
   setComposerDraft,
+  setComposerStash,
 } from "../model/draftCache";
 import type { ComposerIntent } from "./ComposerIntentBar";
 import type { UserQuestionPrompt } from "../model/userQuestion";
@@ -641,6 +643,331 @@ describe("Composer question focus", () => {
       clearComposerDraft("mcp-session-one");
       clearComposerDraft("mcp-session-two");
     }
+  });
+
+  it("keeps unsent files and the picked mode while its pane is hidden", async () => {
+    const createObjectURL = vi.fn(() => "blob:kept");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    // Sending moves the Composer, as leaving an empty session does: the old
+    // instance unmounts in the same commit, before it renders the cleared mode.
+    const onSubmit = vi.fn(() => {
+      root.render(createElement("div"));
+      return true;
+    });
+    const plusMenu = async () => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Add files or choose a mode"]',
+          )!
+          .click(),
+      );
+      return Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((button) => button.textContent?.includes("Plan mode"))!;
+    };
+    try {
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-one",
+      );
+      const shot = new File(["png"], "shot.png", { type: "image/png" });
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          getData: () => "",
+          files: [shot],
+          items: [{ kind: "file", type: shot.type, getAsFile: () => shot }],
+        },
+      });
+      await act(async () => {
+        container.querySelector("textarea")!.dispatchEvent(paste);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      const plan = await plusMenu();
+      await act(async () => plan.click());
+
+      // Hiding the pane unmounts this Composer; another session's mounts.
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-two",
+      );
+      expect(
+        container.querySelector('[aria-label="Remove shot.png"]'),
+      ).toBeNull();
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-one",
+      );
+      expect(
+        container.querySelector('[aria-label="Remove shot.png"]'),
+      ).not.toBeNull();
+      expect((await plusMenu()).getAttribute("aria-pressed")).toBe("true");
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+          .click(),
+      );
+      expect(onSubmit).toHaveBeenLastCalledWith(
+        "",
+        [
+          expect.objectContaining({
+            name: "shot.png",
+            previewUrl: "blob:kept",
+          }),
+        ],
+        expect.objectContaining({ intent: "plan" }),
+      );
+
+      // A sent stash is gone: the next Composer of the session starts empty.
+      await renderComposer(
+        undefined,
+        vi.fn(),
+        false,
+        0,
+        undefined,
+        undefined,
+        onSubmit,
+        "hidden-one",
+      );
+      expect(
+        container.querySelector('[aria-label="Remove shot.png"]'),
+      ).toBeNull();
+      expect((await plusMenu()).getAttribute("aria-pressed")).toBe("false");
+    } finally {
+      clearComposerDraft("hidden-one");
+      clearComposerDraft("hidden-two");
+    }
+  });
+
+  describe("stash across remounts", () => {
+    const createObjectURL = vi.fn(() => "blob:shot");
+    const revokeObjectURL = vi.fn();
+    const shot: Attachment = {
+      id: "shot",
+      name: "shot.png",
+      mimeType: "image/png",
+      kind: "image",
+      size: 3,
+      data: "cG5n",
+      previewUrl: "blob:shot",
+    };
+
+    beforeEach(() => {
+      createObjectURL.mockClear();
+      revokeObjectURL.mockClear();
+      vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    });
+
+    afterEach(() => {
+      for (const id of ["modes", "other", "files", "recall", "gained", "late"])
+        clearComposerDraft(id);
+    });
+
+    const composer = (
+      sessionId: string | undefined,
+      props: Partial<Parameters<typeof Composer>[0]> = {},
+    ) =>
+      createElement(Composer, {
+        focused: true,
+        harness: "claude",
+        model: "claude-sonnet",
+        runtimeMode: "supervised",
+        executionCwd: "/repo",
+        sessionId,
+        hideProjectPicker: true,
+        hideBranchPicker: true,
+        onFocus: () => {},
+        onCwdChange: () => {},
+        onModelChange: () => {},
+        onRuntimeModeChange: () => {},
+        onSubmit: () => {},
+        ...props,
+      });
+    const mount = (element: ReturnType<typeof composer>) =>
+      act(async () => root.render(element));
+    const modeButton = async (label: string) => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Add files or choose a mode"]',
+          )!
+          .click(),
+      );
+      return Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button[aria-pressed]"),
+      ).find((button) => button.textContent?.startsWith(label))!;
+    };
+    const pasteShot = async () => {
+      const file = new File(["png"], "shot.png", { type: "image/png" });
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          getData: () => "",
+          files: [file],
+          items: [{ kind: "file", type: file.type, getAsFile: () => file }],
+        },
+      });
+      await act(async () => {
+        container.querySelector("textarea")!.dispatchEvent(paste);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    };
+
+    it.each([
+      ["Operator", "operator"],
+      ["Orchestrator", "orchestration"],
+      ["Draft", "draft"],
+    ] as const)("keeps %s picked across a remount", async (label, key) => {
+      const props = { canSaveDraft: true, onSaveDraft: vi.fn() };
+      await mount(composer("modes", { ...props, key: "modes" }));
+      await act(async () => (await modeButton(label)).click());
+      expect(getComposerStash("modes")?.[key]).toBe(true);
+
+      await mount(composer("other", { ...props, key: "other" }));
+      await mount(composer("modes", { ...props, key: "modes" }));
+      expect((await modeButton(label)).getAttribute("aria-pressed")).toBe(
+        "true",
+      );
+    });
+
+    it("enables Send on the first paint of a remount that holds only files", () => {
+      setComposerStash("files", {
+        attachments: [shot],
+        borrowedAttachmentIds: [],
+        plan: false,
+        operator: false,
+        orchestration: false,
+        draft: false,
+      });
+      const send = renderToStaticMarkup(composer("files")).match(
+        /<button[^>]*aria-label="Send"[^>]*>/,
+      )?.[0];
+      expect(send).toBeDefined();
+      expect(send).not.toMatch(/\sdisabled[\s=>]/);
+    });
+
+    it("keeps a recalled turn's file through a remount and leaves its preview to the turn", async () => {
+      let recall: (() => void) | undefined;
+      const recalled = (key: string) =>
+        composer(key, {
+          key,
+          harness: "pi",
+          model: "pi:default",
+          editLastTurnSupported: true,
+          lastTurnRecall: { text: "Edited prompt", attachments: [shot] },
+          onRecallLastTurnReady: (next) => {
+            recall = next;
+          },
+        });
+      await mount(recalled("recall"));
+      await act(async () => recall?.());
+      expect(getComposerStash("recall")?.borrowedAttachmentIds).toEqual([
+        "shot",
+      ]);
+
+      await mount(recalled("other"));
+      await mount(recalled("recall"));
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Remove shot.png"]')!
+          .click(),
+      );
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+    });
+
+    it("revokes the files of a Composer without a session when it unmounts", async () => {
+      await mount(composer(undefined));
+      await pasteShot();
+      await act(async () => (await modeButton("Plan mode")).click());
+      expect(getComposerStash(undefined as unknown as string)).toBeUndefined();
+
+      await act(async () => {
+        root.render(createElement("div"));
+        await Promise.resolve();
+      });
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:shot");
+    });
+
+    it("stashes under the session a mounted Composer gains", async () => {
+      await mount(composer(undefined));
+      await mount(composer("gained"));
+      await pasteShot();
+      await act(async () => (await modeButton("Plan mode")).click());
+      expect(getComposerStash("gained")).toMatchObject({
+        attachments: [expect.objectContaining({ name: "shot.png" })],
+        plan: true,
+      });
+
+      await act(async () => {
+        root.render(createElement("div"));
+        await Promise.resolve();
+      });
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+    });
+
+    it("drops and revokes a paste that finishes after its Composer unmounts", async () => {
+      const reads: Array<() => void> = [];
+      vi.stubGlobal(
+        "FileReader",
+        class {
+          result: string | null = null;
+          onload: (() => void) | null = null;
+          onerror: (() => void) | null = null;
+          readAsDataURL() {
+            reads.push(() => {
+              this.result = "data:image/png;base64,cG5n";
+              this.onload?.();
+            });
+          }
+        },
+      );
+      await mount(composer("late", { draftResetToken: 0 }));
+      const file = new File(["png"], "shot.png", { type: "image/png" });
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          getData: () => "",
+          files: [file],
+          items: [{ kind: "file", type: file.type, getAsFile: () => file }],
+        },
+      });
+      await act(async () => {
+        container.querySelector("textarea")!.dispatchEvent(paste);
+      });
+      expect(reads).toHaveLength(1);
+      // A cleared draft and the unmount each end the read's draft.
+      await mount(composer("late", { draftResetToken: 1 }));
+      await act(async () => root.render(createElement("div")));
+
+      await act(async () => {
+        reads[0]();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(getComposerStash("late")).toBeUndefined();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:shot");
+    });
   });
 
   it("keeps the draft when onBtwCommand rejects the command", async () => {
@@ -2056,7 +2383,9 @@ describe("Composer message target", () => {
     async (typed, sent, mode) => {
       const onSubmit = vi.fn(() => true);
       await renderWith({ steering: true }, onSubmit);
-      expect(container.querySelector('[data-composer-intent="turn"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-composer-intent="turn"]'),
+      ).not.toBeNull();
       await typeText(typed);
       expect(container.querySelector("[data-composer-intent]")).toBeNull();
       // The turn the bar showed has ended: a mode still sends, as a new turn.

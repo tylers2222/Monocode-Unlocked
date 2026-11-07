@@ -700,7 +700,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk || !!agent));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
-  const composer = (
+  // A hidden pane that can park its transcript renders neither it nor the
+  // Composer: both come back from the pool and the draft cache on return.
+  const bodyMounted = visible || !transcriptPool;
+  const composer = bodyMounted ? (
     <Composer
       key={session.id}
       disabled={workspaceSwitchingSessionId === session.id}
@@ -841,7 +844,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onEditingLastTurnChange={setEditingLastTurn}
       intent={composerIntent}
     />
-  );
+  ) : null;
 
   return (
     <div
@@ -956,7 +959,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                 }
               />
             ) : null}
-            {remoteSessionLoading ? null : isEmpty ? (
+            {remoteSessionLoading || !bodyMounted ? null : isEmpty ? (
               agent ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
                   <MonoHeader agent={agent} greeting />
@@ -1192,7 +1195,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
               </>
             )}
           </div>
-          {dockComposer ? (
+          {dockComposer && bodyMounted ? (
             <div
               ref={composerDockMotion.dockedRef}
               data-session-composer

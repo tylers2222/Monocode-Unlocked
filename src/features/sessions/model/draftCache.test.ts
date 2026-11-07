@@ -3,8 +3,12 @@ import {
   clearComposerDraft,
   getComposerDraft,
   getComposerMcpTags,
+  getComposerStash,
   setComposerDraft,
   setComposerMcpTags,
+  setComposerStash,
+  updateComposerStash,
+  type ComposerStash,
 } from "./draftCache";
 import { newMcpTag } from "./mcpPicker";
 
@@ -64,5 +68,61 @@ describe("draftCache", () => {
     expect(getComposerMcpTags("mcp-two")).toEqual([]);
     setComposerDraft("mcp-one", "");
     expect(getComposerMcpTags("mcp-one")).toEqual([]);
+  });
+
+  describe("Composer stash", () => {
+    const empty: ComposerStash = {
+      attachments: [],
+      borrowedAttachmentIds: [],
+      plan: false,
+      operator: false,
+      orchestration: false,
+      draft: false,
+    };
+    const file = {
+      id: "f1",
+      name: "a.png",
+      mimeType: "image/png",
+      kind: "image" as const,
+      size: 1,
+    };
+
+    it.each([
+      ["a file", { attachments: [file] }],
+      ["Plan", { plan: true }],
+      ["Operator", { operator: true }],
+      ["Orchestrator", { orchestration: true }],
+      ["Save as draft", { draft: true }],
+    ])("keeps a stash holding %s", (_name, unsent) => {
+      const stash = { ...empty, ...unsent };
+      setComposerStash("stash-kept", stash);
+      expect(getComposerStash("stash-kept")).toBe(stash);
+      clearComposerDraft("stash-kept");
+      expect(getComposerStash("stash-kept")).toBeUndefined();
+    });
+
+    it("merges each change into the session's stash", () => {
+      updateComposerStash("stash-merge", { plan: true });
+      updateComposerStash("stash-merge", { attachments: [file] });
+      expect(getComposerStash("stash-merge")).toEqual({
+        ...empty,
+        plan: true,
+        attachments: [file],
+      });
+      updateComposerStash("stash-merge", { plan: false, attachments: [] });
+      expect(getComposerStash("stash-merge")).toBeUndefined();
+    });
+
+    it("drops a stash with nothing unsent, and on null", () => {
+      setComposerStash("stash-drop", { ...empty, plan: true });
+      setComposerStash("stash-drop", {
+        ...empty,
+        borrowedAttachmentIds: ["only-borrowed-id"],
+      });
+      expect(getComposerStash("stash-drop")).toBeUndefined();
+      setComposerStash("stash-drop", { ...empty, draft: true });
+      setComposerStash("stash-drop", null);
+      expect(getComposerStash("stash-drop")).toBeUndefined();
+    });
   });
 });

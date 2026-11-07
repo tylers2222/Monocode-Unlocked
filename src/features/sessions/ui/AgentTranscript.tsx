@@ -648,7 +648,12 @@ function AgentTranscriptComponent({
     };
   }, [scrollerEl, followTranscript, setShowJump, syncPinned, visible]);
 
+  // Only the first paint and a new prompt pin. A pane that mounts again around
+  // a parked transcript passes new callbacks, and must keep the reader's place.
+  const pinnedUserId = useRef<string | null | undefined>(null);
   useLayoutEffect(() => {
+    if (pinnedUserId.current === lastUserId) return;
+    pinnedUserId.current = lastUserId;
     stickToBottom.current = true;
     setShowJump(false);
     const el = scroller.current;

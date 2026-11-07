@@ -96,7 +96,6 @@ async function openSession(page: Page, title: string) {
 }
 
 async function startTurn(page: Page, app: AppShell, sessionId: string) {
-  // Hidden tabs keep their Composers mounted; only the active one is a textbox.
   const composer = page.getByRole("textbox", {
     name: "Ask, build, / for commands",
   });
@@ -145,7 +144,7 @@ async function completeShellCall(
     .toBeGreaterThan(before);
 }
 
-test("Composers in one project share one mention index across file rescans", async ({
+test("file rescans that find the same files build no mention index", async ({
   app,
   page,
 }) => {
@@ -169,10 +168,6 @@ test("Composers in one project share one mention index across file rescans", asy
     TITLES.map((title) => chat(title).id),
   );
   for (const title of TITLES) await openSession(page, title);
-  expect(
-    await page.locator("textarea").count(),
-    "a Composer is mounted for every open tab",
-  ).toBeGreaterThanOrEqual(TITLES.length);
   const active = chat(TITLES.at(-1)!).id;
   await startTurn(page, app, active);
 
