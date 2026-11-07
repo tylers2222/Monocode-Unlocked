@@ -437,9 +437,6 @@ export function Composer({
   // writing to the session this Composer had when the setter was made.
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
-  const keep = useCallback((patch: Partial<ComposerStash>) => {
-    if (sessionIdRef.current) updateComposerStash(sessionIdRef.current, patch);
-  }, []);
   const attachmentsRef = useRef<Attachment[]>(stash?.attachments ?? []);
   const borrowedAttachmentIdsRef = useRef(
     new Set(stash?.borrowedAttachmentIds),
@@ -497,13 +494,6 @@ export function Composer({
   const [attachments, setAttachmentsState] = useState<Attachment[]>(
     attachmentsRef.current,
   );
-  const setAttachments = useCallback((next: Attachment[]) => {
-    keep({
-      attachments: next,
-      borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
-    });
-    setAttachmentsState(next);
-  }, []);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanState] = useState(stash?.plan ?? false);
@@ -514,12 +504,20 @@ export function Composer({
     stash?.orchestration ?? false,
   );
   const [draftSelected, setDraftState] = useState(stash?.draft ?? false);
-  const {
-    setPlanSelected,
-    setOperatorSelected,
-    setOrchestrationSelected,
-    setDraftSelected,
-  } = useMemo(() => {
+  const [
+    {
+      setAttachments,
+      setPlanSelected,
+      setOperatorSelected,
+      setOrchestrationSelected,
+      setDraftSelected,
+    },
+  ] = useState(() => {
+    const keep = (patch: Partial<ComposerStash>) => {
+      if (sessionIdRef.current) {
+        updateComposerStash(sessionIdRef.current, patch);
+      }
+    };
     const mode =
       (
         key: "plan" | "operator" | "orchestration" | "draft",
@@ -530,12 +528,19 @@ export function Composer({
         set(on);
       };
     return {
+      setAttachments: (next: Attachment[]) => {
+        keep({
+          attachments: next,
+          borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
+        });
+        setAttachmentsState(next);
+      },
       setPlanSelected: mode("plan", setPlanState),
       setOperatorSelected: mode("operator", setOperatorState),
       setOrchestrationSelected: mode("orchestration", setOrchestrationState),
       setDraftSelected: mode("draft", setDraftState),
     };
-  }, []);
+  });
   const choice = intent?.choice;
   useEffect(() => {
     if (choice?.kind === "picked") ref.current?.focus();
