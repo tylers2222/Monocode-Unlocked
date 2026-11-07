@@ -1,8 +1,45 @@
 import { describe, expect, it } from "vitest";
 import {
+  CheckCircle,
+  Flag,
+  Inbox,
+  Search,
+  StickyNote,
+  Zap,
+} from "../../../shared/ui/icons";
+import {
+  appViewTab,
   nextDisplayedTabAfterClose,
   reconcileTitleTabOrder,
 } from "./appViewTabs";
+
+describe("app view tab", () => {
+  it.each([
+    ["automations", "Automations", Zap],
+    ["milestones", "Milestones", Flag],
+    ["approvals", "Approvals", CheckCircle],
+  ] as const)(
+    "names, draws and reopens the %s page the Automations tab shows",
+    (page, label, icon) => {
+      expect(appViewTab("automations", page)).toEqual({ page, label, icon });
+    },
+  );
+
+  it.each([
+    ["search", "Search", Search],
+    ["inbox", "Inbox", Inbox],
+    ["notes", "Notes", StickyNote],
+  ] as const)(
+    "keeps the %s tab whatever Automations shows",
+    (view, label, icon) => {
+      expect(appViewTab(view, "milestones")).toEqual({
+        page: view,
+        label,
+        icon,
+      });
+    },
+  );
+});
 
 describe("shared tab opening order", () => {
   it("appends a session after app tabs even when workspace tabs insert beside the active session", () => {

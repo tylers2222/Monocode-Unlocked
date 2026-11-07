@@ -319,6 +319,58 @@ test("sidebar session selection switches away from app tabs", async ({
   }
 });
 
+test("the Automations tab reopens the Milestones or Approvals page it names", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/tests/browser/workspace-performance.html");
+  await page.locator(".inset-shell").waitFor();
+  await page.evaluate(() => {
+    const fixture = window as unknown as {
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          args?: Record<string, unknown>,
+        ) => Promise<unknown>;
+      };
+    };
+    const base = fixture.__TAURI_INTERNALS__.invoke;
+    fixture.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (["milestones_list", "approvals_list"].includes(command))
+        return Promise.resolve([]);
+      return base(command, args);
+    };
+  });
+  const nav = page.getByRole("navigation", { name: "Views" });
+  const automationsTab = page.locator(
+    '[data-title-tab-id="app-view:automations"] [data-title-tab]',
+  );
+  const sessionCard = page.locator(
+    '[data-session-select="workspace-session-1"]',
+  );
+
+  for (const [name, view] of [
+    ["Milestones", "milestones"],
+    ["Approvals", "approvals"],
+  ]) {
+    await nav.getByRole("button", { name: new RegExp(`^${name}`) }).click();
+    await expect(page.locator(`[data-app-${view}]`)).toBeVisible();
+    await expect(automationsTab).toContainText(name);
+
+    await sessionCard.click();
+    await expect(page.locator(`[data-app-${view}]`)).toBeHidden();
+    await expect(automationsTab).not.toHaveAttribute(
+      "data-title-tab-active",
+      "true",
+    );
+
+    await automationsTab.click();
+    await expect(page.locator(`[data-app-${view}]`)).toBeVisible();
+    await expect(page.locator("[data-app-automations]")).toHaveCount(0);
+    await expect(automationsTab).toContainText(name);
+  }
+});
+
 test("new tabs append chronologically across sessions and app views", async ({
   page,
 }) => {
