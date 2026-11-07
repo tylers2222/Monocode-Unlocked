@@ -7,6 +7,7 @@ import {
   setComposerDraft,
   setComposerMcpTags,
   setComposerStash,
+  updateComposerStash,
   type ComposerStash,
 } from "./draftCache";
 import { newMcpTag } from "./mcpPicker";
@@ -98,6 +99,18 @@ describe("draftCache", () => {
       expect(getComposerStash("stash-kept")).toBe(stash);
       clearComposerDraft("stash-kept");
       expect(getComposerStash("stash-kept")).toBeUndefined();
+    });
+
+    it("merges each change into the session's stash", () => {
+      updateComposerStash("stash-merge", { plan: true });
+      updateComposerStash("stash-merge", { attachments: [file] });
+      expect(getComposerStash("stash-merge")).toEqual({
+        ...empty,
+        plan: true,
+        attachments: [file],
+      });
+      updateComposerStash("stash-merge", { plan: false, attachments: [] });
+      expect(getComposerStash("stash-merge")).toBeUndefined();
     });
 
     it("drops a stash with nothing unsent, and on null", () => {

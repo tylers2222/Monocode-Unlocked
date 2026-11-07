@@ -83,6 +83,26 @@ export function setComposerStash(
   }
 }
 
+const EMPTY_STASH: ComposerStash = {
+  attachments: [],
+  borrowedAttachmentIds: [],
+  plan: false,
+  operator: false,
+  orchestration: false,
+  draft: false,
+};
+
+/** Records what changed in a mounted Composer, so a remount finds it. */
+export function updateComposerStash(
+  sessionId: string,
+  patch: Partial<ComposerStash>,
+): void {
+  setComposerStash(sessionId, {
+    ...(stashes.get(sessionId) ?? EMPTY_STASH),
+    ...patch,
+  });
+}
+
 export function clearComposerDraft(sessionId: string): void {
   drafts.delete(sessionId);
   mcpTags.delete(sessionId);

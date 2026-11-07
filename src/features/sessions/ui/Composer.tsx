@@ -192,7 +192,8 @@ import {
   getComposerMcpTags,
   getComposerStash,
   setComposerMcpTags,
-  setComposerStash,
+  updateComposerStash,
+  type ComposerStash,
 } from "../model/draftCache";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
@@ -429,8 +430,16 @@ export function Composer({
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   // What this session's Composer left unsent when its pane was last hidden.
+  // Every change is written through, so a Composer that mounts in the same
+  // commit as the old one unmounts still reads the latest.
   const [stash] = useState(() =>
     sessionId ? getComposerStash(sessionId) : undefined,
+  );
+  const keep = useCallback(
+    (patch: Partial<ComposerStash>) => {
+      if (sessionId) updateComposerStash(sessionId, patch);
+    },
+    [sessionId],
   );
   const attachmentsRef = useRef<Attachment[]>(stash?.attachments ?? []);
   const borrowedAttachmentIdsRef = useRef(
@@ -486,23 +495,55 @@ export function Composer({
       !!noteCard ||
       !!handoffCard,
   );
-  const [attachments, setAttachments] = useState<Attachment[]>(
+  const [attachments, setAttachmentsState] = useState<Attachment[]>(
     attachmentsRef.current,
+  );
+  const setAttachments = useCallback(
+    (next: Attachment[]) => {
+      keep({
+        attachments: next,
+        borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
+      });
+      setAttachmentsState(next);
+    },
+    [keep],
   );
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
-  const [planSelected, setPlanSelected] = useState(stash?.plan ?? false);
-  const [operatorSelected, setOperatorSelected] = useState(
+  const [planSelected, setPlanState] = useState(stash?.plan ?? false);
+  const [operatorSelected, setOperatorState] = useState(
     stash?.operator ?? false,
   );
-  const [orchestrationSelected, setOrchestrationSelected] = useState(
+  const [orchestrationSelected, setOrchestrationState] = useState(
     stash?.orchestration ?? false,
   );
+  const [draftSelected, setDraftState] = useState(stash?.draft ?? false);
+  const {
+    setPlanSelected,
+    setOperatorSelected,
+    setOrchestrationSelected,
+    setDraftSelected,
+  } = useMemo(() => {
+    const mode =
+      (
+        key: "plan" | "operator" | "orchestration" | "draft",
+        set: (on: boolean) => void,
+      ) =>
+      (on: boolean) => {
+        keep({ [key]: on });
+        set(on);
+      };
+    return {
+      setPlanSelected: mode("plan", setPlanState),
+      setOperatorSelected: mode("operator", setOperatorState),
+      setOrchestrationSelected: mode("orchestration", setOrchestrationState),
+      setDraftSelected: mode("draft", setDraftState),
+    };
+  }, [keep]);
   const choice = intent?.choice;
   useEffect(() => {
     if (choice?.kind === "picked") ref.current?.focus();
   }, [choice]);
-  const [draftSelected, setDraftSelected] = useState(stash?.draft ?? false);
   const [slash, setSlash] = useState<SlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
   const [creatingSkill, setCreatingSkill] = useState(false);
@@ -553,14 +594,6 @@ export function Composer({
   mentionRef.current = mention;
 
   attachmentsRef.current = attachments;
-  const modes = {
-    plan: planSelected,
-    operator: operatorSelected,
-    orchestration: orchestrationSelected,
-    draft: draftSelected,
-  };
-  const modesRef = useRef(modes);
-  modesRef.current = modes;
 
   const mentionOpen =
     !remote && mention !== null && (looksLikeProject(cwd) || notesEnabled);
@@ -838,17 +871,10 @@ export function Composer({
   );
   useEffect(() => {
     const lifecycle = ++attachmentLifecycleRef.current;
-    // While mounted this instance owns the unsent work; an unmount hands it
-    // back to the cache for the next Composer of the session.
-    if (sessionId) setComposerStash(sessionId, null);
     return () => {
+      // A session's unsent files stay in the draft cache for its next Composer.
       if (sessionId) {
         pasteGenerationRef.current += 1;
-        setComposerStash(sessionId, {
-          attachments: attachmentsRef.current,
-          borrowedAttachmentIds: [...borrowedAttachmentIdsRef.current],
-          ...modesRef.current,
-        });
         return;
       }
       queueMicrotask(() => {

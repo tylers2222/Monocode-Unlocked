@@ -647,7 +647,12 @@ describe("Composer question focus", () => {
     const createObjectURL = vi.fn(() => "blob:kept");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
-    const onSubmit = vi.fn(() => true);
+    // Sending moves the Composer, as leaving an empty session does: the old
+    // instance unmounts in the same commit, before it renders the cleared mode.
+    const onSubmit = vi.fn(() => {
+      root.render(createElement("div"));
+      return true;
+    });
     const plusMenu = async () => {
       await act(async () =>
         container
@@ -734,16 +739,6 @@ describe("Composer question focus", () => {
       );
 
       // A sent stash is gone: the next Composer of the session starts empty.
-      await renderComposer(
-        undefined,
-        vi.fn(),
-        false,
-        0,
-        undefined,
-        undefined,
-        onSubmit,
-        "hidden-two",
-      );
       await renderComposer(
         undefined,
         vi.fn(),
