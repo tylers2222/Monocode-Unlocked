@@ -162,3 +162,53 @@ it("shows a failed notice's error under its sentence", () => {
   );
   expect(container.textContent).toContain("Retry");
 });
+
+// Upstream restyled the queued rows. Defect: the fork's notice and decision
+// rows keep the old height, spacing and stroke dividers, so one queue shows
+// two row styles.
+it("draws notices, decisions and queued messages as one list", () => {
+  const id = "m_cccccccccccc" as MessageId;
+  const notice = {
+    id: noticeRequestId(id, "unanswered"),
+    appRequestId: noticeRequestId(id, "unanswered"),
+    text: renderMonoNotice(
+      { id, body: "Nightly check", status: "unanswered" },
+      "Monocode General",
+    ),
+    attachments: [],
+    waitForIdle: true,
+  };
+  const container = document.createElement("div");
+  container.innerHTML = renderToStaticMarkup(
+    createElement(MessageQueue, {
+      messages: [
+        notice,
+        { ...notice, id: "second-notice" },
+        { id: "queued", text: "Then ship it", attachments: [] },
+      ],
+      decisions: [
+        {
+          id: "decision",
+          decision: {
+            number: 7,
+            heading: "Ship the sync",
+            verdict: "approved",
+            note: null,
+            chosen: [],
+          },
+        },
+      ],
+      variant: "messages",
+    }),
+  );
+  const card = container.querySelector("[data-message-queue-card]")!;
+  expect(card.outerHTML).not.toMatch(/(divide|border)-stroke/);
+  const notices = [
+    ...card.querySelectorAll('[aria-label="Remove notice"]'),
+  ].map((button) => button.parentElement!);
+  const decision = card.querySelector("[data-queued-decision]")!;
+  for (const row of [...notices, decision]) {
+    expect(row.classList).toContain("min-h-8");
+    expect(row.classList).toContain("gap-2.5");
+  }
+});
