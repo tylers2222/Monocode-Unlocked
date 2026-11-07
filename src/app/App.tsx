@@ -169,10 +169,9 @@ import {
   type Tab as TitleTab,
 } from "./shell/TitleBar";
 import {
-  APP_VIEW_LABELS,
-  AUTOMATIONS_PAGE_LABELS,
   type AutomationsPage,
   appViewForTab,
+  appViewTab,
   appViewTabId,
   isViewTab,
   monoForTab,
@@ -1228,6 +1227,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
       other != null &&
       tab.id === other.id &&
       tab.appView === other.appView &&
+      tab.appViewIcon === other.appViewIcon &&
       tab.mono?.mascot === other.mono?.mascot &&
       tab.mono?.color === other.mono?.color &&
       tab.mono?.status === other.mono?.status &&
@@ -12593,20 +12593,21 @@ function Workspace({
       ...(insetLayout
         ? openAppViews
             .filter((view) => view !== "notes" || notesEnabled)
-            .map((view): TitleTab => ({
-              id: appViewTabId(view),
-              appView: view,
-              project: "",
-              title:
-                view === "automations"
-                  ? AUTOMATIONS_PAGE_LABELS[automationsPage]
-                  : APP_VIEW_LABELS[view],
-              more: [],
-              sessionCount: 0,
-              harnesses: [],
-              busyHarnesses: [],
-              files: [],
-            }))
+            .map((view): TitleTab => {
+              const { label, icon } = appViewTab(view, automationsPage);
+              return {
+                id: appViewTabId(view),
+                appView: view,
+                appViewIcon: icon,
+                project: "",
+                title: label,
+                more: [],
+                sessionCount: 0,
+                harnesses: [],
+                busyHarnesses: [],
+                files: [],
+              };
+            })
         : []),
       ...shownMonoTabs.flatMap((monoId): TitleTab[] => {
         const mono = findMono(monoId);
@@ -13334,8 +13335,10 @@ function Workspace({
           inbox: onOpenInbox,
           notes: onOpenNotes,
           automations: onOpenAutomations,
+          milestones: onOpenMilestones,
+          approvals: onOpenApprovals,
         };
-        open[view]();
+        open[appViewTab(view, automationsPage).page]();
         return;
       }
       setSearchViewOpen(false);
@@ -13352,6 +13355,9 @@ function Workspace({
       onOpenInbox,
       onOpenNotes,
       onOpenAutomations,
+      onOpenMilestones,
+      onOpenApprovals,
+      automationsPage,
     ],
   );
 

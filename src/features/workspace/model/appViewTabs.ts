@@ -1,3 +1,13 @@
+import {
+  CheckCircle,
+  Flag,
+  Inbox,
+  Search,
+  StickyNote,
+  Zap,
+  type IconComponent,
+} from "../../../shared/ui/icons";
+
 export const APP_VIEW_LABELS = {
   search: "Search",
   inbox: "Inbox",
@@ -15,6 +25,36 @@ export const AUTOMATIONS_PAGE_LABELS = {
 } as const;
 
 export type AutomationsPage = keyof typeof AUTOMATIONS_PAGE_LABELS;
+
+/** The page an app view's tab shows: its view, or the Automations page. */
+export type AppViewPage = Exclude<AppView, "automations"> | AutomationsPage;
+
+const APP_VIEW_PAGE_LABELS: Record<AppViewPage, string> = {
+  ...APP_VIEW_LABELS,
+  ...AUTOMATIONS_PAGE_LABELS,
+};
+
+const APP_VIEW_PAGE_ICONS: Record<AppViewPage, IconComponent> = {
+  search: Search,
+  inbox: Inbox,
+  notes: StickyNote,
+  automations: Zap,
+  milestones: Flag,
+  approvals: CheckCircle,
+};
+
+/** The page an app view's tab names, draws and reopens when selected. */
+export function appViewTab(
+  view: AppView,
+  automationsPage: AutomationsPage,
+): { page: AppViewPage; label: string; icon: IconComponent } {
+  const page = view === "automations" ? automationsPage : view;
+  return {
+    page,
+    label: APP_VIEW_PAGE_LABELS[page],
+    icon: APP_VIEW_PAGE_ICONS[page],
+  };
+}
 
 export function appViewTabId(view: AppView): string {
   return `app-view:${view}`;

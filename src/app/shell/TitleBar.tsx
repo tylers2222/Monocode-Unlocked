@@ -8,12 +8,11 @@ import {
   PanelLeft,
   GitBranch,
   Plus,
-  Search,
   Settings,
   StickyNote,
   Terminal,
   X,
-  Zap,
+  type IconComponent,
 } from "../../shared/ui/icons";
 import {
   memo,
@@ -68,16 +67,11 @@ import {
   type AppView,
 } from "../../features/workspace/model/appViewTabs";
 
-const APP_VIEW_ICONS = {
-  search: Search,
-  inbox: Inbox,
-  notes: StickyNote,
-  automations: Zap,
-};
-
 export type Tab = {
   id: string;
   appView?: AppView;
+  /** Drawn before an app view's title, for the page the view shows. */
+  appViewIcon?: IconComponent;
   /** A Mono open as a tab; its name is the title. */
   mono?: { mascot: string; color: string; status: MonoState["status"] };
   /** Project folder name, e.g. `agent-terminal`. */
@@ -356,7 +350,7 @@ function TitleTabItem({
 }) {
   const { headline, meta, tooltip } = tabCopy(tab);
   const fileIcon = tab.files[0];
-  const AppViewIcon = tab.appView ? APP_VIEW_ICONS[tab.appView] : null;
+  const AppViewIcon = tab.appViewIcon;
   const accessibleTooltip =
     (tab.doneHarnesses?.length ?? 0) > 0
       ? `${tooltip} · Response complete`
