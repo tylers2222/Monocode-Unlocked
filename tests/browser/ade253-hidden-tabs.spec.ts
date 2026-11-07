@@ -43,14 +43,18 @@ const handlers: MountOptions["handlers"] = {
   },
 };
 
-const titleTab = (page: Page, title: string) =>
-  page
-    .getByRole("banner")
-    .getByRole("button", { name: new RegExp(`^acme · ${title}( · |$)`) });
+const tabName = (title: string) => new RegExp(`^acme · ${title}( · |$)`);
 
+const titleTab = (page: Page, title: string) =>
+  page.getByRole("banner").getByRole("button", { name: tabName(title) });
+
+// `has` searches inside each tab, so it must not start from the banner.
 const tabStatus = (page: Page, title: string) =>
   page
-    .locator("[data-title-tab-id]", { has: titleTab(page, title) })
+    .getByRole("banner")
+    .locator("[data-title-tab-id]", {
+      has: page.getByRole("button", { name: tabName(title) }),
+    })
     .locator("[data-harness-status]");
 
 const composer = (page: Page) =>

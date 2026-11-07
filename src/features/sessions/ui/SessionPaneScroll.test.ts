@@ -86,6 +86,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // happy-dom rejects `finished` unhandled when an unmount cancels an animation.
+  act(() => {
+    for (const el of container.querySelectorAll("*"))
+      for (const animation of el.getAnimations()) animation.finish();
+  });
   act(() => root.unmount());
   container.remove();
   localStorage.clear();
