@@ -63,6 +63,13 @@ vi.mock("../../features/source-control/hooks/useProjectDiffStats", () => ({
 vi.mock("../../features/source-control/hooks/useGitFileStatuses", () => ({
   useGitFileStatuses: () => ({ files: new Map(), dirs: new Map() }),
 }));
+const approvalsOpen = vi.hoisted(() => ({ total: 0 }));
+vi.mock("../../features/approvals/hooks/useApprovalsBadge", async () => {
+  const { approvalsBadge } = await import(
+    "../../features/approvals/model/approvals"
+  );
+  return { useApprovalsBadge: () => approvalsBadge(approvalsOpen.total) };
+});
 vi.mock("./SidebarUpdate", () => ({ SidebarUpdateFooter: () => null }));
 vi.mock("../../features/files/ui/FileTree", () => ({
   FileTree: ({ cwd, rootLabel }: { cwd: string; rootLabel?: string }) =>
@@ -130,6 +137,7 @@ function startRename() {
 
 beforeEach(() => {
   __spacesTestReset();
+  approvalsOpen.total = 0;
   spacesDb.active = "space-1";
   spacesDb.projects = new Map();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -741,6 +749,41 @@ it.each([
   props = { ...props, [active]: false };
   await act(async () => render());
   expect(selected()).toBe("true");
+});
+
+it("links the inset sidebar to Milestones and Approvals with the open count", async () => {
+  approvalsOpen.total = 3;
+  props = {
+    ...props,
+    inset: true,
+    onOpenInbox: vi.fn(),
+    onOpenAutomations: vi.fn(),
+    onOpenMilestones: vi.fn(),
+    onOpenApprovals: vi.fn(),
+    approvalsActive: true,
+  };
+  await act(async () => render());
+
+  const views = container.querySelector('nav[aria-label="Views"]')!;
+  expect(
+    Array.from(views.querySelectorAll("button"), (button) =>
+      button.getAttribute("aria-label"),
+    ),
+  ).toEqual(["Inbox", "Automations", "Milestones", "Approvals, 3 open"]);
+  const approvals = views.querySelector<HTMLButtonElement>(
+    'button[aria-label="Approvals, 3 open"]',
+  )!;
+  expect(approvals.querySelector("[data-rail-badge]")?.textContent).toBe("3");
+  expect(approvals.classList).toContain("bg-selection");
+
+  act(() =>
+    views
+      .querySelector<HTMLButtonElement>('button[aria-label="Milestones"]')!
+      .click(),
+  );
+  expect(props.onOpenMilestones).toHaveBeenCalledOnce();
+  act(() => approvals.click());
+  expect(props.onOpenApprovals).toHaveBeenCalledOnce();
 });
 
 describe("sidebar session multiselection", () => {
