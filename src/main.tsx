@@ -23,6 +23,7 @@ import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
 import { loadProviderAccounts } from "./features/providers/model/providerAccounts";
 import { loadSpaces } from "./features/spaces/model/activeSpace";
+import { loadMonoRoster } from "./features/monos/model/mono";
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
@@ -44,11 +45,8 @@ const providerBinaryPathsPrimed = initializeProviderBinaryPaths().catch(
   () => undefined,
 );
 // Every reader of the Mono roster is synchronous, so load it before the first
-// render. Imported lazily, like App, to keep it off the bootstrap chunk. A
-// failed load falls back inside, to the roster WebKit storage held.
-const monosPrimed = import("./features/monos/model/mono")
-  .then((mono) => mono.loadMonoRoster())
-  .catch(() => undefined);
+// render. A failed load falls back inside, to the roster WebKit storage held.
+const monosPrimed = loadMonoRoster().catch(() => undefined);
 
 function dismissBootSplash() {
   const splash = document.getElementById("boot-splash");

@@ -101,7 +101,8 @@ export async function handleQuitRequested(): Promise<boolean> {
       return false;
     }
   }
-  const { resumed } = await loadBootWorkspace();
+  // main.tsx starts boot with the roster first; a quit only reads its result.
+  const { resumed } = await loadBootWorkspace(Promise.resolve());
   const pending = resumed ?? bootingResumed;
   quitting = true;
   if (!pending) return true;
@@ -180,10 +181,14 @@ export function loadResumedWorkspace(
   return resumedPromise;
 }
 
-/** Restore runs once; callers share the same promise. */
+/**
+ * Restore runs once; callers share the same promise. `monoRoster` gates the
+ * session reads, as in `loadResumedWorkspace`; its failure never stops boot.
+ */
 export function loadBootWorkspace(
-  monoRoster?: Promise<unknown>,
+  monoRoster: Promise<unknown>,
 ): Promise<BootWorkspace> {
+  const roster = monoRoster.catch(() => undefined);
   if (!bootPromise) {
     bootPromise = (async () => {
       const hintedCwd = lastProjectPath();
@@ -192,7 +197,7 @@ export function loadBootWorkspace(
       // behind, before any session it loads can start a turn.
       await invoke("control_window_booted").catch(console.error);
       const [resumed, monoCompletions] = await Promise.all([
-        loadResumedWorkspace(monoRoster),
+        loadResumedWorkspace(roster),
         claimMonoCompletions().catch((error: unknown) => {
           console.error(error);
           return [];
