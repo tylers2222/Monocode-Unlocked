@@ -102,6 +102,33 @@ it("ends what a reload of the window left before it loads any session", async ()
   expect(order).toContain("session_get");
 });
 
+// Review r1 (V1 m3). Defect: boot reads a saved session while the Mono roster
+// is still empty, so a Mono chat loads through `session_get`.
+it("reads no saved session until the Mono roster has loaded", async () => {
+  savedWorkspace();
+  let loadRoster!: () => void;
+  const roster = new Promise<void>((resolve) => (loadRoster = resolve));
+  const { loadBootWorkspace } = await import("./appLifecycle");
+  const booting = loadBootWorkspace(roster);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(store.getSession).not.toHaveBeenCalled();
+
+  loadRoster();
+  await booting;
+  expect(store.getSession).toHaveBeenCalledWith("session-0", { restart: true });
+});
+
+it("still boots when the Mono roster fails to load", async () => {
+  const sessions = savedWorkspace();
+  const { loadBootWorkspace } = await import("./appLifecycle");
+  const { resumed } = await loadBootWorkspace(
+    Promise.reject(new Error("monos_list failed")),
+  );
+  expect(resumed?.sessions.map((session) => session.id)).toEqual(
+    sessions.map((session) => session.id),
+  );
+});
+
 // With no saved workspace, the chats that were running come back one tab each.
 // Boot opens the default workspace, so each tab is pinned to its project
 // folder, including one whose chat works in a worktree.
