@@ -185,7 +185,7 @@ export function tabCopy(tab: Tab): {
   tooltip: string;
 } {
   if (tab.appView) {
-    const headline = APP_VIEW_LABELS[tab.appView];
+    const headline = tab.title || APP_VIEW_LABELS[tab.appView];
     return { headline, meta: "", tooltip: headline };
   }
   if (tab.mono) return { headline: tab.title, meta: "", tooltip: tab.title };
@@ -900,7 +900,7 @@ function TitleBarComponent({
   const systemTitle = useMemo(() => {
     const activeName = activeTab
       ? activeTab.appView
-        ? APP_VIEW_LABELS[activeTab.appView]
+        ? activeTab.title || APP_VIEW_LABELS[activeTab.appView]
         : activeTab.mono
           ? activeTab.title
           : activeTab.files[0]

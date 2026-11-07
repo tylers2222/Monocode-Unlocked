@@ -170,6 +170,8 @@ import {
 } from "./shell/TitleBar";
 import {
   APP_VIEW_LABELS,
+  AUTOMATIONS_PAGE_LABELS,
+  type AutomationsPage,
   appViewForTab,
   appViewTabId,
   isViewTab,
@@ -1470,9 +1472,8 @@ function Workspace({
   // Milestones and Approvals are pages of the Automations area: one flag
   // closes any of them.
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
-  const [automationsPage, setAutomationsPage] = useState<
-    "automations" | "milestones" | "approvals"
-  >("automations");
+  const [automationsPage, setAutomationsPage] =
+    useState<AutomationsPage>("automations");
   const [openAppViews, setOpenAppViews] = useState<AppView[]>([]);
   // Monos open as title tabs in the inset layout, by Mono id.
   const [openMonoTabs, setOpenMonoTabs] = useState<string[]>([]);
@@ -12596,7 +12597,10 @@ function Workspace({
               id: appViewTabId(view),
               appView: view,
               project: "",
-              title: APP_VIEW_LABELS[view],
+              title:
+                view === "automations"
+                  ? AUTOMATIONS_PAGE_LABELS[automationsPage]
+                  : APP_VIEW_LABELS[view],
               more: [],
               sessionCount: 0,
               harnesses: [],
@@ -13003,7 +13007,7 @@ function Workspace({
   }, []);
 
   const openAutomationsPage = useCallback(
-    (page: "automations" | "milestones" | "approvals") => {
+    (page: AutomationsPage) => {
       workspaceNavigation.cancel();
       startTransition(() => {
         closeMonoView();

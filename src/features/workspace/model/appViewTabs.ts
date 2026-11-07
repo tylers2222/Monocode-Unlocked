@@ -7,6 +7,15 @@ export const APP_VIEW_LABELS = {
 
 export type AppView = keyof typeof APP_VIEW_LABELS;
 
+/** The pages the Automations view shows, under one title tab. */
+export const AUTOMATIONS_PAGE_LABELS = {
+  automations: "Automations",
+  milestones: "Milestones",
+  approvals: "Approvals",
+} as const;
+
+export type AutomationsPage = keyof typeof AUTOMATIONS_PAGE_LABELS;
+
 export function appViewTabId(view: AppView): string {
   return `app-view:${view}`;
 }
