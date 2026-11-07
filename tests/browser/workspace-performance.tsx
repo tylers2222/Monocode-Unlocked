@@ -208,6 +208,15 @@ const fixtureInvoke = async (
   )
     return;
   if (command === "quick_composer_take") return null;
+  if (command === "control_owns_session") return false;
+  if (
+    command === "control_loaded_sessions" ||
+    command === "mono_completions_hold"
+  )
+    return;
+  if (command === "spaces_list")
+    return [{ id: "space-1", name: "Space 1", color: null, createdAt: 1 }];
+  if (command === "approvals_open_counts") return { total: 0, byProject: {} };
   throw new Error(`Unavailable fixture service: ${command}`);
 };
 Object.assign(window, {
