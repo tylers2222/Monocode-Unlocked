@@ -160,6 +160,18 @@ test("hidden tabs mount no transcript or Composer and keep their place", async (
   await scroller.hover();
   await page.mouse.wheel(0, -700);
   await expect.poll(() => distanceFromBottom(scroller)).toBeGreaterThan(300);
+  // The wheel can still be landing its last pixels; measure once it rests.
+  await expect
+    .poll(() =>
+      scroller.evaluate(
+        (el) =>
+          new Promise<boolean>((resolve) => {
+            const before = el.scrollTop;
+            setTimeout(() => resolve(el.scrollTop === before), 150);
+          }),
+      ),
+    )
+    .toBe(true);
   const offset = await distanceFromBottom(scroller);
 
   await showTab(page, "Billing");

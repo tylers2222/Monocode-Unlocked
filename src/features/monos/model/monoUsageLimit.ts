@@ -25,8 +25,8 @@ import type { RouteGrantDuration } from "../../settings/model/settings";
 import {
   expiredRouteGrant,
   formatUsageLimitReset,
-  onProviderAccount,
   resumeUsageLimitedSession,
+  withUsageLimitAccount,
 } from "../../sessions/model/usageLimit";
 import { enqueueMonoMessage } from "./monoMessaging";
 
@@ -43,10 +43,12 @@ export function resumeMonoUsageLimit(session: Session): Session {
       });
 }
 
-/** Account-owned threads need a fresh connection with a transcript handoff. */
+/** Continue under another account, carrying the native transcript when it
+ * was copied there, otherwise through a transcript handoff. */
 export function switchMonoUsageLimitAccount(
   session: Session,
   accountId: string,
+  carried = false,
 ): Session {
   if (
     !session.usageLimit ||
@@ -54,7 +56,9 @@ export function switchMonoUsageLimitAccount(
     sameProviderAccountId(session.providerAccountId, accountId)
   )
     return session;
-  return resumeMonoUsageLimit(onProviderAccount(session, accountId));
+  return resumeMonoUsageLimit(
+    withUsageLimitAccount(session, accountId, carried),
+  );
 }
 
 /** The usage-limit card's lengths. Settings only picks the one preselected. */

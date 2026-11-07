@@ -79,13 +79,21 @@ class SelectorOnRealDiffs(unittest.TestCase):
         jobs, _ = self.runs(PR_436_RUST)
         self.assertEqual(jobs, {"check", "rpm", "e2e-linux", "e2e-macos"})
 
-    def test_rust_with_a_src_model_adds_browser_and_host(self):
+    def test_rust_with_a_src_model_adds_browser_host_and_mobile(self):
         jobs, _ = self.runs(PR_444_RUST_TS)
-        self.assertEqual(jobs, {"browser", "host", "check", "rpm", "e2e-linux", "e2e-macos"})
+        self.assertEqual(jobs, {"browser", "host", "check", "rpm", "e2e-linux", "e2e-macos", "mobile"})
 
-    def test_src_only_runs_front_end_check_and_e2e_without_packaging(self):
+    def test_src_only_runs_front_end_check_mobile_and_e2e_without_packaging(self):
         jobs, _ = self.runs(PR_417_UI)
-        self.assertEqual(jobs, {"browser", "host", "check", "e2e-linux", "e2e-macos"})
+        self.assertEqual(jobs, {"browser", "host", "check", "e2e-linux", "e2e-macos", "mobile"})
+
+    def test_mobile_app_and_native_app_run_only_their_job(self):
+        self.assertEqual(self.runs(["mobile/src/app/index.tsx"])[0], {"mobile"})
+        self.assertEqual(self.runs(["crates/monocode-gpui/src/main.rs", "scripts/native-release.mjs"])[0], {"native"})
+
+    def test_mobile_link_runs_every_job_that_builds_src_tauri(self):
+        jobs, _ = self.runs(["crates/mobile-link/src/lib.rs"])
+        self.assertEqual(jobs, {"check", "rpm", "e2e-linux", "e2e-macos", "native"})
 
     def test_scripts_only_runs_no_gated_job(self):
         jobs, reason = self.runs(PR_429_SCRIPT)
@@ -146,7 +154,7 @@ class FileClasses(unittest.TestCase):
     def test_globs_keep_single_star_inside_one_folder(self):
         self.assertEqual(classes(["notes.md", "src/notes.md", "src-tauri/src/remote_bootstrap.sh"]), {
             "notes.md": "none",
-            "src/notes.md": "browser,check,e2e-linux,e2e-macos,host",
+            "src/notes.md": "browser,check,e2e-linux,e2e-macos,host,mobile",
             "src-tauri/src/remote_bootstrap.sh": "check,e2e-linux,e2e-macos,host,rpm",
         })
 

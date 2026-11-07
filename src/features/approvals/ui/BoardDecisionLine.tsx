@@ -91,8 +91,11 @@ export function QueuedDecisionRow({
   children?: ReactNode;
 }) {
   return (
-    <div data-queued-decision className="flex gap-2 py-1.5 text-[12px]">
-      <ListEnd className="mt-px size-3.5 shrink-0 text-content/60" />
+    <div
+      data-queued-decision
+      className="flex min-h-8 gap-2.5 py-1.5 text-[12px]"
+    >
+      <ListEnd className="mt-px size-3.5 shrink-0 text-content/35" />
       <div className="min-w-0 flex-1">
         <div className="text-[11px] text-content/70">
           Decision from the approvals board · not sent yet

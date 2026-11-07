@@ -502,7 +502,10 @@ test("the rail row from a new session in another project opens the running sessi
   await runningWithNoTab(app, page);
   // A blank session's tab takes the running session in place of its pane.
   await page.getByRole("button", { name: "New session (⌘T)" }).click();
-  await expect(page.getByRole("heading", { name: "What should we work on in notes?" })).toBeVisible();
+  // The title hides in a pane narrower than the composer; it still names the project.
+  await expect(
+    page.getByRole("heading", { name: "What should we work on in notes?", includeHidden: true }),
+  ).toBeAttached();
   await railProject(page, "acme").click();
   await expectOnRunningAcmeSession(page);
 });
@@ -649,7 +652,7 @@ test("restoring an archived project in Settings opens its running session", asyn
     .getByRole("button", { name: /Restore/ })
     .first()
     .click();
-  await rail(page).getByRole("button", { name: "Back", exact: true }).click();
+  // Opening the restored project leaves Settings by itself.
   await expectOnRunningAcmeSession(page);
 });
 

@@ -76,27 +76,28 @@ export function replaceMentionToken(
   return `${text.slice(0, token.start)}@${label}${spacer}${rest}`;
 }
 
-const sharedIndexes = new WeakMap<
-  ProjectFile[],
-  WeakMap<ProjectFile[], MentionIndex>
->();
+const sharedIndexes = new WeakMap<ProjectFile[], Map<string, MentionIndex>>();
 
-/** One index per listing, shared by every Composer that shows it. */
+/**
+ * Every composer of a checkout holds the same cached listing, and a large one
+ * takes tens of milliseconds to index. Build it once per listing and extras
+ * (notes) instead of once per composer, hidden tabs included.
+ */
 export function sharedMentionIndex(
   files: ProjectFile[],
   extras: ProjectFile[] = [],
 ): MentionIndex {
-  // Every empty extras list shares one key: the listing itself.
-  const key = extras.length === 0 ? files : extras;
+  const key = extras
+    .map((file) => `${file.path}\n${file.relative}\n${file.name}`)
+    .join("\n\n");
   let byExtras = sharedIndexes.get(files);
-  if (!byExtras) {
-    byExtras = new WeakMap();
-    sharedIndexes.set(files, byExtras);
-  }
+  if (!byExtras) sharedIndexes.set(files, (byExtras = new Map()));
   let index = byExtras.get(key);
   if (!index) {
-    index = buildMentionIndex([...files, ...extras]);
+    index = buildMentionIndex(extras.length ? [...files, ...extras] : files);
     byExtras.set(key, index);
+    // Older note sets are not asked for again; drop them with the listing kept.
+    if (byExtras.size > 4) byExtras.delete(byExtras.keys().next().value!);
   }
   return index;
 }

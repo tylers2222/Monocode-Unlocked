@@ -17,9 +17,11 @@ type Listener = () => void;
 
 // Tabs in separate worktrees should not evict each other's file index.
 const cache = new Map<string, ProjectFile[]>();
-// Invalidated listings stay cached so an unchanged rescan can keep the array.
-const stale = new Set<string>();
 const inflight = new Map<string, Promise<ProjectFile[]>>();
+// Last listing per checkout, kept through invalidation: agents' shell and edit
+// tools rescan after every call, and an unchanged rescan must keep its array so
+// every composer's mention index is not rebuilt.
+const listings = new Map<string, ProjectFile[]>();
 let lastCwd: string | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshing = false;
@@ -43,18 +45,18 @@ export function subscribeProjectFiles(listener: Listener): () => void {
 }
 
 export function peekProjectFiles(cwd: string): ProjectFile[] | null {
-  return stale.has(cwd) ? null : (cache.get(cwd) ?? null);
+  return cache.get(cwd) ?? null;
 }
 
 export function invalidateProjectFiles(cwd?: string) {
   if (cwd) {
-    if (peekProjectFiles(cwd) == null && !inflight.has(cwd)) return;
-    stale.add(cwd);
+    if (!cache.has(cwd) && !inflight.has(cwd)) return;
+    cache.delete(cwd);
     inflight.delete(cwd);
   } else {
     cache.clear();
-    stale.clear();
     inflight.clear();
+    listings.clear();
     lastCwd = null;
     if (refreshTimer != null) {
       clearTimeout(refreshTimer);
@@ -120,7 +122,7 @@ export function loadProjectFiles(
 ): Promise<ProjectFile[]> {
   if (!looksLikeProject(cwd)) return Promise.resolve([]);
   lastCwd = cwd;
-  const cached = peekProjectFiles(cwd);
+  const cached = cache.get(cwd);
   if (!refresh && cached) {
     // Bound retained listings by least-recently-used worktree.
     cache.delete(cwd);
@@ -131,22 +133,21 @@ export function loadProjectFiles(
   if (!refresh && pending) return pending;
 
   const promise = listProjectFiles(cwd)
-    .then((files) => {
+    .then((scanned) => {
       // A refresh or invalidation supersedes only this checkout's scan.
-      if (inflight.get(cwd) !== promise) return files;
-      const prior = cache.get(cwd);
-      const wasStale = stale.delete(cwd);
-      // Keep an unchanged listing's identity so nothing derived from it rebuilds.
-      const listing = prior && sameListing(prior, files) ? prior : files;
+      if (inflight.get(cwd) !== promise) return scanned;
+      const previous = listings.get(cwd);
+      const files =
+        previous && sameListing(previous, scanned) ? previous : scanned;
+      listings.delete(cwd);
+      listings.set(cwd, files);
+      if (listings.size > CACHE_LIMIT * 2)
+        listings.delete(listings.keys().next().value!);
       cache.delete(cwd);
-      cache.set(cwd, listing);
-      if (cache.size > CACHE_LIMIT) {
-        const oldest = cache.keys().next().value!;
-        cache.delete(oldest);
-        stale.delete(oldest);
-      }
-      if (listing !== prior || wasStale) notifyProjectFilesChanged();
-      return listing;
+      cache.set(cwd, files);
+      if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+      if (files !== previous) notifyProjectFilesChanged();
+      return files;
     })
     .finally(() => {
       if (inflight.get(cwd) === promise) inflight.delete(cwd);

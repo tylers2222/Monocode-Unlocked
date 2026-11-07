@@ -12,7 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Giga workspace**: Giga Monos share the git repo `~/MonoCode`, one folder per Giga under `gigas/<slug>/`. MonoCode creates what is missing at start, when Giga is turned on, and before every Giga turn and habit run, and never overwrites your files. After each Giga turn it appends a receipt to the Giga's `log.jsonl` that names the files the turn wrote, and rebuilds the search index `index/index.db`. It commits that Giga's folder only when the turn changed more than the log, so a turn that only adds its receipt makes no commit and the receipt goes into the next one. `~/MonoCode` shows in the Projects sidebar unless you archived it. A pre-commit hook keeps each Giga to its own folder and refuses secret-looking files. `app workspace.status` reports the workspace state.
 - **"MonoCode" is reserved for the Giga workspace.** A folder named MonoCode (in any letter case, with spaces around it ignored) can become a project only at `~/MonoCode`. "Open folder…", "Open folder on a machine…" and following a moved project folder refuse any other one with "MonoCode is reserved for the Giga workspace. Rename the folder or choose another." A folder on another machine is never the workspace. A project cannot be renamed to MonoCode either. The project menu and the archived projects list have no Archive or Delete for `~/MonoCode`. A project named MonoCode that was added before keeps working, and MonoCode tells you about it once, suggesting to rename its folder. App CLI actions that name a project that is already in MonoCode (`approvals.file` `project`, `monos.create` and `monos.update` `projects`) take it whatever its folder is named; they refuse a folder named MonoCode that is not a project yet with the same message.
 - **Giga Monos**: turn on **Giga Mono** in a Mono's settings to let it create Monos and change other Monos' harness, model, name and projects through the app CLI (`monos.create`, `monos.update`). `monos.get` shows one Mono with its harness and model, and `monos.list` shows each Mono's role. Failures of these actions carry a `code` and a `hint`. Giga Monos have their own sidebar section above Monos. Other Monos and sessions are refused.
-- Remote hosts can run on **Linux without systemd**, such as containers and Firecracker microVMs. Setup starts the host as a detached background process there instead of a systemd user service, so it keeps running after SSH disconnects, and the next connect starts it again if it has stopped. Machines with systemd keep the user service and lingering.
 - Operator CLI `sessions.send` can **steer or queue a follow-up on a busy session** with `whenBusy`. `"steer"` adds the prompt to the running turn, the same as Steer in MonoCode. `"followUp"` adds it to the session's follow-up queue, where the user can see, edit, or remove it. It is sent after the turn ends, unless the queue is paused, for example after Stop. Without `whenBusy`, a busy session is still rejected, and a busy Mono's own chat does not accept `whenBusy`. The result reports `delivery` as `sent`, `steered`, or `queued`, with `queuedMessageId` for queued messages. A CLI steer to Hermes, or to a harness that cannot steer mid-turn, returns an error instead of queuing. Retries with the same `--request-id` do not deliver the message twice, and `notifyOnComplete` reports when the turn that uses the message ends. omp reads steering between tool calls; current omp can move a long shell command to the background, so the steer arrives while that command runs.
 - Monos can list and read other Monos through the app CLI (`monos.list`, `monos.read`).
 - **Mono messaging tools**: `app messages.get_monos`, `app messages.send` and `app messages.reply`. MonoCode decides who sends, who receives and where a message goes, and keeps every message in `monocode.db`. A Mono gives the text, the target (a Mono, or a session in one of its projects), `wanting_reply` (required) and `intent` (required). `messages.reply` answers the message that waits for an answer and sends it back to the sender's chat. A call made again with the same request ID returns the first result and delivers nothing again, also after a restart. Failures carry a `code` and a `hint`, such as `self_send`, `unknown_target`, `too_large` (over 8000 characters) or `ambiguous_reply`. The CLI answers `no_token` when the agent was not started by MonoCode, and `app_cli_unavailable` for an Inbox Ask, an orchestration session or a closed one.
@@ -51,6 +50,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A message that waits for a Mono's turn to end, such as a message from another Mono queued until the turn ends, no longer holds back the messages you type after it. While the Mono works, your messages steer the running turn in the order you sent them, and the waiting message keeps its place and starts a new turn when the current one ends. Its bubble says "Sends when this turn ends". After a restart, messages that were not sent say "Paused when MonoCode quit" next to Resume. A follow-up that the provider refused for a moment no longer stops later follow-ups for the rest of the turn; the next tool call or reply lets them through again.
 - A Mono whose queue MonoCode paused sends it again on its own. A queue that a quit paused sends at relaunch with no click. A queue that a failed turn paused resumes after that turn, up to three times in a row; a turn that ends well starts the count again. A queue you paused with Stop still waits for Resume.
 - An omp turn that recovers from a stream stall in the same turn no longer shows an error at its end or pauses the queue behind it.
+
+## [0.16.0] - 2026-10-19
+
+### Added
+
+- Pair an iPhone from **Settings → Connections → Your phones** to browse projects and conversations, start and continue sessions, follow streamed replies, stop responses, and view code changes. The iPhone companion is currently an **invite-only TestFlight beta**.
+- Swipe between projects in the new sidebar.
+- Project and Inbox actions have keyboard-accessible context menus in the new sidebar.
+
+### Fixed
+
+- The new sidebar keeps **Open project** and **Settings** available before a project is selected.
+- The empty conversation view no longer scrolls a few pixels around the message input.
+- The message input's blurred background stays within its rounded corners on Windows.
+- Phone connections on Windows accept both IPv4 and IPv6.
+
+## [0.15.0] - 2026-10-18
+
+### Added
+
+- An optional **New layout** brings a redesigned sidebar, project switcher, workspace tabs and right panel. Try it from the invitation or Settings > Appearance > Layout, where it can also be turned off to return to the classic layout. Glass remains a separate setting.
+- A **Resource pressure** indicator in the usage footer opens a process view with CPU and memory usage, controls to stop agents and sessions, and controls to stop individual running tools. In #1045 by @hardbeat920.
+- **Smooth text reveal** in Settings → Chat controls whether incoming reply bursts appear gradually or immediately. It is enabled by default. In #1045 by @hardbeat920.
+- The new layout's right panel has a **History** tab with a searchable, refreshable Git history graph. Its tabs can be dragged to reorder.
+- A session that hits a usage limit can **continue on another provider account**. Claude and Codex conversations are copied to the chosen account so the same session resumes there; if the copy fails, it continues from a handoff summary.
+- Sessions started by an operator are grouped under the session that started them in the sidebar.
+
+### Changed
+
+- The footer's **High usage** warning opens a compact view of running sessions, with one Stop button per session. Process details expand when needed, and long lists scroll inside the dialog.
+- Large conversations and busy workspaces stay more responsive: recent transcripts retain their rendered state across tab switches, code highlighting and large diffs run in workers, and navigation avoids unnecessary layout measurements. Large tool output loads when expanded. In #1045 by @hardbeat920.
+- Background Git work and agent tool processes receive lower scheduling priority where supported. Resource pressure reduces retained transcript memory while preserving session history. In #1045 by @hardbeat920.
+- In the new layout, the **terminal panel and split panes slide** open and closed, pushing the workspace aside. A file pane slides in with its tabs and fades its contents in once loaded.
+- Code in the editor, diffs, and replies uses the **VS Code Dark+ and Light+** colors, with a shared code font size for the editor and diffs.
+- Review tabs stay open across editor navigation, keeping their folds and scroll position. Unified diffs render faster, with syntax highlighting in the background, and commit diffs are not refetched when shown again.
+- In the new layout, the session sidebar shortcut (⌘⇧B) toggles the right panel, and Inbox, Notes, and Automations show the active project's items.
+- Glass in the new layout uses native macOS blur.
+- Session review cards and the message queue have lighter, more consistent styling.
+
+### Fixed
+
+- Turning off **Transparent window** keeps the new layout opaque when themes change, including native appearance updates before the layout has mounted. The setting now clearly describes its transparency behavior.
+- Completing a reply, changing a file pane's width, or returning to a cached conversation preserves the reader's position and keeps a following conversation at its reply. Completed provider bursts continue their text reveal without jumping the transcript. In #1045 by @hardbeat920.
+- Session streaming avoids unnecessary background rerenders and repeated history work. Composer resizing and decorative transcript measurements no longer force repeated workspace layout during navigation. In #1045 by @hardbeat920.
+- Notification sounds suspend their audio context after playback finishes, reducing idle resource use. In #1045 by @hardbeat920.
+- Moving focus no longer rechecks the whole page's styles, which took about 45 ms with a long transcript open. In #1038 by @zcy22606.
+- Agent tool calls no longer rebuild every open composer's @-mention index when nothing on disk changed. In #1029 by @zcy22606.
+- Keystrokes no longer search the whole page for an active shortcut recorder. In #1028 by @zcy22606.
+- Revisiting a tab no longer replays its transcript animations.
+- Closing tabs around Mono and app view tabs keeps the right workspace visible, and switching between them no longer flickers.
+- Title bars and the project rail leave room for the window controls in macOS full screen.
+- Model pickers and popovers fit short or zoomed windows without clipping rows.
+- Empty sessions lay out correctly in narrow or short panes.
+- Translucent cards render without flicker on macOS.
+
+
+## [0.14.0] - 2026-10-17
+
+### Added
+
+- The Mono overview has an **Activity** tab showing its current work and completed activity. Reports from habit runs also list the sessions they started.
+- Project groups in the rail support **drag to reorder**. In #787 by @nwoolls.
+- The compact rail has instant hover tooltips and an unseen-reply dot on its Sessions tab.
+- Remote hosts can run on **Linux without systemd**, including containers and Firecracker microVMs. Setup uses a detached background process there and reconnecting starts it again if needed; machines with systemd keep their user service and lingering. In #990 by @pdparchitect.
+- The workspace tab context menu has **Close All Tabs**, with the same unsaved-file and terminal confirmations as the File menu. In #1005 by @pdparchitect.
+- Syntax highlighting supports **Vue, Svelte, SCSS, Sass, and Less files**. In #892 by @RealDewKJ.
+- The editor highlights **.env files**. In #915 by @MrWeb.
+- Terminal hyperlinks can be clicked to open them. In #782 by @nwoolls.
+- Notification sounds also play when an agent asks a question or needs approval. In #801 by @kartava.
+- The keybindings settings list the Escape shortcut for stopping a run. In #897 by @RealDewKJ.
+
+### Changed
+
+- Mono chats use a more compact composer and model controls in narrow panes. Replies no longer have bubble tails, the Mono introduction appears as an inline rail card, unread badges use the accent color, and document readers have tighter spacing.
+- Model pickers group **omp, Pi, and Hermes** models by provider. In #765 by @nwoolls.
+- Claude model labels make their versions easier to distinguish. In #937 by @oskar-albers.
+- Pi and Codex turn token totals include every request in the turn. In #884 by @zcy22606.
+- Previewable files remember the last **Preview or Source** choice. In #929 by @ognjeeen.
+
+### Fixed
+
+- Typing in a composer on macOS no longer rechecks the whole page's styles for each keystroke. In #985 by @zcy22606.
+- The composer runner stops its animation loop while its tab is in the background. In #975 by @zcy22606.
+- A blank session keeps the provider account selected for its own project. In #967 by @watzon.
+- Saved Claude model versions show their settings on first open. In #938 by @50BytesOfJohn.
+- omp model discovery loads extensions. In #846 by @Plume-coder.
+- Asynchronously registered Pi provider models are awaited during discovery. In #921 by @pchuri.
+- Skills remain discoverable when their 16 KiB preview ends partway through a UTF-8 character. In #978 by @keyCat.
+- Replayed Claude background-task notifications no longer end a resumed turn early. In #532 by @itizarsa.
+- A consumed handoff recap is not resent on later turns. In #880 by @zcy22606.
+- Refused fast mode is not reported as a session usage limit. In #958 by @zcy22606.
+- Punctuation-only assistant text does not create a transcript reply. In #763 by @Erickzao.
+- Sending a message during a running turn preserves its existing clock. In #1021 by @zcy22606.
+- Title-bar and Mono overview buttons keep consistent sizing, and branch and commit menus remain anchored to their controls.
+- A session whose worktree was deleted outside the app can select another checkout. In #883 by @zcy22606.
+- Remote session diffs use their linked worktree. In #887 by @santhiprakash.
+- Quoted Git diff paths are read literally. In #815 by @Slowper.
+- Git LFS works when MonoCode is launched from Finder: Git commands include Homebrew and other common install locations on their PATH, plus the terminal's PATH once available. In #1004 by @pdparchitect.
+- Selecting the **whole last paragraph** of a reply opens the Add to chat and Add to notes menu. In #1001 by @pdparchitect.
+- Wrapped diff lines place scrollbar change markers at their rendered positions. In #1002 by @pdparchitect.
+- **Markdown file previews** display local Markdown and HTML images, including centered headers, tables, and picture elements, while preserving dimensions and alignment. Paths resolve within the project; missing, invalid, remote, or out-of-project images fall back to their alt text. In #1027 by @pdparchitect.
+- Right-clicking empty window space no longer opens a native menu offering only **Reload**. Reload remains in the View menu, and controls keep their applicable native menus. In #1003 by @pdparchitect.
+- The footer's **Terminal** button toggles its panel and reflects its pressed state. In #784 by @rxchitrx.
+- HTML artifacts render their surface, muted, and border theme colors opaquely. In #1020 by @rxchitrx.
+- macOS development bundles retain correct version metadata. In #983 by @MRKups.
 
 ## [0.13.0] - 2026-10-12
 
@@ -1521,7 +1625,10 @@ First public release. macOS (Apple Silicon) only.
 - Updater endpoint and minisign public key are injected at release time rather than committed, so forks do not inherit the maintainer's update channel.
 - macOS release builds sign with `APPLE_SIGNING_IDENTITY` via a config overlay; the committed default remains ad-hoc `-` for community builds.
 
-[Unreleased]: https://github.com/hardbeat920/monocode/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/hardbeat920/monocode/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/hardbeat920/monocode/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/hardbeat920/monocode/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/hardbeat920/monocode/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/hardbeat920/monocode/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/hardbeat920/monocode/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/hardbeat920/monocode/compare/v0.10.0...v0.11.0

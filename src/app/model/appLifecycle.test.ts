@@ -549,7 +549,7 @@ describe("claiming the Mono completion results at boot", () => {
     });
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { loadBootWorkspace } = await import("./appLifecycle");
-    await expect(loadBootWorkspace()).resolves.toMatchObject({
+    await expect(loadBootWorkspace(Promise.resolve())).resolves.toMatchObject({
       monoCompletions: [],
     });
     expect(logged).toHaveBeenCalledWith(new Error("store busy"));
