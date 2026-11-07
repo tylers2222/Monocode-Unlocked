@@ -919,11 +919,24 @@ const HANDLERS: Record<string, Handler> = {
   notes_list: empty,
   resolve_project_location: (_, { path }) => ({ path, identity: path }),
   quick_composer_prepare: () => false,
+  mobile_status: () => ({
+    enabled: false,
+    listening: false,
+    name: "Desktop",
+    fingerprint: null,
+    openRouter: true,
+    remoteAddress: "",
+    routerStatus: "Off",
+    addresses: [],
+    devices: [],
+  }),
+  resource_usage: () => ({ cpuPercent: 20, memoryPressure: 1 }),
   "plugin:app|version": () => "0.0.0-test",
   "plugin:app|identifier": () => "com.monocode.desktop",
   "plugin:app|bundle_type": none,
   "plugin:updater|check": none,
   "plugin:window|is_maximized": () => false,
+  "plugin:window|is_fullscreen": () => false,
 };
 
 /** mono_roster.rs `MonoUpdate`. */
