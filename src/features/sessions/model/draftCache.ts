@@ -35,6 +35,15 @@ const drafts = new Map<string, string>();
 const mcpTags = new Map<string, McpTag[]>();
 const stashes = new Map<string, ComposerStash>();
 
+const EMPTY_STASH: ComposerStash = {
+  attachments: [],
+  borrowedAttachmentIds: [],
+  plan: false,
+  operator: false,
+  orchestration: false,
+  draft: false,
+};
+
 export function getComposerDraft(sessionId: string): string | undefined {
   return drafts.get(sessionId);
 }
@@ -82,15 +91,6 @@ export function setComposerStash(
     stashes.delete(sessionId);
   }
 }
-
-const EMPTY_STASH: ComposerStash = {
-  attachments: [],
-  borrowedAttachmentIds: [],
-  plan: false,
-  operator: false,
-  orchestration: false,
-  draft: false,
-};
 
 /** Records what changed in a mounted Composer, so a remount finds it. */
 export function updateComposerStash(

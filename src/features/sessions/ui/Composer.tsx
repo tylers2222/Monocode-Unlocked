@@ -429,9 +429,7 @@ export function Composer({
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
-  // What this session's Composer left unsent when its pane was last hidden.
-  // Every change is written through, so a Composer that mounts in the same
-  // commit as the old one unmounts still reads the latest.
+  // Unsent files and modes, written through to the cache on every change.
   const [stash] = useState(() =>
     sessionId ? getComposerStash(sessionId) : undefined,
   );
