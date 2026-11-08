@@ -89,6 +89,31 @@ impl Default for Live {
     }
 }
 
+/// Whether a hold reading moves the last tick on by `Instant`. On macOS
+/// and Linux `Instant` is the clock the tick adds, which stops during
+/// sleep. On Windows it counts sleep, so a reading in the second after a
+/// wake would run up to one step ahead: a hold stamped then would stay open
+/// past its client's cut (fails open), and one checked then would time out
+/// early, which is harmless as the client's own `Instant` ran ahead too.
+/// There the reading stays at the last tick instead: it lags by up to a
+/// tick, so a hold stamped then times out early (fails closed), but while
+/// the tick stalls a hold whose client stopped closes up to the stall late
+/// (#547).
+const EXTRAPOLATE: bool = !cfg!(windows);
+
+/// The last tick `(active, when it read its clock)` at `at`: moved on by
+/// the time since, at most the step the next tick may add, so a stalled
+/// tick (App Nap, a busy store) does not hold the clock back.
+fn reading((active, ticked): (i64, Instant), at: Instant, extrapolate: bool) -> i64 {
+    if !extrapolate {
+        return active;
+    }
+    let since = at
+        .saturating_duration_since(ticked)
+        .min(crate::active_clock::MAX_STEP);
+    active.saturating_add(i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -96,11 +121,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Live {
-    /// The clock thread's tick: taps measure against `active` from now on.
+    #[cfg(test)]
     pub(crate) fn set_now(&self, active: i64) {
         self.set_now_at(active, Instant::now());
     }
 
+    /// The clock's stamp: taps measure against `active` from now on, and
+    /// the hold reading moves on from `at`, when the clock read it.
     pub(crate) fn set_now_at(&self, active: i64, at: Instant) {
         *lock(&self.0.ticked) = Some((active, at));
     }
@@ -109,20 +136,11 @@ impl Live {
         lock(&self.0.ticked).map(|(active, _)| active)
     }
 
-    /// The active time at `at`, with no tick lag: the last tick moved on by
-    /// the time since it read its clock, at most the step the next tick may
-    /// add, so a stalled tick (App Nap, a busy store) does not hold the
-    /// clock back. On macOS and Linux `Instant` is the clock the tick adds,
-    /// which stops during sleep, so the reading never runs past the next
-    /// tick. Where `Instant` counts sleep (Windows), a reading in the second
-    /// after a wake can run up to one step ahead, and the tick then sets it
-    /// back, so a hold timed then closes up to that much late.
+    /// The active time at `at`, with no tick lag where [`EXTRAPOLATE`]
+    /// holds, else the last tick's.
     pub(crate) fn now_at(&self, at: Instant) -> Option<i64> {
-        let (active, ticked) = (*lock(&self.0.ticked))?;
-        let since = at
-            .saturating_duration_since(ticked)
-            .min(crate::active_clock::MAX_STEP);
-        Some(active.saturating_add(i64::try_from(since.as_millis()).unwrap_or(i64::MAX)))
+        let ticked = (*lock(&self.0.ticked))?;
+        Some(reading(ticked, at, EXTRAPOLATE))
     }
 
     fn record(&self, session: &SessionId, write: Write) {
@@ -299,19 +317,36 @@ mod tests {
 
     // Defect: a hold reads the clock its last tick left, so a tick that
     // stalled for seconds makes a live hold client look idle; or the
-    // reading runs past what the next tick adds.
+    // reading runs past what the next tick adds; or, where `Instant`
+    // counts sleep, it runs on past the tick and a hold stamped after a
+    // wake stays open past its client's cut.
     #[test]
     fn the_live_reading_moves_on_from_the_last_tick_up_to_one_step() {
-        let live = Live::default();
         let ticked = Instant::now();
+        let at = |ms: u64, extrapolate| {
+            reading(
+                (40_000, ticked),
+                ticked + Duration::from_millis(ms),
+                extrapolate,
+            )
+        };
+        assert_eq!(
+            [0, 4_900, 90_000].map(|ms| at(ms, true)),
+            [40_000, 44_900, 70_000]
+        );
+        assert_eq!(
+            [0, 4_900, 90_000].map(|ms| at(ms, false)),
+            [40_000; 3],
+            "stays at the tick"
+        );
+        let live = Live::default();
         assert_eq!(live.now_at(ticked), None, "no clock runs here");
         live.set_now_at(40_000, ticked);
-        assert_eq!(live.now_at(ticked), Some(40_000));
-        assert_eq!(
-            live.now_at(ticked + Duration::from_millis(4_900)),
-            Some(44_900)
-        );
-        assert_eq!(live.now_at(ticked + Duration::from_secs(90)), Some(70_000));
+        let later = live.now_at(ticked + Duration::from_millis(4_900));
+        #[cfg(not(windows))]
+        assert_eq!(later, Some(44_900));
+        #[cfg(windows)]
+        assert_eq!(later, Some(40_000), "Instant counts sleep here");
         assert_eq!(live.now(), Some(40_000), "taps still read the tick");
     }
 

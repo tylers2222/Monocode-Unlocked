@@ -18,6 +18,9 @@ pub use classify::{classify, Wait, WaitKind};
 /// wait ends here and the app closes the hold here, so a logged decision
 /// is always one the client received (lead ruling, H risk 1).
 pub const ANSWER_CUT: Duration = Duration::from_secs(115);
+/// The longest `hold.wait`: the client asks for at most this, the app
+/// serves at most this inside its 35 s reply window and refuses more.
+pub const MAX_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

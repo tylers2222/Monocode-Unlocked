@@ -3140,7 +3140,12 @@ pub(crate) mod tests {
         for timeout in &extremes {
             assert_eq!(wait(timeout)["code"], "invalid_input", "{timeout}");
         }
+        let given_back = Instant::now() + Duration::from_secs(5);
+        while host.running_waits() > 0 && Instant::now() < given_back {
+            std::thread::yield_now();
+        }
         let taken: Vec<_> = std::iter::from_fn(|| host.take_wait()).collect();
+        assert_eq!(taken.len(), 64, "the refused waits gave their places back");
         for timeout in &extremes {
             assert_eq!(
                 wait(timeout)["code"],

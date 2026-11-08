@@ -76,12 +76,14 @@ fn ns(ms: i64) -> u64 {
 
 impl Clock for FakeClock {
     fn now(&mut self) -> Reading {
-        self.0.read_at.set(Some(Instant::now()));
+        let read_at = Instant::now();
+        self.0.read_at.set(Some(read_at));
         Reading {
             uptime_ns: self.0.uptime_ns.get(),
             monotonic_ns: self.0.monotonic_ns.get(),
             wall_ms: self.0.wall_ms.get(),
             boot_wall_ms: self.0.boot_wall_ms.get(),
+            read_at,
         }
     }
 }
@@ -276,7 +278,7 @@ impl World {
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
-        store.alarms.set_now(active.active_ms());
+        active.stamp(&store.alarms);
         self.app = Some(App { store, active });
     }
 

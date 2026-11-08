@@ -4,9 +4,9 @@
 //! downtime and sleep never make a deadline pass. A 1 s tick adds the
 //! uptime that passed, read straight from a clock that stops during sleep,
 //! never from `Instant` or a Tokio timer (Rust leaves their sleep behaviour
-//! unspecified). One exception: between ticks the lease holder's hold
-//! reading moves the last tick on by `Instant`, at most one step
-//! ([`crate::alarms::Live::now_at`]). Raw uptime is never stored: it
+//! unspecified). One exception, not on Windows: between ticks the lease
+//! holder's hold reading moves the last tick on by `Instant`, at most one
+//! step ([`crate::alarms::Live::now_at`]). Raw uptime is never stored: it
 //! restarts at every boot.
 //! Downtime and sleep are kept in `mono_downtime` only to explain delays.
 
@@ -22,9 +22,9 @@ use crate::session_store::SessionStore;
 
 /// The clocks the active clock reads. `uptime_ns` stops while the computer
 /// sleeps and `monotonic_ns` does not; both restart at boot. `boot_wall_ms`
-/// is the wall time the computer booted.
+/// is the wall time the computer booted. `read_at` is when they were read.
 pub trait Clock {
-    /// All four clocks at one instant, so a launch or a tick never mixes
+    /// All the clocks at one instant, so a launch or a tick never mixes
     /// values from two readings.
     fn now(&mut self) -> Reading;
 }
@@ -38,6 +38,11 @@ pub struct Reading {
     pub monotonic_ns: u64,
     pub wall_ms: i64,
     pub boot_wall_ms: i64,
+    #[cfg_attr(
+        any(feature = "fake-clock", test),
+        serde(skip, default = "Instant::now")
+    )]
+    pub read_at: Instant,
 }
 
 /// How often the app's thread ticks.
@@ -136,6 +141,7 @@ pub(crate) struct ActiveClock<C: Clock> {
     persisted_ns: u64,
     uptime_ns: u64,
     monotonic_ns: u64,
+    read_at: Instant,
     /// The `alarms::PASS_MS` slice the detector last ran in.
     alarm_slice: Option<i64>,
 }
@@ -184,6 +190,7 @@ impl<C: Clock> ActiveClock<C> {
             _lease: lease,
             uptime_ns: now.uptime_ns,
             monotonic_ns: now.monotonic_ns,
+            read_at: now.read_at,
             clock,
             active_ns,
             persisted_ns: active_ns,
@@ -201,7 +208,6 @@ impl<C: Clock> ActiveClock<C> {
         conn: &Connection,
         alarms: &crate::alarms::Sources,
     ) -> rusqlite::Result<Notices> {
-        let read_at = Instant::now();
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
@@ -210,6 +216,7 @@ impl<C: Clock> ActiveClock<C> {
             .saturating_sub(awake);
         self.uptime_ns = uptime;
         self.monotonic_ns = monotonic;
+        self.read_at = now.read_at;
         self.active_ns += awake.min(MAX_STEP.as_nanos() as u64);
         if slept >= SLEEP_MIN_NS {
             let wall = now.wall_ms;
@@ -227,7 +234,7 @@ impl<C: Clock> ActiveClock<C> {
             self.persisted_ns = self.active_ns;
         }
         let active = self.active_ms();
-        alarms.live.set_now_at(active, read_at);
+        self.stamp(alarms.live);
         let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
         // A hold fault must not stop the reminders or the clock either.
         if let Err(error) = crate::sleep_hold::service::sweep(conn, (active, now.wall_ms)) {
@@ -252,6 +259,12 @@ impl<C: Clock> ActiveClock<C> {
 
     pub(crate) fn active_ms(&self) -> i64 {
         ms(self.active_ns)
+    }
+
+    /// Hands `live` the active time as of the last read of the clocks, not
+    /// of the store writes after it.
+    pub(crate) fn stamp(&self, live: &crate::alarms::Live) {
+        live.set_now_at(self.active_ms(), self.read_at);
     }
 }
 
@@ -305,9 +318,7 @@ pub(crate) fn init<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
         return Ok(());
     };
     // Taps record from launch, not from the first tick.
-    app.state::<SessionStore>()
-        .alarms
-        .set_now(clock.active_ms());
+    clock.stamp(&app.state::<SessionStore>().alarms);
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
@@ -435,6 +446,7 @@ mod system {
 impl Clock for SystemClock {
     fn now(&mut self) -> Reading {
         Reading {
+            read_at: Instant::now(),
             uptime_ns: system::uptime_ns(),
             monotonic_ns: system::monotonic_ns(),
             wall_ms: crate::mono_messages::now_ms(),
@@ -483,7 +495,10 @@ mod fake {
                 Ok(now) => self.last = now,
                 Err(error) => eprintln!("{error}"),
             }
-            self.last
+            Reading {
+                read_at: std::time::Instant::now(),
+                ..self.last
+            }
         }
     }
 

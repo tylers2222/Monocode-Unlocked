@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::store::{self, Decision, HoldRow, NewHold, CLIENT_STOPPED, CLOCK_STOPPED, NO_ANSWER};
-use super::{Harness, HoldWaitReply, WaitKind};
+use super::{Harness, HoldWaitReply, WaitKind, MAX_WAIT};
 use crate::active_clock::Active;
 use crate::alarms::act::{self as alarm_act, Refusal};
 use crate::alarms::{self, Provisioner, Settings};
@@ -67,8 +67,6 @@ fn before((active, wall): (i64, i64), by: Duration) -> (i64, i64) {
 /// The store's hold time, as [`now`] reads it.
 pub(crate) type Now<'a> = &'a dyn Fn(&Connection) -> rusqlite::Result<HoldTime>;
 
-/// The longest `hold.wait` the app serves, inside its 35 s reply window.
-const MAX_WAIT: Duration = Duration::from_secs(30);
 /// A waiting call reads its hold again this often even with no signal.
 const RECHECK: Duration = Duration::from_secs(1);
 /// Tyler's banner thread looks for holds this often even with no signal.
