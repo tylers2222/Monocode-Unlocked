@@ -8,6 +8,7 @@ import {
   modelEffortSetting,
   modelsFor,
 } from "../../sessions/model/models";
+import { answerAlarmDialog } from "./agentAppAlarms";
 import { requireHarnessModel } from "./agentModelChoice";
 import {
   newTurnId,
@@ -1817,6 +1818,7 @@ export async function handleAgentApp(
   rawInput: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
+  if (action === "alarms.answer") return answerAlarmDialog(source, rawInput);
   fields(action, rawInput);
   const input = boundaryInput(action, rawInput);
   // messages.* get their own gate in mono_message_submit; get_monos asks

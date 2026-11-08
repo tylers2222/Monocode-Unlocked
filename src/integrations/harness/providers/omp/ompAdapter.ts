@@ -17,7 +17,11 @@ import {
   warmupOmpText,
 } from "../pi/piText";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
-import { ompCommandProvider, respondQuestion } from "../pi/piFamily";
+import {
+  ompCommandProvider,
+  respondQuestion,
+  wireRequestId,
+} from "../pi/piFamily";
 import { OMP_FLAVOR } from "../pi/piFlavor";
 
 export const ompAdapter: HarnessAdapter = {
@@ -26,6 +30,8 @@ export const ompAdapter: HarnessAdapter = {
   commands: ompCommandProvider,
   respondQuestion: (sessionId, requestId, reply) =>
     respondQuestion(OMP_FLAVOR, sessionId, requestId, reply),
+  wireRequestId: (sessionId, kind, requestId) =>
+    wireRequestId(OMP_FLAVOR, sessionId, kind, requestId),
   sendTurn: sendOmpTurn,
   compactContext: compactOmpContext,
   rewindLastTurn: rewindOmpLastTurn,

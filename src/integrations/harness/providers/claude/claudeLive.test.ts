@@ -2151,3 +2151,72 @@ it("never reuses a text child left warm for another session", async () => {
   await stopClaudeTextPrompt();
   await rejected;
 });
+
+// Defect: an alarm's answer, named for the dialog the user already
+// answered, lands on the newer dialog the agent asked since; or an answer
+// is written for a request id Claude never asked.
+it("answers an alarm only for the pending Claude dialog its request id names", async () => {
+  const { ensureClaudeRegistered } = await import("./claudeAdapter");
+  const { answerAlarmDialog } =
+    await import("../../../../features/agent-app/model/agentAppAlarms");
+  ensureClaudeRegistered();
+  const { events, turn } = await startTurn("s1");
+  const approvals = () =>
+    events.flatMap((event) =>
+      event.type === "approval.requested" ? [event.requestId] : [],
+    );
+  const asked = (request_id: string) =>
+    emit({
+      type: "control_request",
+      request_id,
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: {} },
+    });
+  const answeredFor = (id: string) =>
+    parse().filter(
+      (m) =>
+        (m.response as Record<string, unknown> | undefined)?.request_id === id,
+    ).length;
+  asked("req_a");
+  await waitFor(() => approvals().length === 1, "req_a asked");
+  const [a] = approvals();
+  respondClaudeApproval("s1", a!, "deny");
+  await waitFor(() => answeredFor("req_a") === 1, "the user's answer to req_a");
+  asked("req_b");
+  await waitFor(() => approvals().length === 2, "req_b asked");
+  const b = approvals()[1]!;
+  const session = {
+    ...newSession("claude", "/repo"),
+    id: "s1",
+    blocks: [
+      {
+        id: "a",
+        role: "tool" as const,
+        text: "",
+        approval: { requestId: a!, decided: "deny" as const },
+      },
+      { id: "b", role: "tool" as const, text: "", approval: { requestId: b } },
+    ],
+  };
+  const answer = (dialogRequestId: string) => {
+    try {
+      return answerAlarmDialog(session, {
+        kind: "permission",
+        decision: "allow",
+        dialogRequestId,
+      });
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+  };
+  expect(answer("req_a")).toBe("dialog_gone");
+  expect(answer("req_none")).toBe("dialog_gone");
+  expect(answeredFor("req_b")).toBe(0);
+  expect(answer("req_b")).toEqual({ answered: "permission" });
+  await waitFor(
+    () => answeredFor("req_b") === 1,
+    "the alarm's answer to req_b",
+  );
+  expect(answeredFor("req_a")).toBe(1);
+  emit({ type: "result", subtype: "success", session_id: "sess_1" });
+  await turn;
+});

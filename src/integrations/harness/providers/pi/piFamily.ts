@@ -74,6 +74,7 @@ import type {
   SendTurnInput,
   TurnResult,
   SteerTurnInput,
+  DialogKind,
 } from "../../core/types";
 
 type PendingApproval = {
@@ -381,6 +382,18 @@ export function respondApproval(
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
   pending.resolve(decision);
+}
+
+export function wireRequestId(
+  flavor: PiFlavor,
+  sessionId: string,
+  kind: DialogKind,
+  requestId: number,
+): string | undefined {
+  const live = stateFor(flavor).liveByThread.get(sessionId);
+  return kind === "approval"
+    ? live?.approvals.get(requestId)?.request.id
+    : live?.questions.get(requestId)?.id;
 }
 
 export function respondQuestion(
