@@ -46,6 +46,7 @@ mod s4_questions;
 mod s5_delivery;
 mod s5_scheduler;
 mod sleep_hold;
+mod sleep_hold_install;
 #[cfg(not(windows))]
 mod space_caller;
 #[cfg(unix)]

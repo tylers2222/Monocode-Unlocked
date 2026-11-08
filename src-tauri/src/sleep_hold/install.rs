@@ -85,11 +85,11 @@ pub(crate) fn install(
 ) -> Install {
     let mut env = vec![(super::client::SHORT_SLEEP_SKIP, skip_s.to_string())];
     let installed = match harness {
-        Harness::Claude => claude(&hook_command(exe, harness), args.clone()),
-        Harness::Codex => codex(&hook_command(exe, harness), args.clone()),
+        Harness::Claude => claude(&hook_command(exe, harness), &args),
+        Harness::Codex => codex(&hook_command(exe, harness), &args),
         Harness::Omp => {
             env.push((EXE_ENV, exe.to_owned()));
-            omp_dir.and_then(|dir| omp(dir, args.clone()))
+            omp_dir.and_then(|dir| omp(dir, &args))
         }
     };
     let (args, state) = installed.unwrap_or_else(|reason| (args, HoldState::Missing(reason)));
@@ -108,7 +108,8 @@ fn hook_command(exe: &str, harness: Harness) -> String {
 
 /// The hook merged into Claude Code's `--settings` JSON. `disableAllHooks`
 /// (the user's hooks toggle off) drops it, so the hold is missing.
-fn claude(command: &str, mut args: Vec<String>) -> Result<(Vec<String>, HoldState), String> {
+fn claude(command: &str, args: &[String]) -> Result<(Vec<String>, HoldState), String> {
+    let mut args = args.to_vec();
     let at = match args.iter().position(|arg| arg == "--settings") {
         Some(flag) => flag + 1,
         // claude refuses a root option after a subcommand (`claude auth login`).
@@ -146,7 +147,7 @@ fn claude(command: &str, mut args: Vec<String>) -> Result<(Vec<String>, HoldStat
 
 /// The hook as a session-flag config layer. Codex runs a session-flag hook
 /// only with its trust check bypassed (codex-cli 0.165.0).
-fn codex(command: &str, args: Vec<String>) -> Result<(Vec<String>, HoldState), String> {
+fn codex(command: &str, args: &[String]) -> Result<(Vec<String>, HoldState), String> {
     let hooks = toml::Value::try_from(json!([{
         "matcher": "Bash",
         "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}],
@@ -162,7 +163,7 @@ fn codex(command: &str, args: Vec<String>) -> Result<(Vec<String>, HoldState), S
 
 /// The extension and the handler timeout overlay, each in `dir`. omp takes
 /// more than one `--config`, so this one stays apart from ADE-117's.
-fn omp(dir: &Path, args: Vec<String>) -> Result<(Vec<String>, HoldState), String> {
+fn omp(dir: &Path, args: &[String]) -> Result<(Vec<String>, HoldState), String> {
     let extension = write_if_changed(&dir.join("monocode-hold.ts"), OMP_EXTENSION)?;
     let overlay = json!({"extensionHandlers": {"toolCallTimeoutMs": HOOK_TIMEOUT_S * 1000}});
     let overlay = crate::private_file::write_once(dir, "hold", &overlay.to_string())?;
@@ -176,11 +177,11 @@ fn omp(dir: &Path, args: Vec<String>) -> Result<(Vec<String>, HoldState), String
     Ok((prepend(&flags, args), HoldState::AwaitingPing))
 }
 
-fn prepend(flags: &[String], args: Vec<String>) -> Vec<String> {
+fn prepend(flags: &[String], args: &[String]) -> Vec<String> {
     if args.starts_with(flags) {
-        return args;
+        return args.to_vec();
     }
-    flags.iter().cloned().chain(args).collect()
+    [flags, args].concat()
 }
 
 /// `path` holds `contents` after this, written only when it differs. A

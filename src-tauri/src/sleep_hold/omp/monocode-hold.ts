@@ -5,12 +5,8 @@
 import { spawn } from "node:child_process";
 
 function hold(args, stdin) {
-  const exe = process.env.MONOCODE_HOLD_EXE;
-  if (!exe) {
-    return Promise.resolve({ code: null, stderr: "MONOCODE_HOLD_EXE is not set." });
-  }
   return new Promise(resolve => {
-    const child = spawn(exe, ["hold", ...args], { stdio: ["pipe", "ignore", "pipe"] });
+    const child = spawn(process.env.MONOCODE_HOLD_EXE, ["hold", ...args], { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", chunk => {
@@ -35,8 +31,8 @@ export default function (pi) {
   pi.on("agent_start", ping);
 
   pi.on("tool_call", async event => {
-    if (event.toolName !== "bash" || event.input?.async === true) return;
-    const payload = { toolCallId: event.toolCallId, command: event.input?.command, async: false };
+    if (event.toolName !== "bash" || event.input.async === true) return;
+    const payload = { toolCallId: event.toolCallId, command: event.input.command, async: false };
     const { code, stderr } = await hold(["--harness", "omp"], JSON.stringify(payload));
     if (code !== 0) {
       return { block: true, reason: stderr.trim() || "MonoCode's sleep hold refused this command." };
