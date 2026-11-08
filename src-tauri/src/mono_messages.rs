@@ -458,7 +458,7 @@ text_enum!(all RejectCode {
 macro_rules! text_id {
     ($(#[$meta:meta])* $name:ident, $valid:expr) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
         impl $name {
@@ -1500,11 +1500,8 @@ fn chat_of(data: &Value) -> Option<SessionId> {
     data.get("sessionId")?.as_str().and_then(SessionId::parse)
 }
 
-/// The Mono whose current chat is `chat`.
-pub(crate) fn mono_of_chat(
-    conn: &Connection,
-    chat: &SessionId,
-) -> rusqlite::Result<Option<MonoId>> {
+/// Every Mono with a current chat, and that chat.
+pub(crate) fn mono_chats(conn: &Connection) -> rusqlite::Result<Vec<(MonoId, SessionId)>> {
     let monos = conn
         .prepare("SELECT id, data_json FROM monos")?
         .query_map([], |row| {
@@ -1513,8 +1510,19 @@ pub(crate) fn mono_of_chat(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(monos
         .into_iter()
-        .find(|(_, data)| chat_of(&json_of(data)).as_ref() == Some(chat))
-        .and_then(|(id, _)| MonoId::parse(&id)))
+        .filter_map(|(id, data)| Some((MonoId::parse(&id)?, chat_of(&json_of(&data))?)))
+        .collect())
+}
+
+/// The Mono whose current chat is `chat`.
+pub(crate) fn mono_of_chat(
+    conn: &Connection,
+    chat: &SessionId,
+) -> rusqlite::Result<Option<MonoId>> {
+    Ok(mono_chats(conn)?
+        .into_iter()
+        .find(|(_, of)| of == chat)
+        .map(|(mono, _)| mono))
 }
 
 /// Design 13.1, R4: the level of `session`, only from its stored

@@ -7,7 +7,7 @@
 //! parent and writes the ask's `miss`; the ask stays open. R15: a blocked
 //! question writes `blocked:<ask>:<seq>` to the parent, delivered the same way.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
@@ -60,25 +60,32 @@ const LADDER: &[Rung] = &[
     },
 ];
 
-/// `ask_id` is nullable: a later `resume:<session>:<boot>` row has no ask.
-/// Then every open, unpaused, timed ask with no next due and a rung left
-/// gets that rung's due time: an ask written before this build (R5 left
-/// `next_due_active_ms` NULL), or one at the end of a shorter ladder when a
-/// later build appends rungs. Only NULL rows change, so a second open
-/// changes nothing.
-pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS mono_outbox (
+/// The outbox table under `name`, so the stage rebuild copies into the
+/// same shape. `alarm`, `hold` and `nudge` are the alarms' rows.
+fn outbox_sql(name: &str) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {name} (
            key          TEXT PRIMARY KEY,
            ask_id       TEXT REFERENCES mono_asks(id),
            stage        TEXT NOT NULL CHECK (stage IN
-                          ('t5', 'deadline', 'why', 'blocked', 'resume')),
+                          ('t5', 'deadline', 'why', 'blocked', 'resume', 'alarm', 'hold', 'nudge')),
            recipient    TEXT NOT NULL,
            at_active_ms INTEGER NOT NULL,
            claimed_by   TEXT,
            sent_at      INTEGER
-         );",
-    )?;
+         );"
+    )
+}
+
+/// `ask_id` is nullable: a later `resume:<session>:<boot>` row has no ask,
+/// nor does an alarm's. Then every open, unpaused, timed ask with no next
+/// due and a rung left gets that rung's due time: an ask written before
+/// this build (R5 left `next_due_active_ms` NULL), or one at the end of a
+/// shorter ladder when a later build appends rungs. Only NULL rows change,
+/// so a second open changes nothing.
+pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
+    rebuild_with_stages(conn)?;
+    conn.execute_batch(&outbox_sql("mono_outbox"))?;
     for (done, rung) in (0_i64..).zip(LADDER) {
         conn.execute(
             "UPDATE mono_asks SET next_due_active_ms = due_active_ms + ?2
@@ -88,6 +95,33 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// A table from before the alarms allows only the reminder stages. SQLite
+/// cannot change a CHECK in place, so the rows move to a new table in one
+/// transaction; keyed on the table's own SQL, so it runs once.
+fn rebuild_with_stages(conn: &Connection) -> rusqlite::Result<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mono_outbox'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if sql.is_none_or(|sql| sql.contains("'nudge'")) {
+        return Ok(());
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute_batch(&format!(
+        "DROP TABLE IF EXISTS mono_outbox_new;
+         {}
+         INSERT INTO mono_outbox_new (key, ask_id, stage, recipient, at_active_ms, claimed_by, sent_at)
+           SELECT key, ask_id, stage, recipient, at_active_ms, claimed_by, sent_at FROM mono_outbox;
+         DROP TABLE mono_outbox;
+         ALTER TABLE mono_outbox_new RENAME TO mono_outbox;",
+        outbox_sql("mono_outbox_new")
+    ))?;
+    tx.commit()
 }
 
 /// The next rung for an ask that has `done` rungs enqueued.
@@ -231,17 +265,33 @@ fn reminder_text(
 }
 
 /// An outbox row as a window reads it: who it goes to, and what its prompt
-/// names. Only a blocked row joins its question's seq and text (R15).
-const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body
+/// names. Only a blocked row joins its question's seq and text (R15), and
+/// only an alarm row its send's open episode.
+const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body,
+       al.id, al.actor, al.cause, s.level, o.claimed_by
      FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
      LEFT JOIN mono_ask_events e ON o.stage = 'blocked' AND e.ask_id = o.ask_id
        AND e.kind = 'question' AND o.key = 'blocked:' || e.ask_id || ':' || e.seq
-     LEFT JOIN mono_messages m ON m.id = e.message_id";
+     LEFT JOIN mono_messages m ON m.id = e.message_id
+     LEFT JOIN alarm_sends s ON o.stage = 'alarm' AND s.outbox_key = o.key
+     LEFT JOIN alarm_episodes al ON al.id = s.episode_id AND al.closed_active_ms IS NULL";
 
 /// The key, recipient and prompt of a `ROW`; no prompt for a row with no
 /// ask, or at a stage this build does not send.
 fn row_text(row: &rusqlite::Row) -> rusqlite::Result<(String, String, Option<String>)> {
     let (ask_id, stage): (Option<String>, String) = (row.get(2)?, row.get(3)?);
+    if stage == "alarm" {
+        let text = match (row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?) {
+            (
+                Some::<String>(episode),
+                Some::<String>(actor),
+                Some::<String>(cause),
+                Some(level),
+            ) => Some(crate::alarms::alarm_text(&episode, level, &actor, &cause)),
+            _ => None,
+        };
+        return Ok((row.get(0)?, row.get(1)?, text));
+    }
     let child = row.get::<_, Option<String>>(4)?;
     let question = match (row.get(5)?, row.get(6)?) {
         (Some(seq), Some(text)) => Some((seq, text)),
@@ -342,7 +392,11 @@ fn chat_of(conn: &Connection, recipient: &str) -> rusqlite::Result<Option<Sessio
     })
 }
 
-fn name_chat(conn: &Connection, notices: &mut Notices, recipient: &str) -> rusqlite::Result<()> {
+pub(crate) fn name_chat(
+    conn: &Connection,
+    notices: &mut Notices,
+    recipient: &str,
+) -> rusqlite::Result<()> {
     if let Some(chat) = chat_of(conn, recipient)? {
         notices.name(chat);
     }
@@ -372,6 +426,40 @@ pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Resul
 /// Whether a reminder waits for chat `session`.
 pub(crate) fn waits(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
     Ok(!pending(conn, session)?.is_empty())
+}
+
+/// The alarms' own outbox stages. Each row's key is `<stage>-...` (lead
+/// U1 r2 M1), and a window that claims one queues it under that key. None
+/// waits for its recipient, in the outbox or in a saved queue: an untaken
+/// alarm escalates and a hold refuses on their own clocks (lead ruling S1
+/// r3 a).
+pub(crate) const ALARM_STAGES: [&str; 3] = ["alarm", "hold", "nudge"];
+
+/// SQL: outbox key or queue item id `id` is one of the alarms' rows; a
+/// queue item stays one after its row went with its episode.
+pub(crate) fn alarm_key_sql(id: &str) -> String {
+    let keys = ALARM_STAGES.map(|alarm| format!("{id} GLOB '{alarm}-*'"));
+    format!("({})", keys.join(" OR "))
+}
+
+/// Every recipient an unsent outbox row waits for: a row a window claimed
+/// and has not sent, or an unclaimed one with a prompt (`pending`); none of
+/// the alarms' own.
+pub(crate) fn waiting_recipients(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let rows = conn
+        .prepare(&format!(
+            "{ROW} WHERE o.sent_at IS NULL AND NOT {}",
+            alarm_key_sql("o.key")
+        ))?
+        .query_map([], |row| {
+            Ok((row_text(row)?, row.get::<_, Option<String>>(11)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|((_, _, text), claimed)| claimed.is_some() || text.is_some())
+        .map(|((_, recipient, _), _)| recipient)
+        .collect())
 }
 
 /// Plan R9, one compare-and-set: window `window` takes reminder `key` with

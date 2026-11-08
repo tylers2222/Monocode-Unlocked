@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use crate::alarms::taps::Pipe;
+use crate::alarms::ChildTap;
 use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
@@ -158,6 +160,9 @@ struct LiveChild {
     pid: u32,
     identity: Option<String>,
     account: Option<HarnessAccount>,
+    /// The stall detector's tap on this child's stdio, for a session's own
+    /// child of a harness it reads.
+    tap: Option<Arc<ChildTap>>,
 }
 
 struct LiveSse {
@@ -1141,12 +1146,22 @@ pub fn harness_spawn<R: Runtime>(
         .take()
         .ok_or_else(|| "Failed to open harness stderr".to_string())?;
 
+    let alarms = app
+        .state::<crate::session_store::SessionStore>()
+        .alarms
+        .clone();
+    let tap = helper
+        .is_none()
+        .then(|| alarms.tap(&session_id, binary_provider.as_deref()))
+        .flatten()
+        .map(Arc::new);
     let live = Arc::new(LiveChild {
         cwd: workdir.clone(),
         stdin: Mutex::new(stdin),
         pid,
         identity: crate::resources::identity(pid),
         account,
+        tap: tap.clone(),
     });
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
         // A kill, or a newer spawn, won the race while this one was forking.
@@ -1158,6 +1173,9 @@ pub fn harness_spawn<R: Runtime>(
             let _ = child.wait();
         });
         return Err(SPAWN_CANCELLED.to_string());
+    }
+    if helper.is_none() {
+        alarms.spawned(&session_id, tap.as_deref());
     }
 
     let stdout_app = app.clone();
@@ -1174,8 +1192,7 @@ pub fn harness_spawn<R: Runtime>(
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        read_stdout(stdout, tap.as_deref(), |line| {
             if let Some(store) = &stdout_store {
                 if line.contains("\"turn/completed\"")
                     || line.contains("\"item/started\"")
@@ -1184,10 +1201,8 @@ pub fn harness_spawn<R: Runtime>(
                     store.sync_auth();
                 }
             }
-            if stdout_tx.send(line).is_err() {
-                break;
-            }
-        }
+            stdout_tx.send(line).is_ok()
+        });
     });
 
     let stderr_app = app.clone();
@@ -1235,6 +1250,29 @@ pub fn harness_spawn<R: Runtime>(
         cwd: crate::fs::path_to_js(&workdir),
         sandboxed,
     })
+}
+
+/// A child's stdout reader: each line feeds the stall tap, which takes no
+/// store lock, then goes to `forward` (false: stop reading). The end of the
+/// stream is the child's exit (a kill, a Stop, a crash), which the tap
+/// hears too.
+fn read_stdout(
+    stdout: impl std::io::Read,
+    tap: Option<&ChildTap>,
+    mut forward: impl FnMut(String) -> bool,
+) {
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        if let Some(tap) = tap {
+            tap.line(Pipe::Stdout, &line);
+        }
+        if !forward(line) {
+            return;
+        }
+    }
+    if let Some(tap) = tap {
+        tap.exited();
+    }
 }
 
 pub(crate) fn provider_account_dir<R: Runtime>(
@@ -1386,7 +1424,13 @@ pub async fn harness_write(
             .write_all(line.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
-            .map_err(|e| format!("Failed to write to harness: {e}"))
+            .map_err(|e| format!("Failed to write to harness: {e}"))?;
+        drop(stdin);
+        // Only a line the child received answers its dialog.
+        if let Some(tap) = &live.tap {
+            tap.line(Pipe::Stdin, &line);
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("Harness write task failed: {e}"))?
@@ -3382,6 +3426,142 @@ pub(crate) mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
 
+    /// A store with session `s-1`, its clock at 7 s, and a Claude child's tap.
+    fn tapped_store() -> (crate::session_store::SessionStore, ChildTap) {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                 VALUES ('s-1', '/', 'claude', 'm', 'default', 'S', 1, 1)",
+            )
+            .unwrap();
+        store.alarms.set_now(7_000);
+        let tap = store.alarms.tap("s-1", Some("claude")).unwrap();
+        store.alarms.spawned("s-1", Some(&tap));
+        (store, tap)
+    }
+
+    /// One detector pass at 7 s writes what the tap recorded.
+    fn detector_pass(store: &crate::session_store::SessionStore) {
+        let sources = crate::alarms::Sources {
+            live: &store.alarms,
+            running: None,
+        };
+        crate::alarms::run(&store.lock_conn().unwrap(), 7_000, 1, &sources).unwrap();
+    }
+
+    // Defect (review M3/F3, m3): the stdout reader waits on the store lock
+    // (a long pass or save stops the child's stream and fills its pipe), or
+    // no longer feeds the stall tap, so a working agent reads as hung.
+    #[test]
+    fn the_stdout_reader_taps_each_line_without_waiting_for_the_store() {
+        let (store, tap) = tapped_store();
+        let stdout = concat!(
+            r#"{"type":"system","subtype":"init"}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"Bash"}}}"#,
+            "\n",
+        );
+        let (done, read) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            // Dropped before the scope joins, also when an assert fails.
+            let held = store.lock_conn().unwrap();
+            scope.spawn(|| {
+                let mut forwarded = Vec::new();
+                // It stops before the end, so the child runs on.
+                read_stdout(stdout.as_bytes(), Some(&tap), |line| {
+                    forwarded.push(line);
+                    forwarded.len() < 2
+                });
+                done.send(forwarded).unwrap();
+            });
+            let forwarded = read
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the reader waited for the held store lock");
+            assert_eq!(forwarded.len(), 2);
+            drop(held);
+        });
+        detector_pass(&store);
+        let conn = store.lock_conn().unwrap();
+        let (_, _, progress, tool_running) = crate::alarms::test_taps::row(&conn, "s-1").unwrap();
+        assert_eq!((progress, tool_running), (Some(7_000), true));
+    }
+
+    // Defect (S1 r4 F2): a killed child's stdout ends with a background task
+    // still running in its tap, so its idle agent with open work waits 4N
+    // for a job that died with it; or a reader that stops early (its
+    // receiver gone, the child still running) ends the child's tasks.
+    #[test]
+    fn the_end_of_a_childs_stdout_ends_its_background_tasks() {
+        for (forwarded, running) in [(true, false), (false, true)] {
+            let (store, tap) = tapped_store();
+            let stdout = concat!(
+                r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
+                "\n",
+            );
+            read_stdout(stdout.as_bytes(), Some(&tap), |_| forwarded);
+            detector_pass(&store);
+            let row: (bool, Option<i64>) = store
+                .lock_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT background_running, background_ended_active_ms
+                       FROM agent_activity WHERE session_id = 's-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let ended = (!running).then_some(7_000);
+            assert_eq!(row, (running, ended), "forwarded: {forwarded}");
+        }
+    }
+
+    // Defect (S1 r5 m1): a replaced child's stdout ends after its successor
+    // was spawned, and its exit snapshot (its harness, its old progress, no
+    // tool running) is written over the successor's row, so an untapped
+    // successor reads as a frozen Claude tap, or a tapped one's silent tool
+    // as not running: hung at N either way. Or (S1 r6 m1) the respawn
+    // forgets the end of the old child's task.
+    #[test]
+    fn a_replaced_childs_exit_leaves_its_successors_row() {
+        for tapped in [false, true] {
+            let (store, old) = tapped_store();
+            old.line(
+                Pipe::Stdout,
+                r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
+            );
+            detector_pass(&store);
+            let new = tapped.then(|| store.alarms.tap("s-1", Some("claude")).unwrap());
+            store.alarms.spawned("s-1", new.as_ref());
+            if let Some(new) = &new {
+                new.line(
+                    Pipe::Stdout,
+                    r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"Bash"}}}"#,
+                );
+            }
+            read_stdout(&b""[..], Some(&old), |_| true);
+            detector_pass(&store);
+            let row: (Option<String>, bool, bool, Option<i64>) = store
+                .lock_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT harness, tool_running, background_running, background_ended_active_ms
+                       FROM agent_activity WHERE session_id = 's-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            let harness = tapped.then(|| "claude".to_string());
+            assert_eq!(
+                row,
+                (harness, tapped, false, Some(7_000)),
+                "tapped: {tapped}"
+            );
+        }
+    }
+
     fn spawn_group(script: &str) -> std::process::Child {
         Command::new("sh")
             .args(["-c", script])
@@ -3425,6 +3605,7 @@ pub(crate) mod tests {
                 pid,
                 identity: crate::resources::identity(pid),
                 account: None,
+                tap: None,
             }),
             child,
         )
@@ -3656,6 +3837,7 @@ pub(crate) mod tests {
                 pid,
                 identity: crate::resources::identity(pid),
                 account: None,
+                tap: None,
             }),
             child,
         )

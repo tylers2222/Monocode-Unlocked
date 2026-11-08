@@ -9,6 +9,9 @@
 
 mod agent_sandbox;
 mod agents;
+mod alarms_stall;
+mod alarms_turns;
+mod alarms_wakes;
 mod asks;
 mod clock;
 mod completions;

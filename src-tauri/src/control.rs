@@ -344,6 +344,18 @@ impl ControlHost {
             .unwrap_or_default()
     }
 
+    /// Every session's turn, however it started: what the stall detector
+    /// judges its turn rows against.
+    pub(crate) fn active_turns(&self) -> Option<HashMap<String, String>> {
+        self.inner.lock().ok().map(|inner| {
+            inner
+                .active
+                .iter()
+                .map(|(session, turn)| (session.clone(), turn.turn_id.clone()))
+                .collect()
+        })
+    }
+
     pub(crate) fn sessions_running_outside(&self, label: &str) -> HashSet<String> {
         self.inner
             .lock()
@@ -771,13 +783,8 @@ fn authorize_window_turn<R: Runtime>(
         next: None,
     };
     let app = window.app_handle();
-    let (folder, notices) = authorize_turn(
-        &host.inner,
-        &app.state::<SessionStore>(),
-        session,
-        &real,
-        turn,
-    )?;
+    let store = app.state::<SessionStore>();
+    let (folder, notices) = authorize_turn(&host.inner, &store, session, &real, turn)?;
     notices.emit(app);
     Ok(if folder == real {
         cwd.to_owned()
@@ -805,6 +812,7 @@ fn authorize_turn(
         .map_err(|_| "Control service unavailable")?
         .authorize_turn(session, turn)?;
     let notices = end_turns(store, replaced.map(|turn| (session.to_string(), turn)));
+    record_start(inner, store, session);
     Ok((folder, notices))
 }
 
@@ -849,7 +857,10 @@ fn finish_turn(
         .lock()
         .ok()
         .and_then(|mut inner| inner.finish_turn(session, turn_id));
-    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
+    let notices = end_turns(store, ended.map(|turn| (session.to_string(), turn)));
+    // The harness run that waited for this turn may run now.
+    record_start(inner, store, session);
+    notices
 }
 
 /// Design 5.3 (review r2): the Stop and kill paths. The process is gone, so
@@ -935,6 +946,9 @@ fn end_turns(
         let Some(session) = SessionId::parse(&session) else {
             continue;
         };
+        store
+            .alarms
+            .turn(session.as_str(), &turn.turn_id, crate::alarms::Edge::Ended);
         let ended = store.lock_conn().and_then(|conn| {
             mono_messages::turn_ended(&conn, &session, &turn.turn_id, mono_messages::now_ms())
                 .map_err(|error| error.to_string())
@@ -949,6 +963,30 @@ fn end_turns(
         }
     }
     notices
+}
+
+/// The stall detector's turn tap: the turn `active` runs for `session`
+/// now has started. It records into the store's hub and takes no store
+/// lock. A kill that took the turn between the read and the record wrote
+/// its end first, so the turn is ended again after it (review M2).
+fn record_start(inner: &Mutex<Inner>, store: &SessionStore, session: &str) {
+    let running = |inner: &Mutex<Inner>| {
+        inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.active.get(session).map(|turn| turn.turn_id.clone()))
+    };
+    let Some(turn_id) = running(inner) else {
+        return;
+    };
+    store
+        .alarms
+        .turn(session, &turn_id, crate::alarms::Edge::Started);
+    if running(inner).as_ref() != Some(&turn_id) {
+        store
+            .alarms
+            .turn(session, &turn_id, crate::alarms::Edge::Ended);
+    }
 }
 
 /// Design 2 (review r5): the slots window `label` set that no provider took.
@@ -1443,6 +1481,64 @@ pub(crate) mod tests {
             stored_row(&store.lock_conn().unwrap(), &steer).0,
             "delivered"
         );
+    }
+
+    /// `session`'s turn row as the next detector pass writes it, judged
+    /// against the turns `inner` runs, as the clock thread reads them.
+    fn alarm_turn(
+        inner: &Mutex<Inner>,
+        store: &SessionStore,
+        session: &str,
+    ) -> Option<(String, Option<String>)> {
+        let running: HashMap<String, String> = inner
+            .lock()
+            .unwrap()
+            .active
+            .iter()
+            .map(|(session, turn)| (session.clone(), turn.turn_id.clone()))
+            .collect();
+        let conn = store.lock_conn().unwrap();
+        let sources = crate::alarms::Sources {
+            live: &store.alarms,
+            running: Some(&running),
+        };
+        crate::alarms::run(&conn, 1_000, 1, &sources).unwrap();
+        crate::alarms::test_taps::row(&conn, session).map(|(state, id, _, _)| (state, id))
+    }
+
+    // Defect (review m3): an authorize, a finish, the harness run a finish
+    // promotes, or a kill no longer reaches the stall detector, so its row
+    // says idle while the agent works, or running after its turn ended.
+    #[test]
+    fn the_turn_paths_record_each_turn_for_the_stall_detector() {
+        let store = messaging_store();
+        store.alarms.set_now(1_000);
+        let inner = Mutex::new(Inner::default());
+        let authorize = |turn_id: &str, started_by| {
+            let turn = ActiveTurn {
+                started_by,
+                ..monocode_turn("main", "/a", turn_id)
+            };
+            authorize_turn(&inner, &store, "a-chat", Path::new("/a"), turn).unwrap();
+        };
+        let row = |state: &str, turn: &str| Some((state.to_string(), Some(turn.to_string())));
+        authorize("turn-1", StartedBy::MonoCode);
+        assert_eq!(
+            alarm_turn(&inner, &store, "a-chat"),
+            row("running", "turn-1")
+        );
+        authorize("run-2", StartedBy::Harness);
+        finish_turn(&inner, &store, "a-chat", "turn-1");
+        assert_eq!(
+            alarm_turn(&inner, &store, "a-chat"),
+            row("running", "run-2"),
+            "the waiting harness run took its turn"
+        );
+        kill_session(&inner, &store, "a-chat", &HarnessHost::new());
+        assert_eq!(alarm_turn(&inner, &store, "a-chat"), row("idle", "run-2"));
+        authorize("turn-3", StartedBy::MonoCode);
+        finish_turn(&inner, &store, "a-chat", "turn-3");
+        assert_eq!(alarm_turn(&inner, &store, "a-chat"), row("idle", "turn-3"));
     }
 
     fn status(store: &SessionStore, id: &MessageId) -> Status {
