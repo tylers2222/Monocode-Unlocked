@@ -599,6 +599,7 @@ impl Pass<'_> {
             gone,
             turn: row.turn,
             dialog: row.dialog,
+            background: row.background,
             open_work: self.own_open_work(&actor_text, row),
             children: Vec::new(),
             settled_at: None,

@@ -24,7 +24,6 @@ pub(crate) enum Turn {
     Idle {
         started_at: Option<i64>,
         ended_at: i64,
-        background: Background,
     },
     Running {
         started_at: i64,
@@ -32,16 +31,13 @@ pub(crate) enum Turn {
     },
 }
 
-/// A background tool (a Claude task) of an idle agent, which may outlive
-/// the turn that started it.
+/// A background tool (a Claude task) of the agent, which may outlive the
+/// turn that started it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Background {
     None,
     Running,
-    /// The last one ended at `at`.
-    Ended {
-        at: i64,
-    },
+    Ended { at: i64 },
 }
 
 /// What the stdio taps saw of a running turn.
@@ -53,8 +49,6 @@ pub(crate) enum Progress {
         last_at: i64,
         /// A tool call of the turn runs.
         tool_running: bool,
-        /// A background tool (a Claude task) runs, which may outlive turns.
-        background: bool,
     },
 }
 
@@ -171,6 +165,7 @@ pub(crate) struct Facts {
     pub gone: bool,
     pub turn: Turn,
     pub dialog: Option<Dialog>,
+    pub background: Background,
     /// The agent's own open work; a child's result is added from `children`.
     pub open_work: Vec<OpenWork>,
     pub children: Vec<Child>,
@@ -266,7 +261,6 @@ fn blocking_dialog(facts: &Facts) -> Option<Dialog> {
             Turn::Idle {
                 started_at,
                 ended_at,
-                ..
             },
         ) if started_at.is_none_or(|started| dialog.since >= started) => Some(Dialog {
             since: dialog.since.max(ended_at),
@@ -305,12 +299,11 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 Progress::Tapped {
                     last_at,
                     tool_running: false,
-                    background,
                 },
         } => {
             let since = last_at.max(started_at);
             let silent = now - since;
-            let hung_at = if background {
+            let hung_at = if facts.background == Background::Running {
                 BACKGROUND_STALLS * limits.stall_ms
             } else {
                 limits.stall_ms
@@ -323,11 +316,7 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 Status::Working
             }
         }
-        Turn::Idle {
-            ended_at,
-            background,
-            ..
-        } => {
+        Turn::Idle { ended_at, .. } => {
             if let Some(since) = wake_missed(facts, now, limits) {
                 return Status::WakeMissed { since };
             }
@@ -341,7 +330,7 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
             if open_work(facts).is_empty() {
                 return Status::Idle;
             }
-            let background_end = match background {
+            let background_end = match facts.background {
                 Background::Ended { at } => Some(at),
                 Background::None | Background::Running => None,
             };
@@ -350,7 +339,7 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 .chain(facts.settled_at)
                 .chain(background_end)
                 .fold(ended_at, i64::max);
-            if background == Background::Running
+            if facts.background == Background::Running
                 && now - since < BACKGROUND_STALLS * limits.stall_ms
             {
                 return Status::Waiting;
@@ -396,7 +385,6 @@ fn progressed(facts: &Facts, episode: &Episode) -> bool {
         Turn::Idle {
             started_at,
             ended_at,
-            ..
         } => ended_at > since || started_at.is_some_and(|started| started > since),
         Turn::Running { started_at, .. } => started_at > since,
     };
@@ -462,9 +450,9 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(ENDED - 10 * MIN),
                 ended_at: ENDED,
-                background: Background::None,
             },
             dialog: None,
+            background: Background::None,
             open_work: Vec::new(),
             children: Vec::new(),
             settled_at: None,
@@ -489,7 +477,6 @@ mod tests {
                 progress: Progress::Tapped {
                     last_at,
                     tool_running,
-                    background: false,
                 },
             },
             ..idle()
@@ -656,9 +643,9 @@ mod tests {
                 progress: Progress::Tapped {
                     last_at: last,
                     tool_running: false,
-                    background: true,
                 },
             },
+            background: Background::Running,
             ..idle()
         };
         assert_eq!(status(&facts, last + 15 * MIN, LIMITS), Status::Waiting);
@@ -680,16 +667,9 @@ mod tests {
     // never; or once the job ends its clock does not restart there.
     #[test]
     fn an_idle_agent_on_a_background_tool_waits_until_four_n() {
-        let with_background = |background| {
-            let facts = with_ask(idle());
-            Facts {
-                turn: Turn::Idle {
-                    started_at: Some(ENDED - 10 * MIN),
-                    ended_at: ENDED,
-                    background,
-                },
-                ..facts
-            }
+        let with_background = |background| Facts {
+            background,
+            ..with_ask(idle())
         };
         let running = with_background(Background::Running);
         for at in [ENDED + 15 * MIN, ENDED + 4 * 15 * MIN - 1] {
@@ -794,7 +774,6 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(start),
                 ended_at: asked + MIN,
-                background: Background::None,
             },
             ..facts
         };
@@ -827,7 +806,6 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(ENDED + MIN),
                 ended_at: ENDED + 2 * MIN,
-                background: Background::None,
             },
             ..facts
         };

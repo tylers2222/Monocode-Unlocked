@@ -215,9 +215,9 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(ended_at - MIN),
                 ended_at,
-                background: Background::None,
             },
             dialog: None,
+            background: Background::None,
             open_work: Vec::new(),
             children: Vec::new(),
             settled_at: None,

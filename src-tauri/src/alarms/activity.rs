@@ -248,6 +248,7 @@ fn parse_kind(text: &str) -> Option<DialogKind> {
 pub(crate) struct Activity {
     pub session: SessionId,
     pub turn: Turn,
+    pub background: Background,
     pub dialog: Option<Dialog>,
     pub dialog_text: Option<String>,
     pub todo_open: bool,
@@ -275,7 +276,6 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
                         Some(_) => Progress::Tapped {
                             last_at: row.get::<_, Option<i64>>(5)?.unwrap_or(started_at),
                             tool_running: row.get(6)?,
-                            background: row.get(12)?,
                         },
                         None => Progress::Untapped,
                     },
@@ -283,20 +283,21 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
                 _ => Turn::Idle {
                     started_at: started,
                     ended_at: row.get(4)?,
-                    background: match (row.get(12)?, row.get(13)?) {
-                        (true, _) => Background::Running,
-                        (false, Some(at)) => Background::Ended { at },
-                        (false, None) => Background::None,
-                    },
                 },
             };
             let dialog = match (row.get::<_, Option<String>>(7)?, row.get(8)?) {
                 (Some(kind), Some(since)) => parse_kind(&kind).map(|kind| Dialog { kind, since }),
                 _ => None,
             };
+            let background = match (row.get(12)?, row.get(13)?) {
+                (true, _) => Background::Running,
+                (false, Some(at)) => Background::Ended { at },
+                (false, None) => Background::None,
+            };
             Ok(Some(Activity {
                 session,
                 turn,
+                background,
                 dialog,
                 dialog_text: row.get(9)?,
                 todo_open: row.get(10)?,
@@ -352,8 +353,7 @@ mod tests {
             turn_of(&conn),
             Turn::Idle {
                 started_at: Some(10),
-                ended_at: 20,
-                background: Background::None,
+                ended_at: 20
             }
         );
         turn_started(&conn, &session, "t3", 40, 0).unwrap();
@@ -367,8 +367,7 @@ mod tests {
             turn_of(&conn),
             Turn::Idle {
                 started_at: Some(40),
-                ended_at: 60,
-                background: Background::None,
+                ended_at: 60
             }
         );
     }
