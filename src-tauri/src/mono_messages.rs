@@ -1519,16 +1519,10 @@ pub(crate) fn mono_of_chat(
     conn: &Connection,
     chat: &SessionId,
 ) -> rusqlite::Result<Option<MonoId>> {
-    let monos = conn
-        .prepare("SELECT id, data_json FROM monos")?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(monos
+    Ok(mono_chats(conn)?
         .into_iter()
-        .find(|(_, data)| chat_of(&json_of(data)).as_ref() == Some(chat))
-        .and_then(|(id, _)| MonoId::parse(&id)))
+        .find(|(_, of)| of == chat)
+        .map(|(mono, _)| mono))
 }
 
 /// Design 13.1, R4: the level of `session`, only from its stored

@@ -419,9 +419,10 @@ fn new_episode_id() -> String {
     format!("al_{}", &id[..12])
 }
 
-/// The key of the outbox row that tells level `level` of `episode`.
+/// The key of the outbox row that tells level `level` of `episode`. The
+/// front end keeps a request id only in `[A-Za-z0-9_-]+`, so no `:` here.
 pub(crate) fn outbox_key(episode: &str, level: i64) -> String {
-    format!("alarm:{episode}:{level}")
+    format!("alarm-{episode}-{level}")
 }
 
 /// One pass: its transaction, settings and time, and the chats it names.
@@ -774,6 +775,23 @@ fn pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Defect (U1 r2 M1): an alarm's outbox key has a character the front
+    // end's sessionStore drops from an appRequestId (`^[A-Za-z0-9_-]+$`),
+    // so the alarm card is gone after a reload.
+    #[test]
+    fn every_alarm_outbox_key_is_a_front_end_request_id() {
+        for level in 1..=5 {
+            let key = outbox_key(&new_episode_id(), level);
+            assert!(
+                !key.is_empty()
+                    && key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')),
+                "{key}"
+            );
+        }
+    }
 
     // Defect: section 9's defaults drift, an override is ignored, a bad
     // value breaks the pass, or a per-agent N outside 5..240 is stored.

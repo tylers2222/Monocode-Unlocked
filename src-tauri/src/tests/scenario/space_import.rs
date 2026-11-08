@@ -289,8 +289,8 @@ fn space_two(data: &Path) {
                stalled_since_wall_ms, opened_active_ms, opened_wall_ms, next_escalate_active_ms)
                VALUES ('al_2', 'session:s2-b', 'm2', 'mono:m2', 'idle_open_work', '[]', 900, 1, 1300, 1, 2200);
              INSERT INTO alarm_sends (episode_id, level, recipient, outbox_key, created_active_ms)
-               VALUES ('al_2', 1, 'mono:m2', 'alarm:al_2:1', 1300);
-             INSERT INTO mono_outbox (key, stage, recipient, at_active_ms) VALUES ('alarm:al_2:1', 'alarm', 'mono:m2', 1300);
+               VALUES ('al_2', 1, 'mono:m2', 'alarm-al_2-1', 1300);
+             INSERT INTO mono_outbox (key, stage, recipient, at_active_ms) VALUES ('alarm-al_2-1', 'alarm', 'mono:m2', 1300);
              INSERT INTO agent_alarm_settings (actor, stall_minutes) VALUES ('session:s2-b', 30);
              INSERT INTO alarm_settings (key, value) VALUES ('stall_minutes', '20');
              {APPROVAL} VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2', '/q', 'Made-up', 'S',
