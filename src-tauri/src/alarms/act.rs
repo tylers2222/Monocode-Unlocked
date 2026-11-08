@@ -333,7 +333,9 @@ pub(crate) fn call(
                 How::Read,
                 request_id,
             )?;
-            done_or(found, |found| read(conn, &settings, &found, now).map(done))
+            done_or(found, |found| {
+                read(conn, &settings, &found, now.0).map(done)
+            })
         }
         "alarms.answer" => {
             let input = Input::new(
@@ -508,10 +510,10 @@ fn read(
     conn: &Connection,
     settings: &Settings,
     found: &OnChain,
-    (active, wall): (i64, i64),
+    active: i64,
 ) -> Result<Value, Refusal> {
     let episode = &found.episode;
-    let stall = route::stall(conn, episode, settings, active, wall)?;
+    let stall = route::stall(conn, episode, settings, active)?;
     let sends = conn
         .prepare(
             "SELECT level, recipient, sent_wall_ms FROM alarm_sends
@@ -726,7 +728,7 @@ fn act_on(
             Some(text::steer(&episode.id, &from, text)),
         ),
         Act::Nudge => {
-            let stall = route::stall(conn, episode, settings, active, wall)?;
+            let stall = route::stall(conn, episode, settings, active)?;
             let level = usize::try_from(episode.level).unwrap_or(usize::MAX);
             let to = if target == &episode.actor {
                 text::NudgeTo::Agent

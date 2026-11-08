@@ -499,13 +499,7 @@ impl Pass<'_> {
                 self.active + self.settings.escalate_minutes * MINUTE_MS,
             ],
         )?;
-        super::route::opened(
-            tx,
-            &mut self.notices,
-            &id,
-            &self.settings,
-            (self.active, self.wall),
-        )
+        super::route::opened(tx, &mut self.notices, &id, &self.settings, self.active)
     }
 
     /// Closes episode `id`; the alarms, nudges and steers it had not sent yet

@@ -251,11 +251,15 @@ pub(crate) fn message(
     request_id: &str,
     now: (i64, i64),
 ) -> rusqlite::Result<()> {
+    let episodes = route::open_episodes(conn)?;
+    if episodes.is_empty() {
+        return Ok(());
+    }
     let (Some(caller), Some(to)) = (caller(conn, caller_session)?, named_actor(conn, to)?) else {
         return Ok(());
     };
     let settings = Settings::load(conn)?;
-    for episode in route::open_episodes(conn)? {
+    for episode in episodes {
         let chain = route::chain(conn, &episode, settings.root_giga.as_deref())?;
         let Some(index) = standing(&chain, &caller) else {
             continue;

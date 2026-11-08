@@ -270,18 +270,13 @@ fn last_tool(blocks_json: &str) -> Option<String> {
     ))
 }
 
-fn last_activity(
-    conn: &Connection,
-    actor: &Actor,
-    active: i64,
-    wall: i64,
-) -> rusqlite::Result<Option<String>> {
+fn last_activity(conn: &Connection, actor: &Actor) -> rusqlite::Result<Option<String>> {
     let Some(session) = session_of(conn, actor)? else {
         return Ok(None);
     };
     let row: Option<(Option<i64>, String)> = conn
         .query_row(
-            "SELECT a.last_progress_active_ms, s.blocks_json FROM sessions s
+            "SELECT a.last_progress_wall_ms, s.blocks_json FROM sessions s
                LEFT JOIN agent_activity a ON a.session_id = s.id WHERE s.id = ?1",
             [session.as_str()],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -290,9 +285,7 @@ fn last_activity(
     let Some((progress, blocks)) = row else {
         return Ok(None);
     };
-    let at = progress
-        .map(|at| clock(conn, wall - (active - at)))
-        .transpose()?;
+    let at = progress.map(|wall| clock(conn, wall)).transpose()?;
     Ok(match (at, last_tool(&blocks)) {
         (Some(at), Some(tool)) => Some(format!("{at} {tool}")),
         (None, Some(tool)) => Some(tool),
@@ -321,7 +314,6 @@ pub(crate) fn stall(
     episode: &EpisodeRow,
     settings: &Settings,
     active: i64,
-    wall: i64,
 ) -> rusqlite::Result<Stall> {
     let minutes = (active - episode.stalled_since_active) / MINUTE_MS;
     let dialog = if episode.cause == "dialog" {
@@ -340,7 +332,7 @@ pub(crate) fn stall(
         since: clock(conn, episode.stalled_since_wall)?,
         minutes,
         open_work: work_lines(conn, &episode.open_work_json, active)?,
-        last_activity: last_activity(conn, &episode.actor, active, wall)?,
+        last_activity: last_activity(conn, &episode.actor)?,
         dialog,
         escalate_minutes: settings.escalate_minutes,
     })
@@ -383,9 +375,9 @@ fn level_text(
     chain: &[Provisioner],
     level: usize,
     settings: &Settings,
-    (active, wall): (i64, i64),
+    active: i64,
 ) -> rusqlite::Result<String> {
-    let stall = stall(conn, episode, settings, active, wall)?;
+    let stall = stall(conn, episode, settings, active)?;
     let missed = match chain.get(level - 1) {
         Some(Provisioner::Agent(actor)) if level >= 2 => Some(Missed {
             who: who(conn, actor)?,
@@ -454,7 +446,7 @@ pub(crate) fn opened(
     notices: &mut Notices,
     id: &str,
     settings: &Settings,
-    (active, wall): (i64, i64),
+    active: i64,
 ) -> rusqlite::Result<()> {
     let Some(episode) = episode(tx, id)? else {
         return Ok(());
@@ -482,7 +474,7 @@ pub(crate) fn opened(
             )?;
         }
     }
-    let text = level_text(tx, &episode, &chain, 1, settings, (active, wall))?;
+    let text = level_text(tx, &episode, &chain, 1, settings, active)?;
     send(
         tx,
         notices,
@@ -562,7 +554,7 @@ fn escalate(
             .map(drop);
     };
     let text = match to {
-        Provisioner::Agent(_) => level_text(tx, episode, &chain, level, settings, at)?,
+        Provisioner::Agent(_) => level_text(tx, episode, &chain, level, settings, at.0)?,
         Provisioner::Tyler => String::new(),
     };
     send(
@@ -623,11 +615,7 @@ pub(crate) struct TylerAlarm {
     pub body: String,
 }
 
-pub(crate) fn tyler_pending(
-    conn: &Connection,
-    active: i64,
-    wall: i64,
-) -> rusqlite::Result<Vec<TylerAlarm>> {
+pub(crate) fn tyler_pending(conn: &Connection, active: i64) -> rusqlite::Result<Vec<TylerAlarm>> {
     let rows = conn
         .prepare(
             "SELECT s.episode_id, s.level FROM alarm_sends s
@@ -645,7 +633,7 @@ pub(crate) fn tyler_pending(
         let Some(episode) = episode(conn, &id)? else {
             continue;
         };
-        let (title, body) = text::notification(&stall(conn, &episode, &settings, active, wall)?);
+        let (title, body) = text::notification(&stall(conn, &episode, &settings, active)?);
         pending.push(TylerAlarm {
             episode: id,
             level,

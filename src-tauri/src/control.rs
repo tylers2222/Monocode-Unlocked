@@ -691,15 +691,14 @@ fn alarm_act(
     if response["ok"] != true {
         return Ok((response, Default::default()));
     }
+    // The window answered the plan, whether or not the log below lands.
+    if let Some(session) = &plan.answered_plan {
+        store.alarms.plan_answered(session);
+    }
     let conn = store.lock_conn()?;
     let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
     let response = match crate::alarms::deliver::forwarded(&conn, &plan, now) {
-        Ok(result) => {
-            if let Some(session) = &plan.answered_plan {
-                store.alarms.plan_answered(session);
-            }
-            json!({"ok": true, "result": result})
-        }
+        Ok(result) => json!({"ok": true, "result": result}),
         Err(refusal) => refusal.response(),
     };
     Ok((response, Default::default()))

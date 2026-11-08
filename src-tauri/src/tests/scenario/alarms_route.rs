@@ -591,13 +591,10 @@ fn acts_are_refused_off_the_chain_and_answers_past_the_provisioner() {
     assert_eq!(set["stall_minutes"], 30);
 }
 
-/// The stdio tap `harness_spawn` gives the worker's Claude child.
+/// The stdio tap `harness_spawn` gives the worker's Claude child, which it
+/// spawned now.
 fn claude_tap(world: &World, chain: &Chain) -> ChildTap {
-    world
-        .store()
-        .alarms
-        .tap(chain.worker.as_str(), Some("claude"))
-        .unwrap()
+    super::alarms_stall::claude_tap(world, &chain.worker)
 }
 
 /// The worker's turn asked a permission and it waited 3 minutes: its
@@ -801,6 +798,103 @@ fn a_plain_message_counts_only_from_a_recipient_the_alarm_reached() {
     );
     world.advance(ESCALATE + PASS);
     assert_eq!(sends(&world, &episode).len(), 2, "acted: no level 3");
+}
+
+// Defect (r3 m1, lead ruling a): the Giga's steer and nudge wait untaken
+// as outbox rows at its Mono, whose chat no window has open, and count as
+// the Mono's missed wakes: a second episode, at the Mono, alarms the Giga
+// that just acted.
+#[test]
+fn a_gigas_untaken_steer_and_nudge_open_no_episode_at_its_mono() {
+    let mut world = World::new("alarm-giga-acts");
+    let chain = chain(&world, "alg");
+    align(&mut world);
+    // The Mono ran a turn, so the detector watches it too.
+    ran_a_turn(&mut world, &chain.mono.chat);
+    let episode = stalled_worker(&mut world, &chain);
+    world.advance(2 * (ESCALATE + PASS));
+    let mono = format!("mono:{}", chain.mono.id.as_str());
+    let giga = chain.giga.chat.as_str();
+    for (action, input) in [
+        (
+            "alarms.steer",
+            json!({"alarm": episode, "text": "Check your lead."}),
+        ),
+        ("alarms.nudge", json!({"alarm": episode})),
+    ] {
+        let acted = result(call(&world, giga, action, input));
+        assert_eq!(acted["target"], mono.as_str(), "{action}: {acted}");
+        world.advance(PASS);
+    }
+
+    world.advance(10 * MINUTE);
+    let untaken: i64 = world
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM mono_outbox
+              WHERE stage = 'nudge' AND recipient = ?1 AND sent_at IS NULL",
+            [&mono],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(untaken, 2, "both rows wait at the Mono");
+    assert_eq!(
+        open_episodes(&world),
+        vec![(episode, format!("session:{}", chain.worker.as_str()), 3)],
+        "one stall, one episode"
+    );
+}
+
+const SAID: &str =
+    r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Running the tests."}]}}"#;
+
+fn hh_mm(world: &World, wall: i64) -> String {
+    world
+        .conn()
+        .query_row(
+            "SELECT strftime('%H:%M', ?1 / 1000, 'unixepoch', 'localtime')",
+            [wall],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+// Defect (r3 m2): the alarm dates the last activity as now minus the
+// active time since it, but the active clock stops while the Mac sleeps,
+// so after a night's sleep the worker reads as active minutes ago, after
+// its own stall began.
+#[test]
+fn the_last_activity_keeps_its_clock_time_across_a_sleep() {
+    let mut world = World::new("alarm-last-activity");
+    let chain = chain(&world, "all");
+    let claude = claude_tap(&world, &chain);
+    align(&mut world);
+    turn(&mut world, &chain.worker, "t1", true);
+    let worked = world.now();
+    claude.line(Pipe::Stdout, SAID);
+    world.advance(MINUTE);
+    turn(&mut world, &chain.worker, "t1", false);
+    world.advance(5 * MINUTE);
+    world.sleep(8 * HOUR);
+    world.advance(N - 5 * MINUTE);
+    let [(episode, _, _)] = <[_; 1]>::try_from(open_episodes(&world)).unwrap();
+
+    let text = take(&world, &test_taps::outbox_key(&episode, 1));
+    assert!(
+        text.contains(&format!("Last activity: {} output.", hh_mm(&world, worked))),
+        "{text}"
+    );
+    let read = result(call(
+        &world,
+        chain.lead.as_str(),
+        "alarms.read",
+        json!({"alarm": episode}),
+    ));
+    assert_eq!(
+        read["lastActivity"],
+        format!("{} output", hh_mm(&world, worked)),
+        "{read}"
+    );
 }
 
 /// An episode row of the report: id, Mono, stalled since (wall), closed

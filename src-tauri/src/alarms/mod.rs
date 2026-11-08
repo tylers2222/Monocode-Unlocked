@@ -62,8 +62,8 @@ pub(crate) fn notify_tyler(
     (active, wall): (i64, i64),
     mut show: impl FnMut(&TylerAlarm) -> Result<(), String>,
 ) -> Result<(), String> {
-    let pending = route::tyler_pending(&*store.lock_conn()?, active, wall)
-        .map_err(|error| error.to_string())?;
+    let pending =
+        route::tyler_pending(&*store.lock_conn()?, active).map_err(|error| error.to_string())?;
     for alarm in &pending {
         if let Err(error) = show(alarm) {
             eprintln!("Could not show the alarm {}: {error}", alarm.episode);
