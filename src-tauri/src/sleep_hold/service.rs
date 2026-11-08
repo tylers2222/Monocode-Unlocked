@@ -77,7 +77,8 @@ const MAX_REASON: usize = 2_000;
 const SHOWN_COMMAND: usize = 300;
 const BANNER_COMMAND: usize = 120;
 #[cfg(any(target_os = "macos", test))]
-const DENIED_FROM_BANNER: &str = "denied from notification";
+pub(crate) const DENIED_FROM_BANNER: &str = "denied from notification";
+const DENIED_IN_APP: &str = "denied in the app";
 
 /// Moves on every new hold and every decision, so a waiting `hold.wait`
 /// and Tyler's banner thread wake at once.
@@ -100,7 +101,7 @@ fn changed() {
     CHANGED.changed.notify_all();
 }
 
-fn version() -> u64 {
+pub(crate) fn version() -> u64 {
     *CHANGED
         .version
         .lock()
@@ -108,7 +109,7 @@ fn version() -> u64 {
 }
 
 /// Blocks until something changed after `seen`, or `timeout` passed.
-fn wait_change(seen: u64, timeout: Duration) {
+pub(crate) fn wait_change(seen: u64, timeout: Duration) {
     let version = CHANGED
         .version
         .lock()
@@ -300,6 +301,11 @@ fn how_long(kind: Option<WaitKind>, seconds: Option<f64>) -> HowLong {
             bounded("a length set when it runs".into())
         }
     }
+}
+
+/// How long a stored hold's wait runs, as the hold text says it.
+pub(crate) fn how_long_text(wait_kind: &str, seconds: Option<f64>) -> String {
+    how_long(kind_of(wait_kind), seconds).text
 }
 
 fn duration(seconds: f64) -> String {
@@ -750,13 +756,15 @@ pub(crate) fn decide_call(
     }
 }
 
-/// Tyler answered hold `hold` from its banner. `false` when it was
+/// Tyler answered hold `hold`: from its banner (no request id), or in the
+/// app under `request_id`. `reason` goes with a deny. `false` when it was
 /// decided or expired already, or is not Tyler's.
-#[cfg(any(target_os = "macos", test))]
 pub(crate) fn tyler_decides(
     conn: &Connection,
     hold: &str,
     allow: bool,
+    reason: Option<&str>,
+    request_id: Option<&str>,
     now: HoldTime,
 ) -> rusqlite::Result<bool> {
     let tx = immediate(conn)?;
@@ -774,14 +782,63 @@ pub(crate) fn tyler_decides(
     let (decision, reason) = if allow {
         (Decision::Allow, None)
     } else {
-        (Decision::Deny, Some(DENIED_FROM_BANNER))
+        (Decision::Deny, reason)
     };
-    let decided = store::decide(&tx, hold, decision, "tyler", reason, None, at)?;
+    let decided = store::decide(&tx, hold, decision, "tyler", reason, request_id, at)?;
     tx.commit()?;
     if decided {
         changed();
     }
     Ok(decided)
+}
+
+/// Tyler's Allow or Deny on hold `hold`'s card in the app (U2 frame 3),
+/// under the rules of his banner: only his holds, and the first decision
+/// wins (`false`). The same call repeated with its request id is `true`.
+pub(crate) fn tyler_decides_in_app(
+    conn: &Connection,
+    hold: &str,
+    allow: bool,
+    reason: Option<&str>,
+    request_id: &str,
+    now: HoldTime,
+) -> Result<bool, Refusal> {
+    if !alarm_act::valid_request_id(request_id) {
+        return Err(Refusal::InvalidInput(alarm_act::REQUEST_ID_HINT.into()));
+    }
+    let reason = reason.map(str::trim).filter(|reason| !reason.is_empty());
+    match reason {
+        Some(_) if allow => return Err(Refusal::InvalidInput("An allow takes no reason.".into())),
+        Some(reason) if reason.chars().count() > MAX_REASON => {
+            return Err(Refusal::InvalidInput(format!(
+                "reason must be 1 to {MAX_REASON} characters."
+            )))
+        }
+        _ => {}
+    }
+    let row = store::get(conn, hold)?.ok_or(Refusal::UnknownHold)?;
+    if row.provisioner != "tyler" {
+        return Err(Refusal::NotYourHold);
+    }
+    if let Some(done) = row.decision {
+        let asked = if allow {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
+        return Ok(done == asked
+            && row.decided_by.as_deref() == Some("tyler")
+            && row.decided_request_id.as_deref() == Some(request_id));
+    }
+    let reason = reason.unwrap_or(DENIED_IN_APP);
+    Ok(tyler_decides(
+        conn,
+        hold,
+        allow,
+        Some(reason),
+        Some(request_id),
+        now,
+    )?)
 }
 
 /// A banner Tyler gets for a held wait, identifier `hold:<id>`.
@@ -894,7 +951,8 @@ pub(crate) fn banner_answer<R: tauri::Runtime>(app: &tauri::AppHandle<R>, hold: 
     let store = app.state::<SessionStore>();
     let decided = store.lock_conn().and_then(|conn| {
         let now = now(&store, &conn).map_err(|error| error.to_string())?;
-        tyler_decides(&conn, hold, allow, now).map_err(|error| error.to_string())
+        tyler_decides(&conn, hold, allow, Some(DENIED_FROM_BANNER), None, now)
+            .map_err(|error| error.to_string())
     });
     if let Err(error) = decided {
         eprintln!("Could not record Tyler's answer to {hold}: {error}");

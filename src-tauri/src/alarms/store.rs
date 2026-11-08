@@ -115,7 +115,8 @@ pub(crate) struct Settings {
     pub wake_minutes: i64,
     pub escalate_minutes: i64,
     pub sleep_hold: bool,
-    /// Off until row U ships an answer surface for Tyler.
+    /// On: Tyler answers his agents' holds on the in-app card (U2 frame 3)
+    /// or the banner (Tyler 2026-11-08).
     pub tyler_sleep_hold: bool,
     pub root_giga: Option<String>,
     /// A single foreground sleep under this many seconds runs unasked
@@ -131,7 +132,7 @@ impl Default for Settings {
             wake_minutes: 2,
             escalate_minutes: 15,
             sleep_hold: true,
-            tyler_sleep_hold: false,
+            tyler_sleep_hold: true,
             root_giga: None,
             short_sleep_skip_s: 10,
         }
@@ -932,7 +933,7 @@ mod tests {
                 defaults.root_giga.clone(),
                 defaults.short_sleep_skip_s,
             ),
-            (15, 3, 2, 15, true, false, None, 10)
+            (15, 3, 2, 15, true, true, None, 10)
         );
         conn.execute_batch(
             "INSERT INTO alarm_settings VALUES ('stall_minutes', '30'), ('dialog_minutes', 'soon'),

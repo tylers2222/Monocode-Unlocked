@@ -20,6 +20,7 @@ pub(crate) mod taps;
 mod text;
 mod tree;
 mod unseen;
+pub(crate) mod view;
 pub(crate) mod wake_retry;
 
 use rusqlite::Connection;
@@ -102,8 +103,11 @@ pub(crate) fn notify_tyler(
     Ok(())
 }
 
-/// Starts the thread that puts Tyler's alarms up as OS notifications.
+/// Starts the thread that puts Tyler's alarms up as OS notifications, and
+/// the one that tells the front end the alarms changed (any process).
 pub(crate) fn init(app: &tauri::AppHandle) {
+    let watched = app.clone();
+    std::thread::spawn(move || view::watch(&watched));
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(

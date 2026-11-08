@@ -939,6 +939,73 @@ fn alarm_act(
     Ok((response, Default::default()))
 }
 
+/// U2 frame 2: a provisioner's chat card acts on an alarm as the chat's
+/// owner `session_id`, run as `serve` runs that session's `app alarms.*`,
+/// with the calling window as the grant's.
+#[tauri::command(async)]
+pub fn control_alarm_act(
+    window: WebviewWindow,
+    host: State<'_, ControlHost>,
+    session_id: String,
+    action: String,
+    input: Value,
+    request_id: String,
+) -> Value {
+    let store = window.state::<SessionStore>();
+    let call = Call {
+        namespace: "app".into(),
+        request_id,
+        action,
+        input,
+    };
+    let (response, notices) = ui_alarm_act(
+        &store,
+        &host.inner,
+        window.label(),
+        session_id,
+        call,
+        &mut |label: &str, event: Event| {
+            window
+                .emit_to(label, "monocode-control-request", event)
+                .is_ok()
+        },
+        REPLY_WAIT,
+    );
+    notices.emit(window.app_handle());
+    if response["ok"] == true {
+        crate::alarms::view::changed(window.app_handle());
+    }
+    response
+}
+
+/// One `alarms.*` call from the front end as `session` in `window`.
+fn ui_alarm_act(
+    store: &SessionStore,
+    inner: &Mutex<Inner>,
+    window: &str,
+    session: String,
+    call: Call,
+    emit: &mut impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> (Value, Notices) {
+    if !crate::alarms::act::valid_request_id(&call.request_id)
+        || !call.action.starts_with("alarms.")
+    {
+        return (
+            Failure::from("Invalid alarms action or request ID").response(),
+            Notices::default(),
+        );
+    }
+    let grant = Grant {
+        window: window.to_string(),
+        session,
+        cwd: String::new(),
+        token: String::new(),
+    };
+    alarm_act(store, inner, &grant, call, emit, wait)
+        .unwrap_or_else(|failure| (failure.response(), Notices::default()))
+}
+
 /// The `alarms.*` seam as `serve` runs it, for the scenario tests.
 #[cfg(test)]
 pub(crate) mod alarm_seam {
@@ -947,6 +1014,50 @@ pub(crate) mod alarm_seam {
     /// One window event: the window, the session it acts as, the action
     /// and its input.
     pub(crate) type Sent = (String, String, String, Value);
+
+    /// The control host with each `(window, session)` of `loaded`.
+    fn host(loaded: &[(&str, &str)]) -> Mutex<Inner> {
+        let mut host = Inner::default();
+        for (window, session) in loaded {
+            host.loaded
+                .entry((*window).to_string())
+                .or_default()
+                .insert((*session).to_string());
+        }
+        Mutex::new(host)
+    }
+
+    /// Runs `act` on a host with `loaded`; every window it reaches replies
+    /// `reply`. The response, and what each window was sent.
+    fn run(
+        loaded: &[(&str, &str)],
+        reply: &Value,
+        act: impl FnOnce(&Mutex<Inner>, &mut dyn FnMut(&str, Event) -> bool) -> Value,
+    ) -> (Value, Vec<Sent>) {
+        let inner = host(loaded);
+        let mut sent = Vec::new();
+        let response = act(&inner, &mut |window, event| {
+            let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
+            pending.reply.send(reply.clone()).unwrap();
+            sent.push((
+                window.to_string(),
+                event.session_id,
+                event.action,
+                event.input,
+            ));
+            true
+        });
+        (response, sent)
+    }
+
+    fn app_call(action: &str, input: Value, request_id: &str) -> Call {
+        Call {
+            namespace: "app".into(),
+            request_id: request_id.into(),
+            action: action.into(),
+            input,
+        }
+    }
 
     /// One `alarms.*` call from `caller` (window, session). `loaded` says
     /// which window has each session loaded; every window replies `reply`.
@@ -959,46 +1070,47 @@ pub(crate) mod alarm_seam {
         request_id: &str,
         reply: &Value,
     ) -> (Value, Vec<Sent>) {
-        let mut host = Inner::default();
-        for (window, session) in loaded {
-            host.loaded
-                .entry((*window).to_string())
-                .or_default()
-                .insert((*session).to_string());
-        }
-        let inner = Mutex::new(host);
         let grant = Grant {
             window: caller.0.into(),
             session: caller.1.into(),
             cwd: String::new(),
             token: String::new(),
         };
-        let mut sent = Vec::new();
-        let response = alarm_act(
-            store,
-            &inner,
-            &grant,
-            Call {
-                namespace: "app".into(),
-                request_id: request_id.into(),
-                action: action.into(),
-                input,
-            },
-            &mut |window, event| {
-                let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
-                pending.reply.send(reply.clone()).unwrap();
-                sent.push((
-                    window.to_string(),
-                    event.session_id,
-                    event.action,
-                    event.input,
-                ));
-                true
-            },
-            Duration::from_secs(1),
-        )
-        .map_or_else(Failure::response, |(response, _)| response);
-        (response, sent)
+        run(loaded, reply, |inner, emit| {
+            alarm_act(
+                store,
+                inner,
+                &grant,
+                app_call(action, input, request_id),
+                &mut &mut *emit,
+                Duration::from_secs(1),
+            )
+            .map_or_else(Failure::response, |(response, _)| response)
+        })
+    }
+
+    /// `control_alarm_act` from window `window` as session `session`.
+    pub(crate) fn ui_call(
+        store: &SessionStore,
+        loaded: &[(&str, &str)],
+        (window, session): (&str, &str),
+        action: &str,
+        input: Value,
+        request_id: &str,
+        reply: &Value,
+    ) -> (Value, Vec<Sent>) {
+        run(loaded, reply, |inner, emit| {
+            ui_alarm_act(
+                store,
+                inner,
+                window,
+                session.to_string(),
+                app_call(action, input, request_id),
+                &mut &mut *emit,
+                Duration::from_secs(1),
+            )
+            .0
+        })
     }
 }
 
@@ -3076,6 +3188,8 @@ pub(crate) mod tests {
             &store.lock_conn().unwrap(),
             "sh_a1",
             true,
+            Some(crate::sleep_hold::service::DENIED_FROM_BANNER),
+            None,
             (0, 0).into(),
         );
         assert!(decided.unwrap());
@@ -3193,6 +3307,8 @@ pub(crate) mod tests {
             &store.lock_conn().unwrap(),
             "sh_a1",
             true,
+            Some(crate::sleep_hold::service::DENIED_FROM_BANNER),
+            None,
             (0, 0).into(),
         );
         assert!(!late.unwrap(), "a later allow is refused");

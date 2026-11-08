@@ -8,7 +8,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::deliver::{deliver, logged_before, Caller, Delivery};
+use super::deliver::{deliver, logged_before, logged_in_tx, Caller, Delivery, Logged};
 use super::provisioner::Provisioner;
 use super::rights::{authorize, standing, target_of, Denied, How};
 use super::route::{self, EpisodeRow};
@@ -222,7 +222,7 @@ fn on_chain(
     let index = standing(&chain, caller).ok_or(Refusal::NotYourAlarm)?;
     // A retry answers as the first call did, even once the act closed it.
     if how != How::Read {
-        if let Some(before) = logged_before(conn, &episode.id, caller, request_id)? {
+        if let Some(before) = logged_before(conn, &episode.id, &caller.to_string(), request_id)? {
             return Ok(Found::Before(before));
         }
     }
@@ -778,6 +778,174 @@ fn act_on(
         },
         (active, wall),
     )
+}
+
+/// The stored actor of Tyler's acts and sends.
+pub(crate) const TYLER: &str = "tyler";
+
+pub(crate) const REQUEST_ID_HINT: &str = "requestId must be 1 to 128 of A-Z, a-z, 0-9, - and _.";
+
+/// A request id the app logs from the front end: as `RequestId::parse`
+/// (design 3.5) takes it.
+pub(crate) fn valid_request_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// What Tyler's act logged: its result, and the session whose plan it
+/// answered (the front end sent the answer; the detector hears of it).
+#[derive(Debug)]
+pub(crate) struct TylerActed {
+    pub result: Value,
+    pub answered_plan: Option<SessionId>,
+}
+
+/// The alarm reached Tyler's level: a send to him is stored.
+fn tyler_told(conn: &Connection, episode: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM alarm_sends WHERE episode_id = ?1 AND recipient = ?2)",
+        params![episode, TYLER],
+        |row| row.get(0),
+    )
+}
+
+/// The nudge Tyler's nudge sends: the one an agent provisioner's nudge to
+/// the stalled agent is.
+fn tyler_nudge(
+    conn: &Connection,
+    settings: &Settings,
+    episode: &EpisodeRow,
+    active: i64,
+) -> rusqlite::Result<String> {
+    let stall = route::stall(conn, episode, settings, active)?;
+    Ok(text::nudge(&stall, TYLER, text::NudgeTo::Agent))
+}
+
+/// Checks Tyler's answer `detail` against the dialog the agent waits on
+/// now: the one the alarm named. `Some(session)` for a plan, whose answer
+/// is a message the front end sends.
+fn tyler_answer(
+    conn: &Connection,
+    episode: &EpisodeRow,
+    detail: &str,
+) -> Result<Option<SessionId>, Refusal> {
+    let (kind, pending) = pending_dialog(conn, &episode.actor)?.ok_or(Refusal::DialogGone)?;
+    let shown = route::dialog_shown(conn, &episode.id)?;
+    match kind.as_str() {
+        // A plan has no request id: the alarm named it if it showed a
+        // dialog with none.
+        "plan" => {
+            if shown.is_some() || episode.cause != "dialog" {
+                return Err(Refusal::DialogGone);
+            }
+            let denied = detail
+                .strip_prefix("deny:")
+                .is_some_and(|reason| !reason.trim().is_empty());
+            if detail != "allow" && !denied {
+                return Err(Refusal::InvalidInput(
+                    "The dialog is a plan: detail is allow, or deny: <reason>.".into(),
+                ));
+            }
+            Ok(Some(
+                route::session_of(conn, &episode.actor)?.ok_or(Refusal::DialogGone)?,
+            ))
+        }
+        _ if shown.is_none() || pending != shown => Err(Refusal::DialogGone),
+        "question" => Ok(None),
+        _ if matches!(detail, "allow" | "deny") => Ok(None),
+        _ => Err(Refusal::InvalidInput(
+            "The dialog is a permission: detail is allow or deny.".into(),
+        )),
+    }
+}
+
+/// Tyler acts on the stalled agent of `alarm` directly, from its own
+/// session's window (U2 contract, decision (a)). Only once the alarm
+/// reached his level. It logs the act, once per request id; the front end
+/// does its effect: it answers the dialog, or sends the steer text or the
+/// nudge prompt this returns.
+pub(crate) fn tyler_act(
+    conn: &Connection,
+    alarm: &str,
+    how: &str,
+    detail: Option<&str>,
+    request_id: &str,
+    (active, wall): (i64, i64),
+) -> Result<TylerActed, Refusal> {
+    if !valid_request_id(request_id) {
+        return Err(Refusal::InvalidInput(REQUEST_ID_HINT.into()));
+    }
+    let detail = detail.map(str::trim).filter(|detail| !detail.is_empty());
+    let (how, max) = match how {
+        "answer" => ("answer", 8000),
+        "steer" => ("steer", 8000),
+        "dismiss" => ("dismiss", 2000),
+        "nudge" => ("nudge", 0),
+        _ => {
+            return Err(Refusal::InvalidInput(
+                "how must be answer, steer, nudge or dismiss.".into(),
+            ))
+        }
+    };
+    let detail = match (how, detail) {
+        ("nudge", None) => None,
+        ("nudge", Some(_)) => return Err(Refusal::InvalidInput("A nudge takes no detail.".into())),
+        (_, Some(detail)) if detail.chars().count() <= max => Some(detail),
+        (_, _) => {
+            return Err(Refusal::InvalidInput(format!(
+                "detail must be a string of 1 to {max} characters."
+            )))
+        }
+    };
+    let episode = route::episode(conn, alarm)?.ok_or(Refusal::UnknownAlarm)?;
+    if !tyler_told(conn, &episode.id)? {
+        return Err(Refusal::NotYourAlarm);
+    }
+    let settings = Settings::load(conn)?;
+    // A retry answers as the first call did, even once the act closed it.
+    if let Some(mut before) = logged_before(conn, &episode.id, TYLER, request_id)? {
+        if before["acted"] == "nudge" {
+            before["prompt"] = json!(tyler_nudge(conn, &settings, &episode, active)?);
+        }
+        return Ok(TylerActed {
+            result: before,
+            answered_plan: None,
+        });
+    }
+    if !episode.open {
+        return Err(Refusal::AlarmClosed);
+    }
+    let answered_plan = match (how, detail) {
+        ("answer", Some(detail)) => tyler_answer(conn, &episode, detail)?,
+        _ => None,
+    };
+    let prompt = match how {
+        "nudge" => Some(tyler_nudge(conn, &settings, &episode, active)?),
+        _ => None,
+    };
+    let (mut result, _) = logged_in_tx(
+        conn,
+        &episode,
+        &Logged {
+            caller: TYLER,
+            target: &episode.actor,
+            how,
+            detail,
+            // The front end sends it: no outbox row.
+            prompt: None,
+            request_id,
+        },
+        (active, wall),
+    )?;
+    if let Some(prompt) = prompt {
+        result["prompt"] = json!(prompt);
+    }
+    Ok(TylerActed {
+        result,
+        answered_plan,
+    })
 }
 
 #[cfg(test)]

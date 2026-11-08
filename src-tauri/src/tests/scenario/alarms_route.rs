@@ -18,6 +18,7 @@ use crate::control::alarm_seam::{self, Sent};
 use crate::mono_messages::SessionId;
 use crate::mono_roster::MonoRole;
 
+mod view;
 mod window;
 
 const P: &str = "/p/alarm-route";

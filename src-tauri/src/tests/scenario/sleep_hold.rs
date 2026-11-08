@@ -409,11 +409,12 @@ fn only_the_chain_above_answers_and_the_first_answer_stands() {
     );
 }
 
-// Defect: with Tyler's holds off (until his card ships), his agents' sleeps
-// wait 2 min for an answer no one can give, or a banner goes out.
+// Defect: with Tyler's holds off, his agents' sleeps wait 2 min for an
+// answer he does not want to give, or a banner goes out.
 #[test]
 fn tyler_holds_are_skipped_while_his_setting_is_off() {
     let world = World::new("hold-tyler-off");
+    set(&world, "tyler_sleep_hold", "off");
     let solo = world.add_session("solo", P, None);
     let hold = request(&world, &solo, "toolu_1", "sleep 60");
     assert_eq!(status(&world, &solo, &hold), HoldWaitReply::Allow);
@@ -465,8 +466,24 @@ fn tyler_gets_one_banner_per_hold_and_it_goes_once_decided_or_expired() {
     );
 
     let conn = world.conn();
-    assert!(service::tyler_decides(&conn, &first, false, now(&world).into()).unwrap());
-    assert!(!service::tyler_decides(&conn, &first, true, now(&world).into()).unwrap());
+    assert!(service::tyler_decides(
+        &conn,
+        &first,
+        false,
+        Some(service::DENIED_FROM_BANNER),
+        None,
+        now(&world).into()
+    )
+    .unwrap());
+    assert!(!service::tyler_decides(
+        &conn,
+        &first,
+        true,
+        Some(service::DENIED_FROM_BANNER),
+        None,
+        now(&world).into()
+    )
+    .unwrap());
     drop(conn);
     assert_eq!(
         status(&world, &solo, &first),
@@ -1179,7 +1196,15 @@ fn two_processes_show_a_tyler_hold_once_and_take_it_down_once() {
     assert_eq!(theirs.get(), (0, 0), "the other process shows nothing");
     assert_eq!(counted_pass(&other, wall, &|| {}), (0, 0));
 
-    assert!(service::tyler_decides(&world.conn(), &hold, true, now(&world).into()).unwrap());
+    assert!(service::tyler_decides(
+        &world.conn(),
+        &hold,
+        true,
+        Some(service::DENIED_FROM_BANNER),
+        None,
+        now(&world).into()
+    )
+    .unwrap());
     assert_eq!(counted_pass(world.store(), wall, &meanwhile), (0, 1));
     assert_eq!(theirs.get(), (0, 0), "the other process takes nothing down");
     assert_eq!(counted_pass(&other, wall, &|| {}), (0, 0));
@@ -1302,6 +1327,14 @@ fn with_the_active_clock_stopped_a_hold_fails_closed() {
         active: Active::Stopped(active),
         wall,
     };
-    assert!(!service::tyler_decides(&world.conn(), &tyler, true, stopped).unwrap());
+    assert!(!service::tyler_decides(
+        &world.conn(),
+        &tyler,
+        true,
+        Some(service::DENIED_FROM_BANNER),
+        None,
+        stopped
+    )
+    .unwrap());
     assert_eq!(logged(&world, &tyler).0.as_deref(), Some("timeout"));
 }

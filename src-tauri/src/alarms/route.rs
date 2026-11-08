@@ -215,7 +215,7 @@ pub(crate) fn short(text: &str, max: usize) -> String {
 }
 
 /// The local clock time of wall time `wall_ms`, as `HH:MM`.
-fn clock(conn: &Connection, wall_ms: i64) -> rusqlite::Result<String> {
+pub(crate) fn clock(conn: &Connection, wall_ms: i64) -> rusqlite::Result<String> {
     conn.query_row(
         "SELECT strftime('%H:%M', ?1 / 1000, 'unixepoch', 'localtime')",
         [wall_ms],
@@ -371,7 +371,7 @@ pub(crate) fn stall(
 }
 
 /// What level `level`'s recipient did not act on, seen from the agent.
-fn missed_what(chain: &[Provisioner], level: usize) -> String {
+pub(crate) fn missed_what(chain: &[Provisioner], level: usize) -> String {
     if level > 2 {
         return format!("the level-{} alarm", level - 1);
     }
@@ -389,7 +389,11 @@ fn missed_what(chain: &[Provisioner], level: usize) -> String {
     .into()
 }
 
-fn next_of(conn: &Connection, chain: &[Provisioner], level: usize) -> rusqlite::Result<Next> {
+pub(crate) fn next_of(
+    conn: &Connection,
+    chain: &[Provisioner],
+    level: usize,
+) -> rusqlite::Result<Next> {
     if matches!(chain.get(level), Some(Provisioner::Tyler) | None) {
         return Ok(Next::None);
     }
