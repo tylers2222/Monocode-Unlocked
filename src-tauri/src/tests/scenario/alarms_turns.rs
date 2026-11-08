@@ -137,6 +137,9 @@ enum Finish {
     /// The app quits at 2N with the child, and starts again an hour later
     /// (S1 r5 m2).
     AppRestarts,
+    /// The child is replaced at 2N, and the old one's stdout ends after
+    /// (S1 r6 m1).
+    Respawn,
 }
 
 // Defect (S1 r3 M2, lead ruling b): a lead that backgrounds a wait and
@@ -144,7 +147,8 @@ enum Finish {
 // or once the job ends, its clock does not restart from that end; or
 // (S1 r4 F2, r5 m2) a task of a child killed alone or with the app reads
 // as running, so the lead with open work alarms at 4N instead of N after
-// the kill or the relaunch.
+// the kill or the relaunch; or (S1 r6 m1) a respawn forgets the task it
+// ended, so the lead alarms at once instead of N after the respawn.
 #[test]
 fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
     for finish in [
@@ -152,6 +156,7 @@ fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
         Finish::TaskEnds,
         Finish::ChildExits,
         Finish::AppRestarts,
+        Finish::Respawn,
     ] {
         let mut world = World::new(&format!("alarm-idle-background-{finish:?}"));
         let mono = world.add_mono_in("aib-mono", MonoRole::Mono, &[P]);
@@ -187,6 +192,12 @@ fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
             Finish::AppRestarts => {
                 world.advance(N);
                 world.down(60 * MINUTE);
+                (world.active_ms(), world.active_ms() + N)
+            }
+            Finish::Respawn => {
+                world.advance(N);
+                let _successor = claude_tap(&world, &lead);
+                claude.exited();
                 (world.active_ms(), world.active_ms() + N)
             }
         };

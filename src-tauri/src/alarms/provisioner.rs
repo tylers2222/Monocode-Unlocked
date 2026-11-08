@@ -1,6 +1,8 @@
 //! Design section 5: who started an agent or gave it its work, and so who
 //! hears of its stall. `lineage` reads the rows; `provisioner` decides.
 
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::ask_gate::Actor;
@@ -147,16 +149,7 @@ pub(crate) fn lineage(
     root_setting: Option<&str>,
 ) -> rusqlite::Result<Lineage> {
     Ok(match actor {
-        Actor::Session(session) => match mono_messages::session_level(conn, session)? {
-            // An archived lead hears nothing, so its own provisioner does.
-            Some(SessionLevel::Worker { lead }) if archived(conn, &lead)? => {
-                return lineage(conn, &Actor::Session(lead), root_setting);
-            }
-            Some(SessionLevel::Worker { lead }) => Lineage::Worker { lead },
-            Some(SessionLevel::Lead) | None => Lineage::Lead {
-                starter: starter(conn, session)?,
-            },
-        },
+        Actor::Session(session) => session_lineage(conn, session)?,
         Actor::Mono(mono) => match mono_messages::mono_row(conn, mono)?.map(|row| row.role) {
             Some(MonoRole::Giga) => Lineage::Giga,
             Some(MonoRole::Mono) | None => Lineage::Mono {
@@ -164,6 +157,26 @@ pub(crate) fn lineage(
                 root_giga: root_giga(root_setting, &gigas(conn)?),
             },
         },
+    })
+}
+
+/// An archived lead hears nothing, so its own provisioner does. A cycle of
+/// archived leads (only from bad rows) ends at the session that closes it.
+fn session_lineage(conn: &Connection, session: &SessionId) -> rusqlite::Result<Lineage> {
+    let mut seen = HashSet::new();
+    let mut session = session.clone();
+    loop {
+        seen.insert(session.clone());
+        match mono_messages::session_level(conn, &session)? {
+            Some(SessionLevel::Worker { lead }) if !archived(conn, &lead)? => {
+                return Ok(Lineage::Worker { lead });
+            }
+            Some(SessionLevel::Worker { lead }) if !seen.contains(&lead) => session = lead,
+            Some(SessionLevel::Worker { .. } | SessionLevel::Lead) | None => break,
+        }
+    }
+    Ok(Lineage::Lead {
+        starter: starter(conn, &session)?,
     })
 }
 
@@ -281,5 +294,40 @@ mod tests {
         assert_eq!(root_giga(None, &gigas), Some(mono("general")));
         assert_eq!(root_giga(None, &gigas[..1]), Some(mono("first")));
         assert_eq!(root_giga(None, &[]), None);
+    }
+
+    // Defect (S1 r6 n1): a cycle of archived leads in `lead_session_id`
+    // (only from bad rows) recurses until the stack overflows, which aborts
+    // the app on every pass.
+    #[test]
+    fn a_cycle_of_archived_leads_ends_at_tyler() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at,
+               updated_at, lead_session_id, archived)
+             VALUES ('self', '/', 'claude', 'm', 'default', 'S', 1, 1, 'self', 1),
+                    ('a', '/', 'claude', 'm', 'default', 'S', 1, 1, 'b', 1),
+                    ('b', '/', 'claude', 'm', 'default', 'S', 1, 1, 'a', 1),
+                    ('lead', '/', 'claude', 'm', 'default', 'S', 1, 1, NULL, 0),
+                    ('gone', '/', 'claude', 'm', 'default', 'S', 1, 1, 'lead', 1),
+                    ('worker', '/', 'claude', 'm', 'default', 'S', 1, 1, 'gone', 0)",
+        )
+        .unwrap();
+        let session = |id: &str| Actor::Session(SessionId::parse(id).unwrap());
+        for id in ["self", "a", "b"] {
+            assert_eq!(
+                lineage(&conn, &session(id), None).unwrap(),
+                Lineage::Lead { starter: None },
+                "{id}"
+            );
+        }
+        assert_eq!(
+            lineage(&conn, &session("worker"), None).unwrap(),
+            Lineage::Worker {
+                lead: SessionId::parse("lead").unwrap()
+            },
+            "an archived lead's own lead hears of its worker"
+        );
     }
 }

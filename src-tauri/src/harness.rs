@@ -3522,7 +3522,8 @@ pub(crate) mod tests {
     // was spawned, and its exit snapshot (its harness, its old progress, no
     // tool running) is written over the successor's row, so an untapped
     // successor reads as a frozen Claude tap, or a tapped one's silent tool
-    // as not running: hung at N either way.
+    // as not running: hung at N either way. Or (S1 r6 m1) the respawn
+    // forgets the end of the old child's task.
     #[test]
     fn a_replaced_childs_exit_leaves_its_successors_row() {
         for tapped in [false, true] {
@@ -3553,7 +3554,11 @@ pub(crate) mod tests {
                 )
                 .unwrap();
             let harness = tapped.then(|| "claude".to_string());
-            assert_eq!(row, (harness, tapped, false, None), "tapped: {tapped}");
+            assert_eq!(
+                row,
+                (harness, tapped, false, Some(7_000)),
+                "tapped: {tapped}"
+            );
         }
     }
 

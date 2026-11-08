@@ -185,7 +185,8 @@ fn turn_ended(
 }
 
 /// A new child of `session` was spawned at `at`: what its tap knows starts
-/// over, and `harness` names the tap that reads it (`None`: no tap).
+/// over, and `harness` names the tap that reads it (`None`: no tap). A
+/// background task the old child was running ends at `at` (S1 r6 m1).
 fn spawned(
     conn: &Connection,
     session: &SessionId,
@@ -199,9 +200,10 @@ fn spawned(
          VALUES (?1, ?2, ?3, ?3, ?5, ?4)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
            last_progress_wall_ms = ?5, tool_running = 0, background_running = 0,
-           background_ended_active_ms = NULL, todo_open = 0, dialog_kind = NULL,
-           dialog_request_id = NULL, dialog_text = NULL, dialog_since_active_ms = NULL,
-           updated_wall_ms = ?4",
+           background_ended_active_ms = CASE background_running
+             WHEN 1 THEN ?3 ELSE background_ended_active_ms END,
+           todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL, dialog_text = NULL,
+           dialog_since_active_ms = NULL, updated_wall_ms = ?4",
         params![
             session.as_str(),
             harness.map(Harness::as_str),
@@ -213,7 +215,9 @@ fn spawned(
     Ok(())
 }
 
-/// A snapshot that moved no progress keeps the progress's wall time.
+/// A snapshot that moved no progress keeps the progress's wall time. A tap
+/// that saw no background end keeps the row's, which an older child's end
+/// or its respawn stamped (S1 r6 m1).
 fn write_tap(
     conn: &Connection,
     session: &SessionId,
@@ -234,7 +238,8 @@ fn write_tap(
            last_progress_active_ms = ?3, tool_running = ?4, todo_open = ?5, dialog_kind = ?6,
            dialog_request_id = ?7, dialog_text = ?8, dialog_since_active_ms = ?9,
            updated_wall_ms = ?10,
-           background_running = ?11, background_ended_active_ms = ?12",
+           background_running = ?11,
+           background_ended_active_ms = COALESCE(?12, background_ended_active_ms)",
         params![
             session.as_str(),
             row.harness.as_str(),
