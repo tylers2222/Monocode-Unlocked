@@ -4,8 +4,9 @@
 
 use serde::Serialize;
 
-/// How many stall thresholds a turn may sit silent on a background tool
-/// before it counts as hung (lead n3).
+/// How many stall thresholds an agent may wait on a background tool: a
+/// silent turn before it counts as hung (lead n3), or an idle agent with
+/// open work before it alarms (lead ruling S1 r3 b).
 pub(crate) const BACKGROUND_STALLS: i64 = 4;
 
 /// The thresholds of design section 3, in active milliseconds.
@@ -23,10 +24,23 @@ pub(crate) enum Turn {
     Idle {
         started_at: Option<i64>,
         ended_at: i64,
+        background: Background,
     },
     Running {
         started_at: i64,
         progress: Progress,
+    },
+}
+
+/// A background tool (a Claude task) of an idle agent, which may outlive
+/// the turn that started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Background {
+    None,
+    Running,
+    /// The last one ended at `at`.
+    Ended {
+        at: i64,
     },
 }
 
@@ -252,6 +266,7 @@ fn blocking_dialog(facts: &Facts) -> Option<Dialog> {
             Turn::Idle {
                 started_at,
                 ended_at,
+                ..
             },
         ) if started_at.is_none_or(|started| dialog.since >= started) => Some(Dialog {
             since: dialog.since.max(ended_at),
@@ -308,7 +323,11 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 Status::Working
             }
         }
-        Turn::Idle { ended_at, .. } => {
+        Turn::Idle {
+            ended_at,
+            background,
+            ..
+        } => {
             if let Some(since) = wake_missed(facts, now, limits) {
                 return Status::WakeMissed { since };
             }
@@ -322,12 +341,21 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
             if open_work(facts).is_empty() {
                 return Status::Idle;
             }
-            Status::IdleOpenWork {
-                since: unhandled(facts)
-                    .map(|(_, at)| at)
-                    .chain(facts.settled_at)
-                    .fold(ended_at, i64::max),
+            let background_end = match background {
+                Background::Ended { at } => Some(at),
+                Background::None | Background::Running => None,
+            };
+            let since = unhandled(facts)
+                .map(|(_, at)| at)
+                .chain(facts.settled_at)
+                .chain(background_end)
+                .fold(ended_at, i64::max);
+            if background == Background::Running
+                && now - since < BACKGROUND_STALLS * limits.stall_ms
+            {
+                return Status::Waiting;
             }
+            Status::IdleOpenWork { since }
         }
     }
 }
@@ -368,6 +396,7 @@ fn progressed(facts: &Facts, episode: &Episode) -> bool {
         Turn::Idle {
             started_at,
             ended_at,
+            ..
         } => ended_at > since || started_at.is_some_and(|started| started > since),
         Turn::Running { started_at, .. } => started_at > since,
     };
@@ -433,6 +462,7 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(ENDED - 10 * MIN),
                 ended_at: ENDED,
+                background: Background::None,
             },
             dialog: None,
             open_work: Vec::new(),
@@ -645,6 +675,60 @@ mod tests {
         );
     }
 
+    // Defect (S1 r3 M2, lead ruling b): an agent that backgrounds a wait
+    // and ends its turn with open work alarms at N while the job runs, or
+    // never; or once the job ends its clock does not restart there.
+    #[test]
+    fn an_idle_agent_on_a_background_tool_waits_until_four_n() {
+        let with_background = |background| {
+            let facts = with_ask(idle());
+            Facts {
+                turn: Turn::Idle {
+                    started_at: Some(ENDED - 10 * MIN),
+                    ended_at: ENDED,
+                    background,
+                },
+                ..facts
+            }
+        };
+        let running = with_background(Background::Running);
+        for at in [ENDED + 15 * MIN, ENDED + 4 * 15 * MIN - 1] {
+            assert_eq!(next_state(&running, at, LIMITS), Transition::Stay, "{at}");
+        }
+        assert_eq!(
+            next_state(&running, ENDED + 4 * 15 * MIN, LIMITS),
+            Transition::Open {
+                cause: Cause::IdleOpenWork,
+                stalled_since: ENDED
+            }
+        );
+        let finished = ENDED + 20 * MIN;
+        let ended = with_background(Background::Ended { at: finished });
+        assert_eq!(
+            next_state(&ended, finished + 15 * MIN - 1, LIMITS),
+            Transition::Stay
+        );
+        assert_eq!(
+            next_state(&ended, finished + 15 * MIN, LIMITS),
+            Transition::Open {
+                cause: Cause::IdleOpenWork,
+                stalled_since: finished
+            }
+        );
+        assert_eq!(
+            status(
+                &Facts {
+                    open_work: Vec::new(),
+                    ..running
+                },
+                ENDED + 600 * MIN,
+                LIMITS
+            ),
+            Status::Idle,
+            "no open work, no alarm"
+        );
+    }
+
     // Defect (S1 r2 F2): an episode whose cause this build does not judge
     // (the sleep hold's, or a newer build's) is closed as work_cleared the
     // pass after it opens, or never closes when its agent goes.
@@ -710,6 +794,7 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(start),
                 ended_at: asked + MIN,
+                background: Background::None,
             },
             ..facts
         };
@@ -742,6 +827,7 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(ENDED + MIN),
                 ended_at: ENDED + 2 * MIN,
+                background: Background::None,
             },
             ..facts
         };

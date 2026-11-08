@@ -133,16 +133,17 @@ fn branches(agents: &[Agent], edges: &Edges, now: i64) -> Vec<(Vec<Child>, Optio
         .collect();
     let running = agents
         .iter()
-        .filter(|(_, facts, _)| matches!(facts.turn, Turn::Running { .. }))
+        .filter(|(_, facts, _)| !facts.gone && matches!(facts.turn, Turn::Running { .. }))
         .map(|(actor, _, _)| actor.as_str());
     let busy = tree.climb(running, |_, _, _| true);
     let own = agents
         .iter()
         .filter(|(_, facts, limits)| {
-            !matches!(
-                (state::status(facts, now, *limits), facts.turn),
-                (Status::Idle | Status::Gone, Turn::Idle { .. })
-            )
+            !facts.gone
+                && !matches!(
+                    (state::status(facts, now, *limits), facts.turn),
+                    (Status::Idle, Turn::Idle { .. })
+                )
         })
         .map(|(actor, _, _)| actor.as_str());
     let waits = |parent: &str, child: &str, started: bool| tree.waits(parent, child, started);
@@ -199,7 +200,7 @@ fn branches(agents: &[Agent], edges: &Edges, now: i64) -> Vec<(Vec<Child>, Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alarms::state::{next_state, Cause, OpenWork, Progress, Transition};
+    use crate::alarms::state::{next_state, Background, Cause, OpenWork, Progress, Transition};
 
     const MIN: i64 = 60_000;
     const LIMITS: Thresholds = Thresholds {
@@ -214,6 +215,7 @@ mod tests {
             turn: Turn::Idle {
                 started_at: Some(ended_at - MIN),
                 ended_at,
+                background: Background::None,
             },
             dialog: None,
             open_work: Vec::new(),
@@ -420,5 +422,32 @@ mod tests {
             ("session:worker", running),
         ];
         assert_eq!(opening(agents, &cycle, start + 600 * MIN), Vec::new());
+    }
+
+    // Defect (S1 r3 opus n2): a gone worker whose row still reads running
+    // keeps its lead WAITING until the row is forgotten.
+    #[test]
+    fn a_gone_worker_keeps_no_one_waiting() {
+        let start = 100 * MIN;
+        let gone = Facts {
+            gone: true,
+            turn: Turn::Running {
+                started_at: start,
+                progress: Progress::Untapped,
+            },
+            ..idle(start)
+        };
+        let agents = vec![
+            ("session:lead", asked(idle(start), "ask-m")),
+            ("session:worker", gone),
+        ];
+        assert_eq!(
+            opening(
+                agents,
+                &edges(&[("session:lead", "session:worker", true)]),
+                start + 15 * MIN
+            ),
+            vec![("session:lead".to_string(), Cause::IdleOpenWork)]
+        );
     }
 }

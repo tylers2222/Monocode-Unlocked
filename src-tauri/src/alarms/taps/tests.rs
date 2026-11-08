@@ -134,7 +134,7 @@ fn claude_tools_and_background_tasks_run_until_their_end_frames() {
     )
     .unwrap();
     assert!(
-        started.background && !started.tool_running,
+        started.background && !started.tool_running && started.background_ended_at.is_none(),
         "the background task still runs, apart from the turn's tools"
     );
     let ended = feed(
@@ -147,6 +147,11 @@ fn claude_tools_and_background_tasks_run_until_their_end_frames() {
     )
     .unwrap();
     assert!(!ended.background && !ended.tool_running);
+    assert_eq!(
+        ended.background_ended_at,
+        Some(10_000),
+        "S1 r3 M2: its end time"
+    );
 }
 
 // Defect: a TodoWrite list with an unfinished item is not open work, or

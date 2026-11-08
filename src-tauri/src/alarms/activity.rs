@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
 use super::live::Write;
-use super::state::{Dialog, DialogKind, Progress, Turn};
+use super::state::{Background, Dialog, DialogKind, Progress, Turn};
 use super::taps::{Harness, Snapshot};
 use crate::mono_messages::SessionId;
 
@@ -27,6 +27,7 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            last_progress_active_ms INTEGER,
            tool_running            INTEGER NOT NULL DEFAULT 0 CHECK (tool_running IN (0, 1)),
            background_running      INTEGER NOT NULL DEFAULT 0 CHECK (background_running IN (0, 1)),
+           background_ended_active_ms INTEGER,
            dialog_kind             TEXT CHECK (dialog_kind IN ('permission', 'question', 'plan')),
            dialog_request_id       TEXT,
            dialog_text             TEXT,
@@ -54,13 +55,13 @@ pub(crate) fn end_all_running(conn: &Connection, active_ms: i64) -> rusqlite::Re
     Ok(())
 }
 
-/// Each pass, after it wrote the taps' records: a row still running a
-/// turn that `running` (`ControlHost`'s turns, read before the store lock)
-/// does not hold ended by `at`, however its end was lost (review M2). Its
-/// start was recorded in an earlier pass, while the turn was in `running`,
-/// so the turn is over. `recorded` names the sessions to leave: a turn
-/// record of theirs came after `running` was read.
-pub(crate) fn end_unless_running(
+/// Each pass, after it wrote the taps' records, every row agrees with
+/// `running` (`ControlHost`'s turns, read before the store lock) by `at`,
+/// however a record was lost or came out of order (review M2, S1 r3 F3):
+/// a row still running a turn `running` does not hold ended, and a row not
+/// running the turn `running` holds for it started. `recorded` names the
+/// sessions to leave: a turn record of theirs came after `running` was read.
+pub(crate) fn reconcile(
     conn: &Connection,
     running: &HashMap<String, String>,
     recorded: &HashSet<&str>,
@@ -68,22 +69,39 @@ pub(crate) fn end_unless_running(
     wall: i64,
 ) -> rusqlite::Result<()> {
     let rows = conn
-        .prepare("SELECT session_id, turn_id FROM agent_activity WHERE turn_state = 'running'")?
+        .prepare("SELECT session_id, turn_state, turn_id FROM agent_activity")?
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)? == "running",
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (session, turn_id) in rows {
-        let live = turn_id.is_some() && running.get(&session) == turn_id.as_ref();
-        if live || recorded.contains(session.as_str()) {
+    for (session, is_running, turn_id) in rows {
+        if recorded.contains(session.as_str()) {
             continue;
         }
-        conn.execute(
-            "UPDATE agent_activity SET turn_state = 'idle', turn_ended_active_ms = ?2,
-               updated_wall_ms = ?3
-             WHERE session_id = ?1 AND turn_state = 'running'",
-            params![session, at, wall],
-        )?;
+        match (running.get(&session), is_running) {
+            (Some(live), true) if Some(live) == turn_id.as_ref() => {}
+            (Some(live), _) => {
+                conn.execute(
+                    "UPDATE agent_activity SET turn_state = 'running', turn_id = ?2,
+                       turn_started_active_ms = ?3, updated_wall_ms = ?4
+                     WHERE session_id = ?1",
+                    params![session, live, at, wall],
+                )?;
+            }
+            (None, true) => {
+                conn.execute(
+                    "UPDATE agent_activity SET turn_state = 'idle', turn_ended_active_ms = ?2,
+                       updated_wall_ms = ?3
+                     WHERE session_id = ?1",
+                    params![session, at, wall],
+                )?;
+            }
+            (None, false) => {}
+        }
     }
     Ok(())
 }
@@ -165,7 +183,7 @@ fn spawned(
            last_progress_active_ms, updated_wall_ms)
          VALUES (?1, ?2, ?3, ?3, ?4)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
-           tool_running = 0, background_running = 0, todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL,
+           tool_running = 0, background_running = 0, background_ended_active_ms = NULL, todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL,
            dialog_text = NULL, dialog_since_active_ms = NULL, updated_wall_ms = ?4",
         params![session.as_str(), harness.map(Harness::as_str), at, wall],
     )?;
@@ -182,12 +200,13 @@ fn write_tap(
     conn.execute(
         "INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms,
            last_progress_active_ms, tool_running, todo_open, dialog_kind, dialog_request_id,
-           dialog_text, dialog_since_active_ms, updated_wall_ms, background_running)
-         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+           dialog_text, dialog_since_active_ms, updated_wall_ms, background_running,
+           background_ended_active_ms)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
            tool_running = ?4, todo_open = ?5, dialog_kind = ?6, dialog_request_id = ?7,
            dialog_text = ?8, dialog_since_active_ms = ?9, updated_wall_ms = ?10,
-           background_running = ?11",
+           background_running = ?11, background_ended_active_ms = ?12",
         params![
             session.as_str(),
             row.harness.as_str(),
@@ -200,6 +219,7 @@ fn write_tap(
             dialog.map(|dialog| dialog.since),
             wall,
             row.background,
+            row.background_ended_at,
         ],
     )?;
     Ok(())
@@ -239,7 +259,8 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
         .prepare(
             "SELECT session_id, harness, turn_state, turn_started_active_ms, turn_ended_active_ms,
                last_progress_active_ms, tool_running, dialog_kind, dialog_since_active_ms,
-               dialog_text, todo_open, wake_pending_since_active_ms, background_running
+               dialog_text, todo_open, wake_pending_since_active_ms, background_running,
+               background_ended_active_ms
              FROM agent_activity ORDER BY session_id",
         )?
         .query_map([], |row| {
@@ -262,6 +283,11 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
                 _ => Turn::Idle {
                     started_at: started,
                     ended_at: row.get(4)?,
+                    background: match (row.get(12)?, row.get(13)?) {
+                        (true, _) => Background::Running,
+                        (false, Some(at)) => Background::Ended { at },
+                        (false, None) => Background::None,
+                    },
                 },
             };
             let dialog = match (row.get::<_, Option<String>>(7)?, row.get(8)?) {
@@ -326,7 +352,8 @@ mod tests {
             turn_of(&conn),
             Turn::Idle {
                 started_at: Some(10),
-                ended_at: 20
+                ended_at: 20,
+                background: Background::None,
             }
         );
         turn_started(&conn, &session, "t3", 40, 0).unwrap();
@@ -340,8 +367,37 @@ mod tests {
             turn_of(&conn),
             Turn::Idle {
                 started_at: Some(40),
-                ended_at: 60
+                ended_at: 60,
+                background: Background::None,
             }
         );
+    }
+
+    // Defect (S1 r3 F3): a stale start and its re-check end that reach the
+    // hub after the next turn's start idle the row while that turn runs,
+    // and no pass heals it.
+    #[test]
+    fn a_row_idled_by_a_stale_turn_runs_the_live_turn_by_the_next_pass() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_table(&conn).unwrap();
+        let session = SessionId::parse("s-1").unwrap();
+        turn_ended(&conn, &session, "t1", 10, 0).unwrap();
+        turn_started(&conn, &session, "t2", 20, 0).unwrap();
+        turn_started(&conn, &session, "t1", 21, 0).unwrap();
+        turn_ended(&conn, &session, "t1", 22, 0).unwrap();
+        assert!(matches!(turn_of(&conn), Turn::Idle { .. }));
+        let running = HashMap::from([("s-1".to_string(), "t2".to_string())]);
+        reconcile(&conn, &running, &HashSet::from(["s-1"]), 30, 0).unwrap();
+        assert!(
+            matches!(turn_of(&conn), Turn::Idle { .. }),
+            "a record in this take may be newer than the running set"
+        );
+        reconcile(&conn, &running, &HashSet::new(), 35, 0).unwrap();
+        assert!(matches!(
+            turn_of(&conn),
+            Turn::Running { started_at: 35, .. }
+        ));
+        reconcile(&conn, &HashMap::new(), &HashSet::new(), 40, 0).unwrap();
+        assert!(matches!(turn_of(&conn), Turn::Idle { ended_at: 40, .. }));
     }
 }

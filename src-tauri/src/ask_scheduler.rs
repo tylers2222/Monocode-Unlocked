@@ -429,10 +429,14 @@ pub(crate) fn waits(conn: &Connection, session: &SessionId) -> rusqlite::Result<
 }
 
 /// Every recipient an unsent outbox row waits for: a row a window claimed
-/// and has not sent, or an unclaimed one with a prompt (`pending`).
+/// and has not sent, or an unclaimed one with a prompt (`pending`). The
+/// alarms' own rows wait for no one: an untaken alarm escalates and a hold
+/// refuses on their own clocks (lead ruling S1 r3 a).
 pub(crate) fn waiting_recipients(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let rows = conn
-        .prepare(&format!("{ROW} WHERE o.sent_at IS NULL"))?
+        .prepare(&format!(
+            "{ROW} WHERE o.sent_at IS NULL AND o.stage NOT IN ('alarm', 'hold', 'nudge')"
+        ))?
         .query_map([], |row| {
             Ok((row_text(row)?, row.get::<_, Option<String>>(11)?))
         })?

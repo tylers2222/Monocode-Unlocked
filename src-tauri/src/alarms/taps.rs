@@ -465,6 +465,8 @@ pub(crate) struct Snapshot {
     pub last_progress_at: i64,
     pub tool_running: bool,
     pub background: bool,
+    /// When the last background tool ended.
+    pub background_ended_at: Option<i64>,
     pub todo_open: bool,
     pub dialog: Option<TapDialog>,
 }
@@ -476,12 +478,14 @@ impl Snapshot {
             self.harness,
             self.tool_running,
             self.background,
+            self.background_ended_at,
             self.todo_open,
             &self.dialog,
         ) == (
             other.harness,
             other.tool_running,
             other.background,
+            other.background_ended_at,
             other.todo_open,
             &other.dialog,
         )
@@ -496,6 +500,7 @@ pub(crate) struct Tap {
     todo_open: bool,
     tasks: TaskList,
     plan_since: Option<i64>,
+    background_ended_at: Option<i64>,
     last_progress_at: i64,
     written: Option<(Snapshot, i64)>,
 }
@@ -516,6 +521,7 @@ impl Tap {
             todo_open: false,
             tasks: TaskList::default(),
             plan_since: None,
+            background_ended_at: None,
             last_progress_at: 0,
             written: None,
         }
@@ -567,7 +573,9 @@ impl Tap {
                 self.tools.insert(id);
             }
             Event::ToolEnd(id) => {
-                self.tools.remove(&id);
+                if self.tools.remove(&id) && id.starts_with(TASK) && !self.background() {
+                    self.background_ended_at = Some(now);
+                }
             }
             Event::DialogOpen { id, kind, text } => {
                 if !self
@@ -597,6 +605,10 @@ impl Tap {
         }
     }
 
+    fn background(&self) -> bool {
+        self.tools.iter().any(|id| id.starts_with(TASK))
+    }
+
     /// A turn's tool calls end with it; background tasks do not.
     fn end_turn_tools(&mut self) {
         self.tools.retain(|id| id.starts_with(TASK));
@@ -613,7 +625,8 @@ impl Tap {
             harness: self.harness,
             last_progress_at: self.last_progress_at,
             tool_running: self.tools.iter().any(|id| !id.starts_with(TASK)),
-            background: self.tools.iter().any(|id| id.starts_with(TASK)),
+            background: self.background(),
+            background_ended_at: self.background_ended_at,
             todo_open: self.todo_open,
             dialog: self.dialogs.first().cloned().or(plan),
         }

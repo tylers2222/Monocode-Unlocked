@@ -697,7 +697,7 @@ fn pass(
             })
             .map(|(session, _)| session.as_str())
             .collect();
-        activity::end_unless_running(&tx, running, &recorded, active_ms, wall_ms)?;
+        activity::reconcile(&tx, running, &recorded, active_ms, wall_ms)?;
     }
     let rows = Rows::load(&tx)?;
     let agents: Vec<(&Activity, Actor)> = rows

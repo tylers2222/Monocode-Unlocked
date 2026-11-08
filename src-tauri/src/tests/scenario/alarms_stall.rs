@@ -428,6 +428,27 @@ fn a_late_end_of_an_old_turn_leaves_the_next_turn_running() {
     );
 }
 
+// Defect (S1 r3 F3): a stale start of a killed turn and its re-check end
+// reach the hub after the next turn's start, so the lead reads idle while
+// that turn runs and its Mono is alarmed at N.
+#[test]
+fn a_stale_turn_record_after_the_next_start_leaves_that_turn_running() {
+    let mut world = World::new("alarm-stale-start");
+    let mono = world.add_mono_in("ass-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "ass-lead");
+    align(&mut world);
+    turn(&mut world, &lead, "t1", false);
+    turn(&mut world, &lead, "t2", true);
+    for edge in [crate::alarms::Edge::Started, crate::alarms::Edge::Ended] {
+        world.store().alarms.turn(lead.as_str(), "t1", edge);
+    }
+    world.advance(2 * N);
+    assert_eq!(episodes(&world), Vec::new(), "t2 runs, untapped");
+    turn(&mut world, &lead, "t2", false);
+    world.advance(N);
+    assert_eq!(episodes(&world).len(), 1, "idle with its ask from t2's end");
+}
+
 /// `episode`'s close reason, `None` while it is open.
 fn close_reason(world: &World, episode: &str) -> Option<String> {
     world
@@ -577,19 +598,28 @@ fn a_stalled_worker_under_a_giga_mono_and_lead_is_one_episode() {
     world.advance(PASS);
     assert_eq!(episodes(&world), vec![episode.clone()], "and the next pass");
 
-    // The lead's window takes the alarm and the lead reads it; the worker
-    // stays stalled, so every agent above it still waits on its episode.
-    let key = test_taps::outbox_key(&episode.id, 1);
-    {
-        let conn = world.conn();
-        ask_scheduler::claim(&conn, &key, "main", &HashMap::new(), true)
-            .unwrap()
-            .expect("the lead's idle chat takes the alarm");
-        assert!(ask_scheduler::sent(&conn, &key, "main", world.now()).unwrap());
-    }
-    ran_a_turn(&mut world, &lead);
+    // Defect (S1 r3 M1, lead ruling a): no window takes the alarm, and a
+    // hold and a nudge wait claimed, so each recipient opens wake_missed and
+    // the one stall climbs to Tyler in minutes.
+    world
+        .conn()
+        .execute_batch(
+            "INSERT INTO mono_outbox (key, stage, recipient, at_active_ms, claimed_by)
+             VALUES ('hold-alc', 'hold', 'session:alc-lead', 0, 'main'),
+                    ('nudge-alc', 'nudge', 'mono:alc-mono', 0, 'main')",
+        )
+        .unwrap();
     world.advance(2 * N);
-    assert_eq!(episodes(&world), vec![episode]);
+    assert_eq!(episodes(&world), vec![episode.clone()]);
+    let (outbox, _) = alarm_rows(&world);
+    assert_eq!(
+        outbox,
+        vec![(
+            test_taps::outbox_key(&episode.id, 1),
+            "session:alc-lead".to_string()
+        )],
+        "the alarm waits untaken"
+    );
 }
 
 /// Sets `session`'s queue status as the window saves it, keeping its items.
@@ -973,4 +1003,62 @@ fn a_turn_silent_on_a_background_task_is_hung_at_four_n() {
         (episode.actor.as_str(), episode.cause.as_str()),
         ("session:alb-lead", "hung")
     );
+}
+
+// Defect (S1 r3 M2, lead ruling b): a lead that backgrounds a wait and
+// ends its turn with its Mono's ask open alarms at N while the job runs;
+// or once the job ends, its clock does not restart from that end.
+#[test]
+fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
+    for finish in [None, Some(2 * N)] {
+        let mut world = World::new(&format!("alarm-idle-background-{}", finish.is_some()));
+        let mono = world.add_mono_in("aib-mono", MonoRole::Mono, &[P]);
+        let lead = start_lead(&world, &mono, "aib-lead");
+        let claude = claude_tap(&world, &lead);
+        align(&mut world);
+        turn(&mut world, &lead, "t1", true);
+        claude.line(
+            Pipe::Stdout,
+            r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
+        );
+        claude.line(Pipe::Stdout, r#"{"type":"result","subtype":"success"}"#);
+        turn(&mut world, &lead, "t1", false);
+        let ended = world.active_ms();
+        world.advance(N);
+        assert_eq!(episodes(&world), Vec::new(), "it waits on its job at N");
+
+        let stalled_from = match finish {
+            None => ended,
+            Some(after) => {
+                world.advance(after - N);
+                claude.line(
+                    Pipe::Stdout,
+                    r#"{"type":"system","subtype":"task_notification","task_id":"bg1"}"#,
+                );
+                world.active_ms()
+            }
+        };
+        let alarm_at = match finish {
+            None => ended + 4 * N,
+            Some(_) => stalled_from + N,
+        };
+        world.advance(alarm_at - PASS - world.active_ms());
+        assert_eq!(episodes(&world), Vec::new(), "{finish:?}: not yet");
+        world.advance(PASS);
+        let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+        assert_eq!(
+            episode,
+            idle_open_work(&episode.id, "session:aib-lead", "mono:aib-mono"),
+            "{finish:?}"
+        );
+        let stalled: i64 = world
+            .conn()
+            .query_row(
+                "SELECT stalled_since_active_ms FROM alarm_episodes",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stalled, stalled_from, "{finish:?}");
+    }
 }
