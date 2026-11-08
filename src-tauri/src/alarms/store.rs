@@ -218,6 +218,18 @@ struct Rows {
     stall_minutes: HashMap<String, i64>,
 }
 
+pub(crate) fn agent_stall_minutes(
+    conn: &Connection,
+    actor: &Actor,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT stall_minutes FROM agent_alarm_settings WHERE actor = ?1",
+        [actor.to_string()],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 fn strings(
     conn: &Connection,
     sql: &str,
@@ -487,40 +499,24 @@ impl Pass<'_> {
                 self.active + self.settings.escalate_minutes * MINUTE_MS,
             ],
         )?;
-        let key = match &to {
-            Provisioner::Agent(_) => Some(outbox_key(&id, 1)),
-            Provisioner::Tyler => None,
-        };
-        tx.execute(
-            "INSERT INTO alarm_sends (episode_id, level, recipient, outbox_key, created_active_ms)
-             VALUES (?1, 1, ?2, ?3, ?4)",
-            params![id, to.stored(), key, self.active],
-        )?;
-        if let (Provisioner::Agent(recipient), Some(key)) = (&to, key) {
-            let recipient = recipient.to_string();
-            tx.execute(
-                "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
-                 VALUES (?1, NULL, 'alarm', ?2, ?3) ON CONFLICT (key) DO NOTHING",
-                params![key, recipient, self.active],
-            )?;
-            crate::ask_scheduler::name_chat(tx, &mut self.notices, &recipient)?;
-        }
-        Ok(())
+        super::route::opened(
+            tx,
+            &mut self.notices,
+            &id,
+            &self.settings,
+            (self.active, self.wall),
+        )
     }
 
-    /// Closes episode `id`; the alarms it had not sent yet go with it.
+    /// Closes episode `id`; the alarms, nudges and steers it had not sent yet
+    /// go with it.
     fn close(&self, id: &str, reason: CloseReason) -> rusqlite::Result<()> {
         self.tx.execute(
             "UPDATE alarm_episodes SET closed_active_ms = ?2, closed_wall_ms = ?3, close_reason = ?4
               WHERE id = ?1 AND closed_active_ms IS NULL",
             params![id, self.active, self.wall, reason.as_str()],
         )?;
-        self.tx.execute(
-            "DELETE FROM mono_outbox WHERE sent_at IS NULL
-               AND key IN (SELECT outbox_key FROM alarm_sends WHERE episode_id = ?1)",
-            [id],
-        )?;
-        Ok(())
+        super::route::drop_unsent(self.tx, id)
     }
 
     /// What waits for the agent's provider (section 4): a message no
@@ -763,6 +759,7 @@ fn pass(
             fault.unwrap_or_default()
         );
     }
+    super::route::run(&tx, &mut pass.notices, &pass.settings, (active_ms, wall_ms))?;
     let notices = pass.notices;
     tx.commit()?;
     Ok(notices)

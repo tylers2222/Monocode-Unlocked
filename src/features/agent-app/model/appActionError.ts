@@ -34,6 +34,8 @@ const HINTS = {
     "That Mono is busy, so nothing was changed. Update it again after its turn ends",
   not_session_owner:
     "Only the session's lead or the session that started it can clear its queue. Do not retry.",
+  dialog_gone:
+    "The dialog is no longer pending: it was answered or withdrawn. Read the alarm again with alarms.read.",
   app_cli_unavailable:
     "This session cannot use the MonoCode app CLI: it is an Inbox Ask, an orchestration lead or worker, or no longer open in MonoCode. Do not retry.",
   ...RUST_COMMAND_HINTS,

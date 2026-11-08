@@ -97,7 +97,7 @@ impl Live {
         self.0.now.store(active, Ordering::Relaxed);
     }
 
-    fn now(&self) -> Option<i64> {
+    pub(crate) fn now(&self) -> Option<i64> {
         let now = self.0.now.load(Ordering::Relaxed);
         (now >= 0).then_some(now)
     }

@@ -570,24 +570,136 @@ fn serve<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, inner: &Arc<Mute
         {
             return Err("Invalid input or request ID".into());
         }
-        dispatch(
+        let mut emit = |window: &str, event: Event| {
+            app.emit_to(window, "monocode-control-request", event)
+                .is_ok()
+        };
+        let call = Call {
+            namespace: request.namespace.clone(),
+            request_id: request.request_id,
+            action: request.action,
+            input: request.input,
+        };
+        if call.namespace == "app" && call.action.starts_with("alarms.") {
+            let grant = {
+                let host = inner.lock().map_err(|_| "Control service unavailable")?;
+                request_grant(&host, "app", &request.token)?
+            };
+            return alarm_call(app, inner, &grant, call, &mut emit, REPLY_WAIT);
+        }
+        let sent = (call.namespace == "app")
+            .then(|| message_target(&call.action, &call.input))
+            .flatten()
+            .map(|to| (to, call.request_id.clone()));
+        let response = dispatch(
             inner,
             |host| request_grant(host, &request.namespace, &request.token),
-            Call {
-                namespace: request.namespace.clone(),
-                request_id: request.request_id,
-                action: request.action,
-                input: request.input,
-            },
-            &mut |window, event| {
-                app.emit_to(window, "monocode-control-request", event)
-                    .is_ok()
-            },
+            call,
+            &mut emit,
             REPLY_WAIT,
-        )
+        )?;
+        if let (Some((to, request_id)), true) = (sent, response["ok"] == true) {
+            let caller = inner.lock().ok().and_then(|host| {
+                host.app_grants
+                    .values()
+                    .find(|grant| grant.token == request.token)
+                    .map(|grant| grant.session.clone())
+            });
+            if let Some(caller) = caller {
+                message_act(app, &caller, &to, &request_id);
+            }
+        }
+        Ok(response)
     })();
     let response = result.unwrap_or_else(Failure::response);
     let _ = writeln!(stream, "{response}");
+}
+
+/// Design section 7: the `alarms.*` actions run here, on the store, under
+/// the caller's app grant. Only `alarms.answer` goes to a window: the one
+/// that owns the stalled agent's session answers its dialog there, as the
+/// user would. The store lock is never held while `inner` is.
+fn alarm_call<R: Runtime>(
+    app: &AppHandle<R>,
+    inner: &Mutex<Inner>,
+    grant: &Grant,
+    call: Call,
+    emit: &mut impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> Result<Value, Failure> {
+    use crate::alarms::act::{self, Outcome};
+    let store = app.state::<SessionStore>();
+    let outcome = {
+        let conn = store.lock_conn()?;
+        let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+        act::call(
+            &conn,
+            &grant.session,
+            &call.action,
+            &call.input,
+            &call.request_id,
+            now,
+        )
+    };
+    let plan = match outcome {
+        Err(refusal) => return Ok(refusal.response()),
+        Ok(Outcome::Done { result, notices }) => {
+            notices.emit(app);
+            return Ok(json!({"ok": true, "result": result}));
+        }
+        Ok(Outcome::Answer(plan)) => plan,
+    };
+    let response = dispatch(
+        inner,
+        |host| {
+            Ok(Grant {
+                window: host.route_owner(&plan.session, &grant.window),
+                session: plan.session.clone(),
+                cwd: String::new(),
+                token: String::new(),
+            })
+        },
+        Call {
+            namespace: "app".into(),
+            request_id: call.request_id,
+            action: call.action,
+            input: plan.forward.clone(),
+        },
+        emit,
+        wait,
+    )?;
+    if response["ok"] != true {
+        return Ok(response);
+    }
+    let conn = store.lock_conn()?;
+    let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+    Ok(match act::answered(&conn, &plan, now) {
+        Ok(result) => json!({"ok": true, "result": result}),
+        Err(refusal) => refusal.response(),
+    })
+}
+
+/// Who a plain send reaches, for the alarms (design section 7): a
+/// recipient's message to the agent it acts on is an act on its alarm.
+fn message_target(action: &str, input: &Value) -> Option<String> {
+    let field = match action {
+        "messages.send" => "send_to",
+        "sessions.send" => "sessionId",
+        _ => return None,
+    };
+    input[field].as_str().map(str::to_string)
+}
+
+fn message_act<R: Runtime>(app: &AppHandle<R>, caller: &str, to: &str, request_id: &str) {
+    let store = app.state::<SessionStore>();
+    let logged = store.lock_conn().and_then(|conn| {
+        let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+        crate::alarms::act::message(&conn, caller, to, request_id, now)
+            .map_err(|error| error.to_string())
+    });
+    if let Err(error) = logged {
+        eprintln!("Could not log a message act: {error}");
+    }
 }
 
 #[tauri::command]
@@ -1159,7 +1271,8 @@ pub fn control_host_call(
     input: Value,
     request_id: String,
 ) -> Value {
-    host_call(
+    let sent = message_target(&action, &input).map(|to| (to, request_id.clone()));
+    let response = host_call(
         &host.inner,
         window.label(),
         &session_id,
@@ -1173,7 +1286,11 @@ pub fn control_host_call(
         },
         REPLY_WAIT,
     )
-    .unwrap_or_else(Failure::response)
+    .unwrap_or_else(Failure::response);
+    if let (Some((to, request_id)), true) = (sent, response["ok"] == true) {
+        message_act(window.app_handle(), &session_id, &to, &request_id);
+    }
+    response
 }
 
 #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]

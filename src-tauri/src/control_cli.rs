@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 const USAGE: &str = r#"MonoCode local control — supervise this orchestration run from the lead agent.
 
@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 58] = [
+const APP_ACTIONS: [&str; 66] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -122,6 +122,14 @@ const APP_ACTIONS: [&str; 58] = [
     "approvals.file",
     "approvals.update",
     "approvals.withdraw",
+    "alarms.list",
+    "alarms.read",
+    "alarms.answer",
+    "alarms.steer",
+    "alarms.nudge",
+    "alarms.dismiss",
+    "alarms.report",
+    "alarms.set",
     "notes.list",
     "notes.read",
     "notes.write",
@@ -552,6 +560,39 @@ Actions:
                   it no longer needs a decision. Codes: not_a_giga,
                   invalid_input, unknown_approval, not_your_approval,
                   approval_not_open.
+  alarms.list    {}  The stall alarms that wait on you: each open alarm whose
+                  current recipient you are, or a provisioner above it, with
+                  alarm, agent, cause, level, stalledMinutes and actsOn (the
+                  agent your acts reach: the one just below you, so a Mono
+                  acts on its lead, never on the worker). Every alarm act
+                  below stops the alarm going up a level; a plain
+                  messages.send or sessions.send to actsOn counts too. If
+                  the agent still makes no progress N minutes after the act,
+                  a new alarm opens. Each act takes the short form the
+                  <mono_alarm> shows, e.g. app alarms.nudge al_x, or --json.
+  alarms.read    {"alarm":"al_..."}  The alarm: open work, last activity,
+                  dialog, who was told at each level, the acts so far and
+                  the agent's last 20 transcript blocks with tools. Codes for
+                  every alarms.* call on an alarm: unknown_alarm,
+                  not_your_alarm, alarm_moved_up (it went on above you),
+                  alarm_closed, invalid_input.
+  alarms.answer  {"alarm":"al_...","allow":true}  Answer the agent's pending
+                  dialog as the user would: allow or deny for a permission,
+                  text or choice for a question. Only the agent's own
+                  provisioner answers. Codes: dialog_gone (answered or
+                  withdrawn), plan_dialog (use alarms.steer),
+                  answer_via_recipient.
+  alarms.steer   {"alarm":"al_...","text":"..."}  Steer the text into the
+                  running turn of actsOn, or wake it with it when idle.
+  alarms.nudge   {"alarm":"al_..."}  Wake actsOn with its open work.
+  alarms.dismiss {"alarm":"al_...","reason":"..."}  Record why no act is
+                  needed; the reason is logged.
+  alarms.report  {"from":<wall ms>,"to":<wall ms>}  Mono or Giga only. Stall
+                  minutes per Mono over the window, with episodes, acted and
+                  maxLevel. Codes: mono_only, invalid_input.
+  alarms.set     {"agent":"session:...","stall_minutes":30}  Set the stall
+                  minutes N (5 to 240) of an agent you provisioned. Codes:
+                  not_the_parent, invalid_input.
   notes.list     {"limit":30,"offset":0}  Titles and short previews only.
   notes.read     {"id":"..."}  Full body of one note.
   notes.write    {"title":"Plan","body":"Markdown","tags":["work"]}
@@ -1404,6 +1445,7 @@ fn parse_call(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
             ),
         });
     }
+    let (alarm, args) = alarm_short_form(args, app_mode)?;
     let mut input = None;
     let mut request_id = uuid::Uuid::new_v4().to_string();
     let mut index = 1;
@@ -1469,11 +1511,82 @@ fn parse_call(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
     {
         return Err("App request IDs may contain only letters, digits, - and _".into());
     }
-    Ok(Parsed::Call(
-        action,
-        input.unwrap_or_else(|| json!({})),
-        request_id,
-    ))
+    Ok(Parsed::Call(action, one_input(input, alarm)?, request_id))
+}
+
+/// The call's input: its --json, or the fields of its short form.
+fn one_input(input: Option<Value>, alarm: Map<String, Value>) -> Result<Value, ParseError> {
+    match (input, alarm.is_empty()) {
+        (Some(_), false) => Err("Supply only one input: --json or the alarm's short form".into()),
+        (Some(input), true) => Ok(input),
+        (None, _) => Ok(Value::Object(alarm)),
+    }
+}
+
+/// Splits the short form of an `alarms.*` act (`al_x --text ...`) from an
+/// app call's args (action first): its input fields, and the args left
+/// for the usual options.
+fn alarm_short_form(
+    args: &[String],
+    app_mode: bool,
+) -> Result<(Map<String, Value>, Vec<String>), ParseError> {
+    let mut alarm = Map::new();
+    if !app_mode
+        || !args
+            .first()
+            .is_some_and(|action| action.starts_with("alarms."))
+    {
+        return Ok((alarm, args.to_vec()));
+    }
+    let mut rest = args[..1].to_vec();
+    let mut args = args[1..].iter().peekable();
+    if let Some(id) = args.next_if(|arg| !arg.starts_with("--")) {
+        alarm.insert("alarm".into(), json!(id));
+    }
+    while let Some(flag) = args.next() {
+        if let Some(field) = alarm_switch(flag) {
+            alarm.insert(field.into(), json!(true));
+        } else if let Some((field, number)) = alarm_option(flag) {
+            let value = args.next().ok_or_else(|| {
+                ParseError::from(format!("Missing value for {flag}. Run app --help."))
+            })?;
+            let value = if number {
+                json!(value
+                    .parse::<i64>()
+                    .map_err(|_| ParseError::from(format!("{flag} takes a whole number.")))?)
+            } else {
+                json!(value)
+            };
+            alarm.insert(field.into(), value);
+        } else {
+            rest.push(flag.clone());
+        }
+    }
+    Ok((alarm, rest))
+}
+
+/// The short form of an `alarms.*` act (`app alarms.answer al_x --allow`):
+/// a flag with no value.
+fn alarm_switch(flag: &str) -> Option<&'static str> {
+    match flag {
+        "--allow" => Some("allow"),
+        "--deny" => Some("deny"),
+        _ => None,
+    }
+}
+
+/// An option of the short form, and whether its value is a number.
+fn alarm_option(flag: &str) -> Option<(&'static str, bool)> {
+    match flag {
+        "--text" => Some(("text", false)),
+        "--choice" => Some(("choice", false)),
+        "--reason" => Some(("reason", false)),
+        "--agent" => Some(("agent", false)),
+        "--stall-minutes" => Some(("stall_minutes", true)),
+        "--from" => Some(("from", true)),
+        "--to" => Some(("to", true)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1778,6 +1891,79 @@ mod tests {
         let help = app_help();
         assert!(help.contains("folders.* and milestones.* actions"));
         assert!(help.contains("do not send createdBy or by"));
+    }
+
+    // Defect: the act line of a <mono_alarm> (`alarms.answer al_x --text
+    // ...`) is not a call the CLI takes, a flag lands in the wrong field, or
+    // the short form and --json mix into one input.
+    #[test]
+    fn app_mode_takes_the_short_form_of_each_alarms_act() {
+        let parsed = |values: &[&str]| match parse_args_for(&args(values), true) {
+            Ok(Parsed::Call(action, input, _)) => Ok((action, input)),
+            Ok(Parsed::Help) => Err("help".to_string()),
+            Err(error) => Err(error.message),
+        };
+        for (values, input) in [
+            (&["alarms.read", "al_7Q2"][..], json!({"alarm": "al_7Q2"})),
+            (
+                &["alarms.answer", "al_7Q2", "--text", "use main"][..],
+                json!({"alarm": "al_7Q2", "text": "use main"}),
+            ),
+            (
+                &["alarms.answer", "al_7Q2", "--allow"][..],
+                json!({"alarm": "al_7Q2", "allow": true}),
+            ),
+            (
+                &["alarms.dismiss", "al_7Q2", "--reason", "CI runs"][..],
+                json!({"alarm": "al_7Q2", "reason": "CI runs"}),
+            ),
+            (&["alarms.list"][..], json!({})),
+            (
+                &[
+                    "alarms.set",
+                    "--agent",
+                    "session:w",
+                    "--stall-minutes",
+                    "30",
+                ][..],
+                json!({"agent": "session:w", "stall_minutes": 30}),
+            ),
+            (
+                &["alarms.report", "--from", "1", "--to", "2"][..],
+                json!({"from": 1, "to": 2}),
+            ),
+            (
+                &["alarms.nudge", "--json", r#"{"alarm":"al_7Q2"}"#][..],
+                json!({"alarm": "al_7Q2"}),
+            ),
+        ] {
+            assert_eq!(
+                parsed(values),
+                Ok((values[0].to_string(), input)),
+                "{values:?}"
+            );
+        }
+        assert!(parsed(&["alarms.nudge", "al_7Q2", "--json", "{}"]).is_err());
+        assert!(parsed(&["alarms.set", "--stall-minutes", "soon"]).is_err());
+        assert!(
+            parsed(&["sessions.list", "al_7Q2"]).is_err(),
+            "only alarms.*"
+        );
+        for action in [
+            "alarms.list",
+            "alarms.read",
+            "alarms.answer",
+            "alarms.steer",
+            "alarms.nudge",
+            "alarms.dismiss",
+            "alarms.report",
+            "alarms.set",
+        ] {
+            assert!(
+                app_help().contains(&format!("\n  {action} ")),
+                "{action} in help"
+            );
+        }
     }
 
     // Design 3.4 and 6.6. Defect: a model that reads only the help meets a

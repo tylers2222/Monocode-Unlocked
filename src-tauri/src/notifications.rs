@@ -16,14 +16,42 @@ use tauri::AppHandle;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub const CLICK_EVENT: &str = "monocode:notification-click";
 
+/// Tyler's stall alarm banners (`alarm:<episode>`): a click opens the
+/// stalled agent's session.
+const ALARM_PREFIX: &str = "alarm:";
+
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn handle_click(app: &AppHandle, identifier: &str) {
     use tauri::Emitter;
     if let Some(reminder) = identifier.strip_prefix(crate::reminders::NOTIFICATION_PREFIX) {
         crate::reminders::open_from_notification(app, reminder);
+    } else if let Some(episode) = identifier.strip_prefix(ALARM_PREFIX) {
+        if let Some(session) = crate::alarms::alarm_session(app, episode) {
+            let _ = app.emit(CLICK_EVENT, session);
+        }
     } else {
         let _ = app.emit(CLICK_EVENT, identifier);
     }
+}
+
+/// Tyler's banner for stall alarm `episode`. It goes out whatever the
+/// app's own notification setting says (Tyler, 2026-11-08); only the OS
+/// permission can stop it.
+pub(crate) async fn show_alarm(
+    app: &AppHandle,
+    episode: &str,
+    title: &str,
+    body: &str,
+) -> Result<(), String> {
+    platform::show(
+        app,
+        &format!("{ALARM_PREFIX}{episode}"),
+        "MonoCode",
+        title,
+        body,
+        true,
+    )
+    .await
 }
 
 #[cfg(target_os = "macos")]

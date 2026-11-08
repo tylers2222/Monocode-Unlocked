@@ -82,6 +82,8 @@ COPY = {
         "acted_active_ms", "closed_active_ms",
     )),
     "alarm_sends": (("episode_id", "level"), ("created_active_ms",)),
+    "alarm_prompts": (("outbox_key",), ()),
+    "alarm_acts": (("episode_id", "seq"), ("at_active_ms",)),
     "agent_alarm_settings": (("actor",), ()),
     "mono_session_ends": (("session_id",), ()),
     "mono_completion_deliveries": (("group_id",), ()),

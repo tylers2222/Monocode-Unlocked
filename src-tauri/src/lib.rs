@@ -315,6 +315,7 @@ pub fn run() {
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
             active_clock::init(app.handle())?;
+            alarms::init(app.handle());
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
