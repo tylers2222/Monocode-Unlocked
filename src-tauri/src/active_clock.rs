@@ -49,13 +49,26 @@ const SLEEP_MIN_NS: u64 = 2_000_000_000;
 
 const NS_PER_MS: u64 = 1_000_000;
 
+/// The active time as a process reads it, with whether the clock runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Active {
+    Running(i64),
+    /// No process ticks the clock: the time it stopped at.
+    Stopped(i64),
+}
+
 /// The active time at wall time `wall` as any process reads it: `live`,
 /// this process's clock when it holds the lease, else the stored clock
 /// moved on by the wall time since it was written. The lease holder writes
-/// it every 5 s, so a longer gap is a holder that stopped and adds no more.
-pub(crate) fn active_at(live: Option<i64>, conn: &Connection, wall: i64) -> rusqlite::Result<i64> {
+/// it every 5 s, so a longer gap, or no clock at all, is a clock that
+/// stopped; wall time never stands in for it, as the computer may sleep.
+pub(crate) fn active_at(
+    live: Option<i64>,
+    conn: &Connection,
+    wall: i64,
+) -> rusqlite::Result<Active> {
     if let Some(active) = live {
-        return Ok(active);
+        return Ok(Active::Running(active));
     }
     let stored: Option<(i64, i64)> = conn
         .query_row(
@@ -65,9 +78,11 @@ pub(crate) fn active_at(live: Option<i64>, conn: &Connection, wall: i64) -> rusq
         )
         .optional()?;
     let stale_ms = ms(PERSIST_EVERY_NS) + ms(TICK.as_nanos() as u64);
-    Ok(stored.map_or(0, |(active, last_wall)| {
-        active + (wall - last_wall).clamp(0, stale_ms)
-    }))
+    Ok(match stored {
+        None => Active::Stopped(0),
+        Some((active, last_wall)) if wall - last_wall > stale_ms => Active::Stopped(active),
+        Some((active, last_wall)) => Active::Running(active + (wall - last_wall).max(0)),
+    })
 }
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -553,27 +568,37 @@ mod tests {
 
     // Defect: a process without the lease reads the clock its holder
     // stored up to 5 s ago, so it takes a hold's answer after the cut; or
-    // a holder that stopped makes the clock run on with the wall clock.
+    // a holder that stopped leaves the clock frozen, so holds never time
+    // out, or makes it run on with the wall clock.
     #[test]
     fn a_process_without_the_lease_reads_the_stored_clock_moved_on_by_wall_time() {
         let conn = Connection::open_in_memory().unwrap();
         ensure_tables(&conn).unwrap();
-        assert_eq!(active_at(None, &conn, 9_000).unwrap(), 0, "no clock yet");
+        let at = |wall| active_at(None, &conn, wall).unwrap();
+        assert_eq!(at(9_000), Active::Stopped(0), "no clock yet");
         conn.execute(
             "INSERT INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms)
              VALUES (1, 100000, 50000, 0)",
             [],
         )
         .unwrap();
-        let at = |wall| active_at(None, &conn, wall).unwrap();
-        assert_eq!(at(50_000), 100_000);
-        assert_eq!(at(54_000), 104_000, "4 s since the holder wrote it");
-        assert_eq!(at(49_000), 100_000, "a wall clock set back adds nothing");
-        assert_eq!(at(56_000), 106_000);
-        assert_eq!(at(500_000), 106_000, "a stopped holder adds no more");
+        assert_eq!(at(50_000), Active::Running(100_000));
         assert_eq!(
-            active_at(Some(7), &conn, 54_000).unwrap(),
-            7,
+            at(54_000),
+            Active::Running(104_000),
+            "4 s since the holder wrote it"
+        );
+        assert_eq!(
+            at(49_000),
+            Active::Running(100_000),
+            "a wall clock set back adds nothing"
+        );
+        assert_eq!(at(56_000), Active::Running(106_000));
+        assert_eq!(at(56_001), Active::Stopped(100_000), "the holder stopped");
+        assert_eq!(at(500_000), Active::Stopped(100_000));
+        assert_eq!(
+            active_at(Some(7), &conn, 500_000).unwrap(),
+            Active::Running(7),
             "the lease holder's own"
         );
     }

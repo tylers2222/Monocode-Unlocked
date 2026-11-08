@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 
 use super::agents::{mono_caller, session_caller, Mono};
 use super::world::World;
+use crate::active_clock::Active;
 use crate::alarms::act::Refusal;
 use crate::ask_scheduler;
 use crate::control::TestHoldHost;
@@ -23,7 +24,7 @@ use crate::mono_messages::SessionId;
 use crate::mono_roster::MonoRole;
 use crate::session_store::SessionStore;
 use crate::sleep_hold::client::{self, Cause, Outcome};
-use crate::sleep_hold::service::{self, Banner, CallClock, Received};
+use crate::sleep_hold::service::{self, Banner, HoldCaller, HoldTime, Received};
 use crate::sleep_hold::store::ANSWER_MS as ANSWER;
 use crate::sleep_hold::{classify, Harness, HoldRequest, HoldWaitReply};
 
@@ -123,7 +124,7 @@ fn decide(
         action,
         &input,
         request_id,
-        now(world),
+        now(world).into(),
     )
 }
 
@@ -463,8 +464,8 @@ fn tyler_gets_one_banner_per_hold_and_it_goes_once_decided_or_expired() {
     );
 
     let conn = world.conn();
-    assert!(service::tyler_decides(&conn, &first, false, now(&world)).unwrap());
-    assert!(!service::tyler_decides(&conn, &first, true, now(&world)).unwrap());
+    assert!(service::tyler_decides(&conn, &first, false, now(&world).into()).unwrap());
+    assert!(!service::tyler_decides(&conn, &first, true, now(&world).into()).unwrap());
     drop(conn);
     assert_eq!(
         status(&world, &solo, &first),
@@ -494,8 +495,12 @@ fn a_ping_marks_the_session_hold_installed() {
         chain.worker.as_str(),
         "ping",
         &json!({}),
-        &|_: &Connection| Ok((0, 0)),
-        &Received(Instant::now()),
+        &|_: &Connection| Ok((0, 0).into()),
+        &Received {
+            at: Instant::now(),
+            peer: None,
+            may_block: true,
+        },
     );
     assert_eq!(reply, json!({"ok": true, "recorded": true}));
     let state: Option<String> = world
@@ -546,7 +551,8 @@ fn hook_run(
             Ok((
                 clock.0.load(Ordering::SeqCst),
                 clock.1.load(Ordering::SeqCst),
-            ))
+            )
+                .into())
         }),
     );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -651,22 +657,33 @@ fn every_alarms_wake_key_is_one_the_front_end_keeps() {
     }
 }
 
-/// What a test does at a moment of a `SharedTime`, with the time then.
-type Due<'a> = Option<(Duration, Box<dyn FnOnce((i64, i64)) + 'a>)>;
+/// What a test does at a moment of a `SharedTime`, with the app's time then.
+type Due<'a> = Option<(Duration, Box<dyn FnOnce(HoldTime) + 'a>)>;
 
 /// One fake time for the hook client and the app, so a test runs both
 /// sides of a hold on the same clock. `at` runs once, when time gets there.
 struct SharedTime<'a> {
     base: (i64, i64),
     passed: Cell<Duration>,
-    call_sent: Cell<Duration>,
+    /// When the app took the call it serves now.
+    accepted: Cell<Duration>,
+    /// The client process dies here.
+    killed_at: Option<Duration>,
     at: RefCell<Due<'a>>,
 }
 
 impl SharedTime<'_> {
-    fn now(&self) -> (i64, i64) {
-        let passed = i64::try_from(self.passed.get().as_millis()).unwrap();
-        (self.base.0 + passed, self.base.1 + passed)
+    /// The app's time: its live active clock moves once a tick, so it runs
+    /// up to a second behind.
+    fn app_now(&self) -> HoldTime {
+        let passed = self.passed.get();
+        let ticked = i64::try_from(passed.as_secs() * 1_000).unwrap();
+        let passed = i64::try_from(passed.as_millis()).unwrap();
+        (self.base.0 + ticked, self.base.1 + passed).into()
+    }
+
+    fn killed(&self) -> bool {
+        self.killed_at.is_some_and(|at| self.passed.get() >= at)
     }
 
     /// Moves time on by `by`, or only up to `at` when it falls inside, and
@@ -680,7 +697,7 @@ impl SharedTime<'_> {
         }
         let (at, run) = self.at.borrow_mut().take().unwrap();
         self.passed.set(at.max(self.passed.get()));
-        run(self.now());
+        run(self.app_now());
     }
 }
 
@@ -696,24 +713,48 @@ impl client::Clock for SharedTime<'_> {
     }
 }
 
-impl CallClock for SharedTime<'_> {
+impl HoldCaller for SharedTime<'_> {
     fn elapsed(&self) -> Duration {
-        self.passed.get() - self.call_sent.get()
+        self.passed.get() - self.accepted.get()
     }
 
     /// A decision wakes a blocked wait at once, as the app's signal does.
     fn block(&self, _seen: u64, timeout: Duration) {
         self.pass(timeout);
     }
+
+    fn hung_up(&self) -> bool {
+        self.killed()
+    }
+
+    fn may_block(&self) -> bool {
+        true
+    }
+}
+
+/// Each way of the line between the hook client and the app.
+const ONE_WAY: Duration = Duration::from_millis(10);
+/// What the client does before it sends its request.
+const BEFORE_REQUEST: Duration = Duration::from_millis(300);
+
+/// How a run of the hook client goes, apart from the lead's answer.
+#[derive(Clone, Copy, Default)]
+struct Plan {
+    /// Call `n` (0 is the request) waits this long for a free reader.
+    queued: Option<(usize, Duration)>,
+    /// The client crashes once the reply to call `n` is in.
+    panics_after: Option<usize>,
+    killed_at: Option<Duration>,
 }
 
 /// The hook client's calls run straight on the app's `hold` namespace on
-/// one fake time. A request first waits `queued` for a free reader.
+/// one fake time, as `serve` runs them.
 struct Direct<'a, 'at> {
     store: &'a SessionStore,
     session: &'a str,
     time: &'a SharedTime<'at>,
-    queued: Duration,
+    plan: Plan,
+    calls: usize,
 }
 
 impl client::Transport for Direct<'_, '_> {
@@ -724,14 +765,27 @@ impl client::Transport for Direct<'_, '_> {
         _request_id: &str,
         read_timeout: Duration,
     ) -> Result<Value, String> {
-        let sent = self.time.passed.get();
-        self.time.call_sent.set(sent);
-        if action == "request" {
-            self.time.pass(self.queued);
+        let (n, time) = (self.calls, self.time);
+        self.calls += 1;
+        if n == 0 {
+            time.pass(BEFORE_REQUEST);
         }
-        let now = |_: &Connection| -> rusqlite::Result<(i64, i64)> { Ok(self.time.now()) };
-        let (reply, _) = service::call(self.store, self.session, action, &input, &now, self.time);
-        if self.time.passed.get() - sent > read_timeout {
+        let sent = time.passed.get();
+        time.pass(ONE_WAY);
+        time.accepted.set(time.passed.get());
+        if let Some((_, queued)) = self.plan.queued.filter(|(call, _)| *call == n) {
+            time.pass(queued);
+        }
+        let now = |_: &Connection| -> rusqlite::Result<HoldTime> { Ok(time.app_now()) };
+        let (reply, _) = service::call(self.store, self.session, action, &input, &now, time);
+        time.pass(ONE_WAY);
+        if time.killed() {
+            return Err("the client was killed".into());
+        }
+        if self.plan.panics_after == Some(n) {
+            panic!("the hook client crashed");
+        }
+        if time.passed.get() - sent > read_timeout {
             return Err(format!("no {action} reply in {read_timeout:?}"));
         }
         Ok(reply)
@@ -739,26 +793,29 @@ impl client::Transport for Direct<'_, '_> {
 }
 
 struct Answered {
-    outcome: Outcome,
+    /// `None` when the client crashed.
+    outcome: Option<Outcome>,
     /// The code the lead's `holds.allow` got.
     answer: &'static str,
     hold: String,
 }
 
-/// The worker's hook client asks to wait; the lead allows `answer_at`
-/// after the client started, while it waits or after it gave up.
+/// The worker's hook client asks to wait as `plan` says; the lead allows
+/// `answer_at` after the client started, while it waits or after it
+/// stopped. Then the tick sweeps, as it does every second.
 fn allowed_at(
     world: &World,
     chain: &Chain,
     tool_use_id: &str,
-    queued: Duration,
+    plan: Plan,
     answer_at: Duration,
 ) -> Answered {
     let answer = Cell::new("not answered");
     let time = SharedTime {
         base: now(world),
         passed: Cell::new(Duration::ZERO),
-        call_sent: Cell::new(Duration::ZERO),
+        accepted: Cell::new(Duration::ZERO),
+        killed_at: plan.killed_at,
         at: RefCell::new(Some((
             answer_at,
             Box::new(|at| {
@@ -775,15 +832,20 @@ fn allowed_at(
         ))),
     };
     let payload = hook_payload(tool_use_id);
-    let outcome = client::hold(Harness::Claude, &payload, &|_| None, &time, || {
-        Ok(Direct {
-            store: world.store(),
-            session: chain.worker.as_str(),
-            time: &time,
-            queued,
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client::hold(Harness::Claude, &payload, &|_| None, &time, || {
+            Ok(Direct {
+                store: world.store(),
+                session: chain.worker.as_str(),
+                time: &time,
+                plan,
+                calls: 0,
+            })
         })
-    });
+    }))
+    .ok();
     time.pass(answer_at.saturating_sub(time.passed.get()));
+    service::sweep(&world.conn(), time.app_now().pair()).unwrap();
     Answered {
         outcome,
         answer: answer.get(),
@@ -791,32 +853,112 @@ fn allowed_at(
     }
 }
 
+/// A decision the log has is one the client heard; else the hold timed out
+/// and the late answer was refused. `true` when the client heard it.
+fn heard(world: &World, run: &Answered, case: &str) -> bool {
+    match logged(world, &run.hold).0.as_deref() {
+        Some("allow") => {
+            assert_eq!(run.outcome, Some(Outcome::Run), "{case}");
+            assert_eq!(run.answer, "ok", "{case}");
+            true
+        }
+        Some("timeout") => {
+            assert_ne!(run.outcome, Some(Outcome::Run), "{case}");
+            assert_eq!(run.answer, "hold_decided", "{case}");
+            false
+        }
+        other => panic!("{case}: the hold reads {other:?}"),
+    }
+}
+
 // Defect: the app takes an answer after the client stopped waiting, so the
 // log says allow while the agent was refused; or a request that waited for
-// a free reader moves the app's cut past the client's.
+// a free reader moves the app's cut past the client's. Time runs as in the
+// app: round trips, 300 ms before the request, a clock that moves by ticks.
 #[test]
 fn the_client_hears_every_answer_the_app_logs_up_to_the_cut() {
     let world = World::new("hold-cut");
     let chain = chain(&world, "hc");
-    let cut = crate::sleep_hold::ANSWER_CUT;
-    let second = Duration::from_secs(1);
-    for (n, queued) in [Duration::ZERO, 20 * second].into_iter().enumerate() {
-        let before = allowed_at(&world, &chain, &format!("toolu_b{n}"), queued, cut - second);
-        assert_eq!(before.outcome, Outcome::Run, "queued {queued:?}");
-        assert_eq!(before.answer, "ok");
-        assert_eq!(logged(&world, &before.hold).0.as_deref(), Some("allow"));
-
-        let after = allowed_at(&world, &chain, &format!("toolu_a{n}"), queued, cut + second);
-        assert_eq!(
-            after.outcome,
-            Outcome::Refused {
-                command: Some(GH_WATCH.into()),
-                cause: Cause::NoAnswer,
-            },
-            "queued {queued:?}"
+    for queued in [Duration::ZERO, Duration::from_secs(20)] {
+        let (mut yes, mut no) = (0, 0);
+        for quarter in 448..=468 {
+            let answer_at = Duration::from_millis(quarter * 250);
+            let case = format!("queued {queued:?}, allowed at {answer_at:?}");
+            let plan = Plan {
+                queued: Some((0, queued)),
+                ..Plan::default()
+            };
+            let id = format!("toolu_{}_{quarter}", queued.as_secs());
+            if heard(
+                &world,
+                &allowed_at(&world, &chain, &id, plan, answer_at),
+                &case,
+            ) {
+                yes += 1;
+            } else {
+                no += 1;
+            }
+        }
+        assert!(
+            yes > 0 && no > 0,
+            "queued {queued:?}: {yes} heard, {no} refused"
         );
-        assert_eq!(after.answer, "hold_decided");
-        assert_eq!(logged(&world, &after.hold).0.as_deref(), Some("timeout"));
+    }
+}
+
+// Defect: the hook client stops (its last wait ends, a reply comes too
+// late, it crashes or is killed) and the app keeps the hold open, so a
+// later allow is logged that no client heard.
+#[test]
+fn every_way_the_client_stops_closes_the_hold_before_a_later_answer() {
+    let world = World::new("hold-stops");
+    let chain = chain(&world, "hs");
+    let second = Duration::from_secs(1);
+    let idle = Duration::from_millis(u64::try_from(crate::sleep_hold::store::IDLE_MS).unwrap());
+    let stops = [
+        (
+            "last wait",
+            Plan::default(),
+            crate::sleep_hold::ANSWER_CUT + second,
+        ),
+        (
+            "read timeout",
+            Plan {
+                queued: Some((2, 40 * second)),
+                ..Plan::default()
+            },
+            50 * second,
+        ),
+        (
+            "crash",
+            Plan {
+                panics_after: Some(2),
+                ..Plan::default()
+            },
+            61 * second + idle,
+        ),
+        (
+            "killed",
+            Plan {
+                killed_at: Some(45 * second),
+                ..Plan::default()
+            },
+            47 * second,
+        ),
+    ];
+    for (n, (stop, plan, after)) in stops.into_iter().enumerate() {
+        let before = allowed_at(&world, &chain, &format!("toolu_{n}_b"), plan, 10 * second);
+        assert!(heard(
+            &world,
+            &before,
+            &format!("{stop}: allowed while it waits")
+        ));
+        let late = allowed_at(&world, &chain, &format!("toolu_{n}_a"), plan, after);
+        assert!(!heard(
+            &world,
+            &late,
+            &format!("{stop}: allowed after it stopped")
+        ));
     }
 }
 
@@ -857,7 +999,7 @@ fn two_processes_show_a_tyler_hold_once_and_take_it_down_once() {
     assert_eq!(theirs.get(), (0, 0), "the other process shows nothing");
     assert_eq!(counted_pass(&other, wall, &|| {}), (0, 0));
 
-    assert!(service::tyler_decides(&world.conn(), &hold, true, now(&world)).unwrap());
+    assert!(service::tyler_decides(&world.conn(), &hold, true, now(&world).into()).unwrap());
     assert_eq!(counted_pass(world.store(), wall, &meanwhile), (0, 1));
     assert_eq!(theirs.get(), (0, 0), "the other process takes nothing down");
     assert_eq!(counted_pass(&other, wall, &|| {}), (0, 0));
@@ -880,15 +1022,91 @@ fn a_process_without_the_lease_cuts_a_hold_on_the_live_clock() {
         .unwrap();
     let later = wall + 6 * SECOND;
     let live = crate::active_clock::active_at(None, &world.conn(), later).unwrap();
-    assert_eq!(live, requested + ANSWER + 2 * SECOND, "4 s short + 6 s on");
+    assert_eq!(
+        live,
+        Active::Running(requested + ANSWER + 2 * SECOND),
+        "4 s short + 6 s on"
+    );
     let late = service::decide(
         &world.conn(),
         chain.lead.as_str(),
         "holds.allow",
         &json!({"hold": hold}),
         "r1",
-        (live, later),
+        (requested + ANSWER + 2 * SECOND, later).into(),
     );
     assert_eq!(code(late), "hold_decided");
     assert_eq!(logged(&world, &hold).0.as_deref(), Some("timeout"));
+}
+
+// Defect: the process that ran the active clock quit, so a second process
+// reads a clock that never moves on: its holds never time out and an
+// answer long after the client gave up is logged as allow.
+#[test]
+fn with_the_active_clock_stopped_a_hold_fails_closed() {
+    let world = World::new("hold-clock-stopped");
+    let chain = chain(&world, "hx");
+    let other = SessionStore::open_second(world.path().to_path_buf()).unwrap();
+    let held = |tool_use_id: &str, written_ago: i64| {
+        let hold = request(&world, &chain.worker, tool_use_id, "sleep 60");
+        let wall = crate::session_store::now_millis() - written_ago;
+        world
+            .conn()
+            .execute(
+                "UPDATE mono_clock SET last_wall_ms = ?1 WHERE id = 1",
+                [wall],
+            )
+            .unwrap();
+        hold
+    };
+    let other_now = |conn: &Connection| service::now(&other, conn);
+    let allow = |hold: &str| {
+        let input = json!({"hold": hold});
+        service::decide_call(
+            &other,
+            chain.lead.as_str(),
+            "holds.allow",
+            &input,
+            "r1",
+            &other_now,
+        )
+    };
+    let fresh = held("toolu_fresh", 4 * SECOND);
+    assert_eq!(allow(&fresh)["ok"], true, "a clock written 4 s ago runs");
+
+    let stopped = held("toolu_stopped", 60 * SECOND);
+    assert_eq!(allow(&stopped)["code"], "clock_stale");
+    assert_eq!(
+        logged(&world, &stopped),
+        (
+            Some("timeout".into()),
+            None,
+            Some("the active clock stopped".into())
+        )
+    );
+    let waited = held("toolu_waited", 60 * SECOND);
+    let caller = Received {
+        at: Instant::now(),
+        peer: None,
+        may_block: true,
+    };
+    let wait = json!({"hold": waited, "timeoutSeconds": 30, "last": false});
+    let (reply, _) = service::call(
+        &other,
+        chain.worker.as_str(),
+        "wait",
+        &wait,
+        &other_now,
+        &caller,
+    );
+    assert_eq!(reply, json!({"ok": true, "status": "timeout"}));
+    let (reply, _) = service::call(
+        &other,
+        chain.worker.as_str(),
+        "request",
+        &wire("toolu_new", "sleep 60"),
+        &other_now,
+        &caller,
+    );
+    assert_eq!(reply["code"], "clock_stale");
 }

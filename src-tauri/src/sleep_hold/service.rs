@@ -5,6 +5,8 @@
 //! wake, or Tyler as an OS banner; no decision by the deadline is a
 //! refusal the log records.
 
+use std::io::ErrorKind;
+use std::net::TcpStream;
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -12,25 +14,45 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::store::{self, Decision, HoldRow, NewHold};
+use super::store::{self, Decision, HoldRow, NewHold, CLIENT_STOPPED, CLOCK_STOPPED, NO_ANSWER};
 use super::{Harness, HoldWaitReply, WaitKind};
+use crate::active_clock::Active;
 use crate::alarms::act::{self as alarm_act, Refusal};
 use crate::alarms::{self, Provisioner, Settings};
 use crate::ask_gate::Actor;
 use crate::mono_messages::Notices;
 use crate::session_store::SessionStore;
 
-/// The store's active and wall time, as [`now`] reads it.
-pub(crate) type Now<'a> = &'a dyn Fn(&Connection) -> rusqlite::Result<(i64, i64)>;
+/// The time a hold call runs at. With the active clock `stopped` no hold
+/// can be timed, so each hold a call touches times out (fails closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HoldTime {
+    pub active: i64,
+    pub wall: i64,
+    pub stopped: bool,
+}
+
+impl HoldTime {
+    pub(crate) fn pair(self) -> (i64, i64) {
+        (self.active, self.wall)
+    }
+}
+
+impl From<(i64, i64)> for HoldTime {
+    fn from((active, wall): (i64, i64)) -> Self {
+        Self {
+            active,
+            wall,
+            stopped: false,
+        }
+    }
+}
+
+/// The store's hold time, as [`now`] reads it.
+pub(crate) type Now<'a> = &'a dyn Fn(&Connection) -> rusqlite::Result<HoldTime>;
 
 /// The longest `hold.wait` the app serves, inside its 35 s reply window.
 const MAX_WAIT: Duration = Duration::from_secs(30);
-/// A `hold.wait` that would end this close to its hold's cut, or after it,
-/// is the client's last: it runs to the cut and closes the hold there, so
-/// the client gets the timeout and no answer lands once it stopped
-/// listening. The extra time stays inside the client's reply margin.
-const TO_THE_CUT: Duration = Duration::from_secs(2);
-const _: () = assert!(TO_THE_CUT.as_secs() < super::client::MARGIN.as_secs());
 /// A waiting call reads its hold again this often even with no signal.
 const RECHECK: Duration = Duration::from_secs(1);
 /// Tyler's banner thread looks for holds this often even with no signal.
@@ -82,32 +104,67 @@ fn wait_change(seen: u64, timeout: Duration) {
         .wait_timeout_while(version, timeout, |version| *version == seen);
 }
 
-/// The time a `hold` call runs on: how long since the app took its
-/// connection, and a block that a new hold or a decision ends early.
-pub(crate) trait CallClock {
+/// The client connection a `hold` call serves.
+pub(crate) trait HoldCaller {
+    /// How long since the app took the connection.
     fn elapsed(&self) -> Duration;
+    /// Blocks up to `timeout`; a new hold or a decision ends it early.
     fn block(&self, seen: u64, timeout: Duration);
+    /// The client closed its end, so it hears no answer.
+    fn hung_up(&self) -> bool;
+    /// `false` past the app's cap on running waits: a wait answers at once.
+    fn may_block(&self) -> bool;
 }
 
-/// A call the app took off its socket at this instant.
-pub(crate) struct Received(pub Instant);
+/// A call the app took off `peer` at `at`.
+pub(crate) struct Received {
+    pub at: Instant,
+    pub peer: Option<TcpStream>,
+    pub may_block: bool,
+}
 
-impl CallClock for Received {
+impl HoldCaller for Received {
     fn elapsed(&self) -> Duration {
-        self.0.elapsed()
+        self.at.elapsed()
     }
 
     fn block(&self, seen: u64, timeout: Duration) {
         wait_change(seen, timeout);
     }
+
+    fn hung_up(&self) -> bool {
+        let Some(peer) = &self.peer else {
+            return false;
+        };
+        if peer.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let gone = match peer.peek(&mut [0; 1]) {
+            Ok(read) => read == 0,
+            Err(error) => !matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted),
+        };
+        let _ = peer.set_nonblocking(false);
+        gone
+    }
+
+    fn may_block(&self) -> bool {
+        self.may_block
+    }
 }
 
-/// The active and wall time of a hold call, on the live clock in every
-/// process, so a process without the lease cuts on time too.
-pub(crate) fn now(store: &SessionStore, conn: &Connection) -> rusqlite::Result<(i64, i64)> {
+/// The time of a hold call, on the live clock in every process, so a
+/// process without the lease cuts on time too.
+pub(crate) fn now(store: &SessionStore, conn: &Connection) -> rusqlite::Result<HoldTime> {
     let wall = crate::session_store::now_millis();
-    let active = crate::active_clock::active_at(store.alarms.now(), conn, wall)?;
-    Ok((active, wall))
+    let (active, stopped) = match crate::active_clock::active_at(store.alarms.now(), conn, wall)? {
+        Active::Running(active) => (active, false),
+        Active::Stopped(active) => (active, true),
+    };
+    Ok(HoldTime {
+        active,
+        wall,
+        stopped,
+    })
 }
 
 /// `hold.request` as the hook client sends it (`super::HoldRequest`).
@@ -133,6 +190,8 @@ struct WireWait {
 struct WaitInput {
     hold: String,
     timeout_seconds: u64,
+    #[serde(default)]
+    last: bool,
 }
 
 #[derive(Deserialize)]
@@ -393,22 +452,6 @@ pub(crate) fn sweep(conn: &Connection, now: (i64, i64)) -> rusqlite::Result<()> 
     Ok(())
 }
 
-/// Hold `hold` of `session` as it stands at `now`, and its cut.
-fn standing_at(
-    conn: &Connection,
-    session: &str,
-    hold: &str,
-    now: (i64, i64),
-) -> Result<(HoldWaitReply, i64), Refusal> {
-    let mine = |row: Option<HoldRow>| row.filter(|row| row.session == session);
-    let mut row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
-    if row.decision.is_none() && now.0 >= row.deadline_active {
-        sweep(conn, now)?;
-        row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
-    }
-    Ok((reply(&row), row.deadline_active))
-}
-
 /// Hold `hold` of `session` as it stands at `now`.
 pub(crate) fn status(
     conn: &Connection,
@@ -416,62 +459,85 @@ pub(crate) fn status(
     hold: &str,
     now: (i64, i64),
 ) -> Result<HoldWaitReply, Refusal> {
-    Ok(standing_at(conn, session, hold, now)?.0)
+    let mine = |row: Option<HoldRow>| row.filter(|row| row.session == session);
+    let mut row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
+    if row.decision.is_none() && row.lapsed(now.0) {
+        sweep(conn, now)?;
+        row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
+    }
+    Ok(reply(&row))
 }
 
-/// `hold.wait`: blocks up to `timeoutSeconds` (at most 30) for a decision,
-/// and the client's last wait to the cut. No store lock is held while it
+/// `hold.wait`: blocks up to `timeoutSeconds` (at most 30) for a decision.
+/// The hold times out when no answer can reach the client any more: at the
+/// end of its `last` wait, once it hung up, or with the active clock
+/// stopped. A wait that comes after the client's read timeout finds its
+/// hold [lapsed](HoldRow::lapsed) already. No store lock is held while it
 /// blocks.
 fn wait(
     store: &SessionStore,
     session: &str,
     input: &Value,
     now: Now,
-    clock: &dyn CallClock,
+    caller: &dyn HoldCaller,
 ) -> Result<Value, Refusal> {
     let input: WaitInput = parsed(input, "hold wait")?;
-    let slice = Duration::from_secs(input.timeout_seconds).min(MAX_WAIT);
-    let mut last = false;
+    let slice = if caller.may_block() {
+        Duration::from_secs(input.timeout_seconds).min(MAX_WAIT)
+    } else {
+        Duration::ZERO
+    };
+    let mut marked = false;
     loop {
         let seen = version();
-        let (status, to_cut) = {
+        let spent = caller.elapsed();
+        let left = slice.saturating_sub(spent);
+        let stopped = {
             let conn = store.lock_conn()?;
-            let at = now(&conn)?;
-            let (status, cut) = standing_at(&conn, session, &input.hold, at)?;
-            (
-                status,
-                Duration::from_millis(u64::try_from(cut - at.0).unwrap_or(0)),
-            )
-        };
-        if status != HoldWaitReply::Pending {
-            return Ok(answered(&status));
-        }
-        let spent = clock.elapsed();
-        last = last || to_cut <= slice.saturating_sub(spent) + TO_THE_CUT;
-        let end = if last { slice + TO_THE_CUT } else { slice };
-        let left = end.saturating_sub(spent);
-        if left.is_zero() {
-            if !last {
+            let time = now(&conn)?;
+            let status = status(&conn, session, &input.hold, time.pair())?;
+            if status != HoldWaitReply::Pending {
                 return Ok(answered(&status));
             }
-            return close(store, session, &input.hold, now).map(|status| answered(&status));
+            if !marked {
+                let left = i64::try_from(left.as_millis()).unwrap_or(i64::MAX);
+                store::waiting(&conn, &input.hold, time.active.saturating_add(left))?;
+                marked = true;
+            }
+            time.stopped
+        };
+        let why = if stopped {
+            Some(CLOCK_STOPPED)
+        } else if caller.hung_up() {
+            Some(CLIENT_STOPPED)
+        } else if left.is_zero() && input.last {
+            Some(NO_ANSWER)
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return close(store, session, &input.hold, now, why).map(|status| answered(&status));
         }
-        clock.block(seen, left.min(RECHECK));
+        if left.is_zero() {
+            return Ok(answered(&HoldWaitReply::Pending));
+        }
+        caller.block(seen, left.min(RECHECK));
     }
 }
 
-/// The client's last wait ended with no decision: the hold times out now,
+/// No answer can reach the client: the hold times out now, for `why`,
 /// whatever this process's clock says, unless a decision just came first.
 fn close(
     store: &SessionStore,
     session: &str,
     hold: &str,
     now: Now,
+    why: &str,
 ) -> Result<HoldWaitReply, Refusal> {
     let conn = store.lock_conn()?;
-    let at = now(&conn)?;
+    let at = now(&conn)?.pair();
     let tx = immediate(&conn)?;
-    let closed = store::time_out(&tx, hold, at)?;
+    let closed = store::time_out(&tx, hold, at, why)?;
     tx.commit()?;
     if closed {
         changed();
@@ -489,34 +555,39 @@ fn answered(status: &HoldWaitReply) -> Value {
 /// names, which the caller emits after every lock is let go. A request is
 /// stamped when the app took its connection, as the client counts its cut
 /// from before it sent it, so a wait for a free reader does not move the
-/// app's cut past the client's.
+/// app's cut past the client's. Its first wait is due at once.
 pub(crate) fn call(
     store: &SessionStore,
     session: &str,
     action: &str,
     input: &Value,
     now: Now,
-    clock: &dyn CallClock,
+    caller: &dyn HoldCaller,
 ) -> (Value, Notices) {
     let result = match action {
         "request" => store
             .lock_conn()
             .map_err(Refusal::from)
             .and_then(|conn| {
-                let (active, wall) = now(&conn)?;
-                let queued = i64::try_from(clock.elapsed().as_millis()).unwrap_or(i64::MAX);
-                let at = (active.saturating_sub(queued), wall.saturating_sub(queued));
-                request(&conn, session, input, at)
+                let time = now(&conn)?;
+                if time.stopped {
+                    return Err(Refusal::ClockStale);
+                }
+                let queued = i64::try_from(caller.elapsed().as_millis()).unwrap_or(i64::MAX);
+                let at = (
+                    time.active.saturating_sub(queued),
+                    time.wall.saturating_sub(queued),
+                );
+                let (hold, notices) = request(&conn, session, input, at)?;
+                store::waiting(&conn, &hold, time.active)?;
+                Ok((hold, notices))
             })
             .map(|(hold, notices)| (json!({"ok": true, "hold": hold}), notices)),
-        "wait" => wait(store, session, input, now, clock).map(|reply| (reply, Notices::default())),
+        "wait" => wait(store, session, input, now, caller).map(|reply| (reply, Notices::default())),
         "ping" => store
             .lock_conn()
             .map_err(Refusal::from)
-            .and_then(|conn| {
-                let (_, wall) = now(&conn)?;
-                Ok(store::ping(&conn, session, wall)?)
-            })
+            .and_then(|conn| Ok(store::ping(&conn, session, now(&conn)?.wall)?))
             .map(|recorded| {
                 (
                     json!({"ok": true, "recorded": recorded}),
@@ -555,7 +626,7 @@ pub(crate) fn decide(
     action: &str,
     input: &Value,
     request_id: &str,
-    now: (i64, i64),
+    now: HoldTime,
 ) -> Result<Value, Refusal> {
     let decision = match action {
         "holds.allow" => Decision::Allow,
@@ -595,16 +666,37 @@ pub(crate) fn decide(
         Some(done) => return Err(Refusal::HoldDecided(done)),
         None => {}
     }
-    if now.0 >= row.deadline_active {
-        store::expire(&tx, now)?;
+    if let Some(refusal) = unreachable(&tx, &row, now)? {
         tx.commit()?;
         changed();
-        return Err(Refusal::HoldDecided(Decision::Timeout));
+        return Err(refusal);
     }
-    store::decide(&tx, &row.id, decision, &by, reason, Some(request_id), now)?;
+    store::decide(
+        &tx,
+        &row.id,
+        decision,
+        &by,
+        reason,
+        Some(request_id),
+        now.pair(),
+    )?;
     tx.commit()?;
     changed();
     Ok(result)
+}
+
+/// Times out undecided hold `row` when no answer can reach its client at
+/// `now`, and refuses the answer that found it so.
+fn unreachable(tx: &Connection, row: &HoldRow, now: HoldTime) -> rusqlite::Result<Option<Refusal>> {
+    if now.stopped {
+        store::time_out(tx, &row.id, now.pair(), CLOCK_STOPPED)?;
+        return Ok(Some(Refusal::ClockStale));
+    }
+    if row.lapsed(now.active) {
+        store::expire(tx, now.pair())?;
+        return Ok(Some(Refusal::HoldDecided(Decision::Timeout)));
+    }
+    Ok(None)
 }
 
 /// `holds.*` as an app action: `{ok, result}` or the refusal.
@@ -633,7 +725,7 @@ pub(crate) fn tyler_decides(
     conn: &Connection,
     hold: &str,
     allow: bool,
-    now: (i64, i64),
+    now: HoldTime,
 ) -> rusqlite::Result<bool> {
     let tx = immediate(conn)?;
     let Some(row) = store::get(&tx, hold)?.filter(|row| row.provisioner == "tyler") else {
@@ -642,8 +734,7 @@ pub(crate) fn tyler_decides(
     if row.decision.is_some() {
         return Ok(false);
     }
-    if now.0 >= row.deadline_active {
-        store::expire(&tx, now)?;
+    if unreachable(&tx, &row, now)?.is_some() {
         tx.commit()?;
         changed();
         return Ok(false);
@@ -653,7 +744,7 @@ pub(crate) fn tyler_decides(
     } else {
         (Decision::Deny, Some(DENIED_FROM_BANNER))
     };
-    let decided = store::decide(&tx, hold, decision, "tyler", reason, None, now)?;
+    let decided = store::decide(&tx, hold, decision, "tyler", reason, None, now.pair())?;
     tx.commit()?;
     if decided {
         changed();
@@ -909,6 +1000,7 @@ mod tests {
             decided_by: None,
             decision_reason: reason.map(String::from),
             decided_request_id: None,
+            waiting_until: None,
         };
         let wire = |decision, reason| {
             let reply = answered(&super::reply(&row(decision, reason)));

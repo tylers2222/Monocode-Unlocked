@@ -575,12 +575,15 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, Failure> {
 }
 
 /// The clock of every `hold` call this listener serves.
-pub(crate) type HoldNow =
-    Arc<dyn Fn(&SessionStore, &Connection) -> rusqlite::Result<(i64, i64)> + Send + Sync>;
+pub(crate) type HoldNow = Arc<
+    dyn Fn(&SessionStore, &Connection) -> rusqlite::Result<crate::sleep_hold::service::HoldTime>
+        + Send
+        + Sync,
+>;
 
 /// The `hold.wait` calls served at once, each on its own thread so a long
 /// poll never takes one of the eight readers. Past the cap, a wait answers
-/// on the reader with no slice (near the cut it still runs to the cut).
+/// on the reader at once.
 pub(crate) struct HoldWaits {
     running: AtomicUsize,
     now: HoldNow,
@@ -626,19 +629,27 @@ fn serve<R: Runtime>(
     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
     let response = match read_request(&mut stream) {
         Err(failure) => failure.response(),
-        Ok(mut request) if request.namespace == "hold" => {
+        Ok(request) if request.namespace == "hold" => {
             if request.action == "wait" {
                 if let Some(slot) = waits.take() {
                     let (app, inner, now) = (app.clone(), inner.clone(), waits.now.clone());
-                    std::thread::spawn(move || {
+                    // A thread the OS refuses drops this call, not the reader.
+                    let _ = std::thread::Builder::new().spawn(move || {
                         let _slot = slot;
-                        serve_hold(stream, accepted, &app, &inner, &request, now);
+                        serve_hold(stream, accepted, &app, &inner, &request, now, true);
                     });
                     return;
                 }
-                request.input["timeoutSeconds"] = json!(0);
             }
-            serve_hold(stream, accepted, app, inner, &request, waits.now.clone());
+            serve_hold(
+                stream,
+                accepted,
+                app,
+                inner,
+                &request,
+                waits.now.clone(),
+                false,
+            );
             return;
         }
         Ok(request) => answer(app, inner, request).unwrap_or_else(Failure::response),
@@ -653,11 +664,16 @@ fn serve_hold<R: Runtime>(
     inner: &Mutex<Inner>,
     request: &Request,
     now: HoldNow,
+    may_block: bool,
 ) {
     let store = app.state::<SessionStore>();
-    let clock = crate::sleep_hold::service::Received(accepted);
+    let caller = crate::sleep_hold::service::Received {
+        at: accepted,
+        peer: stream.try_clone().ok(),
+        may_block,
+    };
     let at = |conn: &Connection| now(&store, conn);
-    let (response, notices) = hold_call(inner, &store, request, &at, &clock);
+    let (response, notices) = hold_call(inner, &store, request, &at, &caller);
     let _ = writeln!(stream, "{response}");
     notices.emit(app);
 }
@@ -670,7 +686,7 @@ fn hold_call(
     store: &SessionStore,
     request: &Request,
     now: crate::sleep_hold::service::Now,
-    clock: &dyn crate::sleep_hold::service::CallClock,
+    caller: &dyn crate::sleep_hold::service::HoldCaller,
 ) -> (Value, Notices) {
     let grant = match inner.lock() {
         Ok(host) => hold_grant(&host, &request.token),
@@ -683,7 +699,7 @@ fn hold_call(
             &request.action,
             &request.input,
             now,
-            clock,
+            caller,
         ),
         Err(failure) => (failure.response(), Notices::default()),
     }
@@ -2987,7 +3003,7 @@ pub(crate) mod tests {
             .unwrap();
         (
             app,
-            TestHoldHost::running("hold-a", Arc::new(|_, _| Ok((0, 0)))),
+            TestHoldHost::running("hold-a", Arc::new(|_, _| Ok((0, 0).into()))),
         )
     }
 
@@ -3060,7 +3076,7 @@ pub(crate) mod tests {
             &store.lock_conn().unwrap(),
             "sh_a1",
             true,
-            (0, 0),
+            (0, 0).into(),
         );
         assert!(decided.unwrap());
         assert_eq!(
@@ -3095,8 +3111,55 @@ pub(crate) mod tests {
             json!({"ok": true, "status": "pending"})
         );
         assert_eq!(host.running_waits(), 64);
+        let last = hold_request(
+            &host.token,
+            "wait",
+            json!({"hold": "sh_a1", "timeoutSeconds": 30, "last": true}),
+        );
+        assert_eq!(
+            reply_line(&mut send_through_serve(&host, &app, last)),
+            json!({"ok": true, "status": "timeout"}),
+            "the client's last wait closes the hold at once"
+        );
         drop(taken);
         assert_eq!(host.running_waits(), 0);
+    }
+
+    #[test]
+    fn a_wait_whose_client_hangs_up_closes_its_hold() {
+        // Defect: the hook client is killed mid-wait and the app keeps the
+        // hold open, so a later allow is logged that no client heard.
+        let (app, host) = hold_app();
+        let wait = hold_request(
+            &host.token,
+            "wait",
+            json!({"hold": "sh_a1", "timeoutSeconds": 30}),
+        );
+        drop(send_through_serve(&host, &app, wait));
+        let store = app.state::<SessionStore>();
+        let decision = || -> Option<String> {
+            store
+                .lock_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT decision FROM sleep_holds WHERE id = 'sh_a1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let noticed = Instant::now() + Duration::from_secs(5);
+        while decision().is_none() && Instant::now() < noticed {
+            std::thread::yield_now();
+        }
+        assert_eq!(decision().as_deref(), Some("timeout"));
+        let late = crate::sleep_hold::service::tyler_decides(
+            &store.lock_conn().unwrap(),
+            "sh_a1",
+            true,
+            (0, 0).into(),
+        );
+        assert!(!late.unwrap(), "a later allow is refused");
     }
 
     #[test]

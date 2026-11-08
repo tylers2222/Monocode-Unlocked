@@ -235,6 +235,7 @@ pub(crate) fn hold<T: Transport>(
 }
 
 /// Asks once, then long-polls in slices that all end before the deadline.
+/// It marks its last slice, so it never stops without telling the app.
 fn ask(
     transport: &mut impl Transport,
     clock: &dyn Clock,
@@ -251,19 +252,17 @@ fn ask(
     let mut slice = 0u32;
     loop {
         let started = clock.elapsed();
-        let Some(wait) = DEADLINE
-            .checked_sub(started + MARGIN)
-            .map(|left| Duration::from_secs(left.min(SLICE).as_secs()))
-            .filter(|wait| !wait.is_zero())
-        else {
-            return Ok(HoldWaitReply::Timeout);
-        };
+        let left = DEADLINE.saturating_sub(started + MARGIN);
+        let wait = Duration::from_secs(left.min(SLICE).as_secs());
+        let last = left - wait < Duration::from_secs(1);
         let input = json!(HoldWait {
             hold: &requested.hold,
             timeout_seconds: wait.as_secs(),
+            last,
         });
         let request_id = format!("hold-{id}-wait-{slice}");
         match read_reply(transport.call("wait", input, &request_id, wait + MARGIN)?)? {
+            HoldWaitReply::Pending if last => return Ok(HoldWaitReply::Timeout),
             HoldWaitReply::Pending => {
                 slice += 1;
                 let spent = clock.elapsed().saturating_sub(started);
@@ -467,7 +466,7 @@ mod tests {
         assert_eq!(requests[1]["namespace"], "hold");
         assert_eq!(
             requests[1]["input"],
-            json!({"hold": "sh_1", "timeoutSeconds": 30})
+            json!({"hold": "sh_1", "timeoutSeconds": 30, "last": false})
         );
         assert_eq!(requests.len(), 2);
     }
@@ -532,6 +531,37 @@ mod tests {
             clock.elapsed() + MARGIN + POLL_FLOOR > DEADLINE,
             "gave up early"
         );
+    }
+
+    #[test]
+    fn the_client_tells_the_app_which_wait_is_its_last() {
+        // Defect: the client stops after a wait the app did not know was its
+        // last, so the app takes an answer that no one hears.
+        for overrun in [0, 600, 10_000].map(Duration::from_millis) {
+            let clock = FakeClock::default();
+            let waited = clock.clone();
+            let app = FakeApp::start(move |request| {
+                if request["action"] == "request" {
+                    return json!({"ok": true, "hold": "sh_1"}).to_string();
+                }
+                let slice = request["input"]["timeoutSeconds"].as_u64().unwrap();
+                waited.advance(Duration::from_secs(slice) + overrun);
+                json!({"ok": true, "status": "pending"}).to_string()
+            });
+            let (code, _) = run_hold(
+                Harness::Claude,
+                &claude_bash("sleep 600", false),
+                &app.env(),
+                &clock,
+            );
+            assert_eq!(code, 2);
+            let last: Vec<bool> = app.requests()[1..]
+                .iter()
+                .map(|request| request["input"]["last"].as_bool().unwrap())
+                .collect();
+            let (end, before) = last.split_last().unwrap();
+            assert!(*end && !before.contains(&true), "{overrun:?}: {last:?}");
+        }
     }
 
     #[test]

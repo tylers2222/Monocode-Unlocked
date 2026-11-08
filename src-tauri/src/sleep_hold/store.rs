@@ -7,6 +7,12 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 /// How long the provisioner has to answer, in active time (design 3).
 pub(crate) const ANSWER_MS: i64 = super::ANSWER_CUT.as_millis() as i64;
+/// A client sends its next wait as soon as one ends, so a hold with no wait
+/// for this long after its last one ended has no client left (active ms).
+pub(crate) const IDLE_MS: i64 = 3_000;
+pub(crate) const NO_ANSWER: &str = "no answer in 2 min";
+pub(crate) const CLIENT_STOPPED: &str = "the hold client stopped waiting";
+pub(crate) const CLOCK_STOPPED: &str = "the active clock stopped";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decision {
@@ -64,6 +70,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            decided_request_id  TEXT,
            notified_wall_ms    INTEGER,
            withdrawn_wall_ms   INTEGER,
+           waiting_until_active_ms INTEGER,
            UNIQUE (session_id, tool_use_id),
            CHECK ((decision IS NULL) = (decided_active_ms IS NULL))
          );
@@ -176,11 +183,24 @@ pub(crate) struct HoldRow {
     pub decided_by: Option<String>,
     pub decision_reason: Option<String>,
     pub decided_request_id: Option<String>,
+    /// When the client's latest wait ends, once it sent one.
+    pub waiting_until: Option<i64>,
+}
+
+impl HoldRow {
+    /// No decision can reach the client any more at `active`: the cut
+    /// passed, or the client sent no wait for [`IDLE_MS`].
+    pub(crate) fn lapsed(&self, active: i64) -> bool {
+        active >= self.deadline_active
+            || self
+                .waiting_until
+                .is_some_and(|until| active >= until + IDLE_MS)
+    }
 }
 
 const HOLD_COLUMNS: &str = "id, actor, session_id, provisioner, command, wait_kind,
   wait_seconds, reason, deadline_active_ms, decision, decided_by, decision_reason,
-  decided_request_id";
+  decided_request_id, waiting_until_active_ms";
 
 fn hold_row(row: &rusqlite::Row) -> rusqlite::Result<HoldRow> {
     Ok(HoldRow {
@@ -200,6 +220,7 @@ fn hold_row(row: &rusqlite::Row) -> rusqlite::Result<HoldRow> {
         decided_by: row.get(10)?,
         decision_reason: row.get(11)?,
         decided_request_id: row.get(12)?,
+        waiting_until: row.get(13)?,
     })
 }
 
@@ -243,36 +264,53 @@ fn drop_wake(tx: &Connection, id: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Every hold past its deadline with no decision is `timeout`, so the log
-/// is right even when the client died. Returns how many it closed.
+/// Every undecided hold that [lapsed](HoldRow::lapsed) is `timeout`, so
+/// the log is right even when the client died. Returns how many it closed.
 pub(crate) fn expire(tx: &Connection, (active, wall): (i64, i64)) -> rusqlite::Result<usize> {
     let due = tx
-        .prepare("SELECT id FROM sleep_holds WHERE decision IS NULL AND deadline_active_ms <= ?1")?
-        .query_map([active], |row| row.get::<_, String>(0))?
+        .prepare(
+            "SELECT id, deadline_active_ms <= ?1 FROM sleep_holds
+              WHERE decision IS NULL
+                AND (deadline_active_ms <= ?1 OR waiting_until_active_ms + ?2 <= ?1)",
+        )?
+        .query_map(params![active, IDLE_MS], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for id in &due {
-        time_out(tx, id, (active, wall))?;
+    for (id, cut) in &due {
+        let why = if *cut { NO_ANSWER } else { CLIENT_STOPPED };
+        time_out(tx, id, (active, wall), why)?;
     }
     Ok(due.len())
 }
 
-/// Hold `id` is `timeout` unless it is decided already. `false` when a
-/// decision came first.
+/// Hold `id` is `timeout`, for `why`, unless it is decided already.
+/// `false` when a decision came first.
 pub(crate) fn time_out(
     tx: &Connection,
     id: &str,
     (active, wall): (i64, i64),
+    why: &str,
 ) -> rusqlite::Result<bool> {
     let closed = tx.execute(
         "UPDATE sleep_holds SET decision = 'timeout', decided_active_ms = ?2,
-           decided_wall_ms = ?3, decision_reason = 'no answer in 2 min'
+           decided_wall_ms = ?3, decision_reason = ?4
          WHERE id = ?1 AND decision IS NULL",
-        params![id, active, wall],
+        params![id, active, wall, why],
     )? == 1;
     if closed {
         drop_wake(tx, id)?;
     }
     Ok(closed)
+}
+
+/// A wait of hold `id`'s client runs until `until` (active ms).
+pub(crate) fn waiting(conn: &Connection, id: &str, until: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sleep_holds SET waiting_until_active_ms = ?2 WHERE id = ?1 AND decision IS NULL",
+        params![id, until],
+    )?;
+    Ok(())
 }
 
 /// The hold client of `session` reported in: its hook is installed.

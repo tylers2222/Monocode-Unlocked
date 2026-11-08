@@ -59,11 +59,14 @@ pub struct HoldRequested {
 }
 
 /// `hold.wait` input: block up to `timeout_seconds` for a decision.
+/// `last`: the client sends no wait after this one, so the app closes the
+/// hold at its end and no answer lands once the client stopped listening.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HoldWait<'a> {
     pub hold: &'a str,
     pub timeout_seconds: u64,
+    pub last: bool,
 }
 
 /// `hold.wait` answer: `{"ok":true,"status":"pending"}` and so on.

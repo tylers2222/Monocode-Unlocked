@@ -46,6 +46,8 @@ pub(crate) enum Refusal {
     NotYourHold,
     /// The first decision stands.
     HoldDecided(Decision),
+    /// No process ticks the active clock, so no hold can be timed.
+    ClockStale,
     UnknownCaller,
     /// The store failed; the error goes to the log, not to the agent.
     Failed,
@@ -80,6 +82,7 @@ impl Refusal {
             Refusal::UnknownHold => "unknown_hold",
             Refusal::NotYourHold => "not_your_hold",
             Refusal::HoldDecided(_) => "hold_decided",
+            Refusal::ClockStale => "clock_stale",
             Refusal::UnknownCaller => "unknown_caller",
             Refusal::Failed => "failed",
         }
@@ -100,6 +103,7 @@ impl Refusal {
             Refusal::NotYourHold => "This sleep hold is not yours: only the agent's provisioner or one above it may answer it.".into(),
             Refusal::HoldDecided(Decision::Timeout) => "This sleep hold timed out: no answer came in 2 min, so the agent was refused. It was told to run the wait in the background.".into(),
             Refusal::HoldDecided(decision) => format!("This sleep hold is decided already ({}). The first answer stands.", decision.as_str()),
+            Refusal::ClockStale => "No MonoCode process is running the active clock, so sleep holds cannot be timed: the hold timed out and the agent was refused.".into(),
             Refusal::UnknownCaller => "MonoCode has no saved session for this caller.".into(),
             Refusal::Failed => "MonoCode could not read or write its alarm rows. Try again.".into(),
         }
