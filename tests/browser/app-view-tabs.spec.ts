@@ -336,8 +336,12 @@ test("the Automations tab reopens the Milestones or Approvals page it names", as
     };
     const base = fixture.__TAURI_INTERNALS__.invoke;
     fixture.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (["milestones_list", "approvals_list"].includes(command))
-        return Promise.resolve([]);
+      if (command === "milestones_list")
+        return Promise.resolve({
+          settings: { enabled: true, hiddenStatuses: [] },
+          milestones: [],
+        });
+      if (command === "approvals_list") return Promise.resolve([]);
       return base(command, args);
     };
   });
