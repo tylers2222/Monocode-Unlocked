@@ -14,17 +14,23 @@ use serde_json::{json, Value};
 
 use super::store::{self, Decision, HoldRow, NewHold};
 use super::{Harness, HoldWaitReply, WaitKind};
-use crate::alarms::act as alarm_act;
+use crate::alarms::act::{self as alarm_act, Refusal};
 use crate::alarms::{self, Provisioner, Settings};
 use crate::ask_gate::Actor;
 use crate::mono_messages::Notices;
 use crate::session_store::SessionStore;
 
-/// The store's active and wall time, as `alarms::now` reads it.
+/// The store's active and wall time, as [`now`] reads it.
 pub(crate) type Now<'a> = &'a dyn Fn(&Connection) -> rusqlite::Result<(i64, i64)>;
 
 /// The longest `hold.wait` the app serves, inside its 35 s reply window.
 const MAX_WAIT: Duration = Duration::from_secs(30);
+/// A `hold.wait` that would end this close to its hold's cut, or after it,
+/// is the client's last: it runs to the cut and closes the hold there, so
+/// the client gets the timeout and no answer lands once it stopped
+/// listening. The extra time stays inside the client's reply margin.
+const TO_THE_CUT: Duration = Duration::from_secs(2);
+const _: () = assert!(TO_THE_CUT.as_secs() < super::client::MARGIN.as_secs());
 /// A waiting call reads its hold again this often even with no signal.
 const RECHECK: Duration = Duration::from_secs(1);
 /// Tyler's banner thread looks for holds this often even with no signal.
@@ -34,6 +40,7 @@ const MAX_TOOL_USE_ID: usize = 200;
 const MAX_REASON: usize = 2_000;
 const SHOWN_COMMAND: usize = 300;
 const BANNER_COMMAND: usize = 120;
+#[cfg(any(target_os = "macos", test))]
 const DENIED_FROM_BANNER: &str = "denied from notification";
 
 /// Moves on every new hold and every decision, so a waiting `hold.wait`
@@ -75,58 +82,32 @@ fn wait_change(seen: u64, timeout: Duration) {
         .wait_timeout_while(version, timeout, |version| *version == seen);
 }
 
-/// Why a hold call was refused: a code and a hint, as every app refusal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Refusal {
-    InvalidInput(String),
-    UnknownHold,
-    /// The caller is not the hold's provisioner or above it.
-    NotYourHold,
-    /// The first decision stands.
-    HoldDecided(Decision),
-    UnknownCaller,
-    Failed(String),
+/// The time a `hold` call runs on: how long since the app took its
+/// connection, and a block that a new hold or a decision ends early.
+pub(crate) trait CallClock {
+    fn elapsed(&self) -> Duration;
+    fn block(&self, seen: u64, timeout: Duration);
 }
 
-impl From<rusqlite::Error> for Refusal {
-    fn from(error: rusqlite::Error) -> Self {
-        Refusal::Failed(error.to_string())
-    }
-}
+/// A call the app took off its socket at this instant.
+pub(crate) struct Received(pub Instant);
 
-impl Refusal {
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Refusal::InvalidInput(_) => "invalid_input",
-            Refusal::UnknownHold => "unknown_hold",
-            Refusal::NotYourHold => "not_your_hold",
-            Refusal::HoldDecided(_) => "hold_decided",
-            Refusal::UnknownCaller => "unknown_caller",
-            Refusal::Failed(_) => "failed",
-        }
+impl CallClock for Received {
+    fn elapsed(&self) -> Duration {
+        self.0.elapsed()
     }
 
-    fn hint(&self) -> String {
-        match self {
-            Refusal::InvalidInput(hint) | Refusal::Failed(hint) => hint.clone(),
-            Refusal::UnknownHold => "No sleep hold has this id.".into(),
-            Refusal::NotYourHold => "This sleep hold is not yours: only the agent's provisioner or one above it may answer it.".into(),
-            Refusal::HoldDecided(Decision::Timeout) => "This sleep hold timed out: no answer came in 2 min, so the agent was refused. It was told to run the wait in the background.".into(),
-            Refusal::HoldDecided(decision) => format!("This sleep hold is decided already ({}). The first answer stands.", decision.as_str()),
-            Refusal::UnknownCaller => "MonoCode has no saved session for this caller.".into(),
-        }
-    }
-
-    pub(crate) fn response(&self) -> Value {
-        let hint = self.hint();
-        json!({"ok": false, "code": self.code(), "hint": hint, "error": hint, "retryable": false})
+    fn block(&self, seen: u64, timeout: Duration) {
+        wait_change(seen, timeout);
     }
 }
 
-impl From<String> for Refusal {
-    fn from(error: String) -> Self {
-        Refusal::Failed(error)
-    }
+/// The active and wall time of a hold call, on the live clock in every
+/// process, so a process without the lease cuts on time too.
+pub(crate) fn now(store: &SessionStore, conn: &Connection) -> rusqlite::Result<(i64, i64)> {
+    let wall = crate::session_store::now_millis();
+    let active = crate::active_clock::active_at(store.alarms.now(), conn, wall)?;
+    Ok((active, wall))
 }
 
 /// `hold.request` as the hook client sends it (`super::HoldRequest`).
@@ -412,6 +393,22 @@ pub(crate) fn sweep(conn: &Connection, now: (i64, i64)) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// Hold `hold` of `session` as it stands at `now`, and its cut.
+fn standing_at(
+    conn: &Connection,
+    session: &str,
+    hold: &str,
+    now: (i64, i64),
+) -> Result<(HoldWaitReply, i64), Refusal> {
+    let mine = |row: Option<HoldRow>| row.filter(|row| row.session == session);
+    let mut row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
+    if row.decision.is_none() && now.0 >= row.deadline_active {
+        sweep(conn, now)?;
+        row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
+    }
+    Ok((reply(&row), row.deadline_active))
+}
+
 /// Hold `hold` of `session` as it stands at `now`.
 pub(crate) fn status(
     conn: &Connection,
@@ -419,35 +416,67 @@ pub(crate) fn status(
     hold: &str,
     now: (i64, i64),
 ) -> Result<HoldWaitReply, Refusal> {
-    let mine = |row: Option<HoldRow>| row.filter(|row| row.session == session);
-    let row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
-    if row.decision.is_some() || now.0 < row.deadline_active {
-        return Ok(reply(&row));
-    }
-    sweep(conn, now)?;
-    let row = mine(store::get(conn, hold)?).ok_or(Refusal::UnknownHold)?;
-    Ok(reply(&row))
+    Ok(standing_at(conn, session, hold, now)?.0)
 }
 
-/// `hold.wait`: blocks up to `timeoutSeconds` (at most 30) for a decision.
-/// No store lock is held while it blocks.
-fn wait(store: &SessionStore, session: &str, input: &Value, now: Now) -> Result<Value, Refusal> {
+/// `hold.wait`: blocks up to `timeoutSeconds` (at most 30) for a decision,
+/// and the client's last wait to the cut. No store lock is held while it
+/// blocks.
+fn wait(
+    store: &SessionStore,
+    session: &str,
+    input: &Value,
+    now: Now,
+    clock: &dyn CallClock,
+) -> Result<Value, Refusal> {
     let input: WaitInput = parsed(input, "hold wait")?;
-    let timeout = Duration::from_secs(input.timeout_seconds).min(MAX_WAIT);
-    let started = Instant::now();
+    let slice = Duration::from_secs(input.timeout_seconds).min(MAX_WAIT);
+    let mut last = false;
     loop {
         let seen = version();
-        let status = {
+        let (status, to_cut) = {
             let conn = store.lock_conn()?;
-            let now = now(&conn)?;
-            status(&conn, session, &input.hold, now)?
+            let at = now(&conn)?;
+            let (status, cut) = standing_at(&conn, session, &input.hold, at)?;
+            (
+                status,
+                Duration::from_millis(u64::try_from(cut - at.0).unwrap_or(0)),
+            )
         };
-        let left = timeout.saturating_sub(started.elapsed());
-        if status != HoldWaitReply::Pending || left.is_zero() {
+        if status != HoldWaitReply::Pending {
             return Ok(answered(&status));
         }
-        wait_change(seen, left.min(RECHECK));
+        let spent = clock.elapsed();
+        last = last || to_cut <= slice.saturating_sub(spent) + TO_THE_CUT;
+        let end = if last { slice + TO_THE_CUT } else { slice };
+        let left = end.saturating_sub(spent);
+        if left.is_zero() {
+            if !last {
+                return Ok(answered(&status));
+            }
+            return close(store, session, &input.hold, now).map(|status| answered(&status));
+        }
+        clock.block(seen, left.min(RECHECK));
     }
+}
+
+/// The client's last wait ended with no decision: the hold times out now,
+/// whatever this process's clock says, unless a decision just came first.
+fn close(
+    store: &SessionStore,
+    session: &str,
+    hold: &str,
+    now: Now,
+) -> Result<HoldWaitReply, Refusal> {
+    let conn = store.lock_conn()?;
+    let at = now(&conn)?;
+    let tx = immediate(&conn)?;
+    let closed = store::time_out(&tx, hold, at)?;
+    tx.commit()?;
+    if closed {
+        changed();
+    }
+    status(&conn, session, hold, at)
 }
 
 fn answered(status: &HoldWaitReply) -> Value {
@@ -457,24 +486,30 @@ fn answered(status: &HoldWaitReply) -> Value {
 }
 
 /// One `hold` namespace call of `session`: the reply, and the chats it
-/// names, which the caller emits after every lock is let go.
+/// names, which the caller emits after every lock is let go. A request is
+/// stamped when the app took its connection, as the client counts its cut
+/// from before it sent it, so a wait for a free reader does not move the
+/// app's cut past the client's.
 pub(crate) fn call(
     store: &SessionStore,
     session: &str,
     action: &str,
     input: &Value,
     now: Now,
+    clock: &dyn CallClock,
 ) -> (Value, Notices) {
     let result = match action {
         "request" => store
             .lock_conn()
             .map_err(Refusal::from)
             .and_then(|conn| {
-                let at = now(&conn)?;
+                let (active, wall) = now(&conn)?;
+                let queued = i64::try_from(clock.elapsed().as_millis()).unwrap_or(i64::MAX);
+                let at = (active.saturating_sub(queued), wall.saturating_sub(queued));
                 request(&conn, session, input, at)
             })
             .map(|(hold, notices)| (json!({"ok": true, "hold": hold}), notices)),
-        "wait" => wait(store, session, input, now).map(|reply| (reply, Notices::default())),
+        "wait" => wait(store, session, input, now, clock).map(|reply| (reply, Notices::default())),
         "ping" => store
             .lock_conn()
             .map_err(Refusal::from)
@@ -499,7 +534,7 @@ pub(crate) fn call(
 /// then each provisioner above it up to Tyler.
 fn authorize(conn: &Connection, row: &HoldRow, caller: &Actor) -> Result<(), Refusal> {
     let agent = Actor::parse(&row.actor)
-        .ok_or_else(|| Refusal::Failed(format!("hold {} has no agent", row.id)))?;
+        .ok_or_else(|| Refusal::from(format!("hold {} has no agent", row.id)))?;
     let settings = Settings::load(conn)?;
     let provisioner = Actor::parse(&row.provisioner).map_or(Provisioner::Tyler, Provisioner::Agent);
     let mut chain = vec![Provisioner::Agent(agent)];
@@ -593,6 +628,7 @@ pub(crate) fn decide_call(
 
 /// Tyler answered hold `hold` from its banner. `false` when it was
 /// decided or expired already, or is not Tyler's.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn tyler_decides(
     conn: &Connection,
     hold: &str,
@@ -654,9 +690,10 @@ fn banner(conn: &Connection, row: &HoldRow) -> rusqlite::Result<Banner> {
 }
 
 /// One pass of Tyler's banners: each new Tyler hold is shown once, and
-/// each shown hold that is decided or expired is withdrawn once. The store
-/// lock is let go while `show` and `withdraw` run. A banner that failed
-/// is marked shown, so a denied OS permission does not retry every pass.
+/// each shown hold that is decided or expired is withdrawn once, by the
+/// pass that claims it first in any process. The store lock is let go
+/// while `show` and `withdraw` run. A banner that failed stays claimed, so
+/// a denied OS permission does not retry every pass.
 pub(crate) fn notify_tyler(
     store: &SessionStore,
     wall: i64,
@@ -676,27 +713,37 @@ pub(crate) fn notify_tyler(
         (banners, settled)
     };
     for banner in &banners {
+        if !store::claim_shown(&*store.lock_conn()?, &banner.hold, wall)
+            .map_err(|error| error.to_string())?
+        {
+            continue;
+        }
         if let Err(error) = show(banner) {
             eprintln!("Could not show the sleep hold {}: {error}", banner.hold);
         }
-        store::tyler_shown(&*store.lock_conn()?, &banner.hold, wall)
-            .map_err(|error| error.to_string())?;
     }
     for hold in &settled {
-        withdraw(hold);
-        store::tyler_withdrawn(&*store.lock_conn()?, hold, wall)
-            .map_err(|error| error.to_string())?;
+        if store::claim_withdrawn(&*store.lock_conn()?, hold, wall)
+            .map_err(|error| error.to_string())?
+        {
+            withdraw(hold);
+        }
     }
     Ok(())
 }
 
 /// Starts the thread that puts Tyler's sleep holds up as OS banners and
-/// takes them down once decided.
+/// takes them down once decided. Only the process that holds the clock
+/// lease shows them, as `alarms::init`.
 pub(crate) fn init(app: &tauri::AppHandle) {
     use tauri::Manager;
     let app = app.clone();
     std::thread::spawn(move || loop {
         let seen = version();
+        if app.state::<SessionStore>().alarms.now().is_none() {
+            wait_change(seen, BANNER_POLL);
+            continue;
+        }
         let shown = notify_tyler(
             &app.state::<SessionStore>(),
             crate::session_store::now_millis(),
@@ -718,11 +765,12 @@ pub(crate) fn init(app: &tauri::AppHandle) {
 }
 
 /// Tyler pressed Allow or Deny on hold `hold`'s banner.
+#[cfg(target_os = "macos")]
 pub(crate) fn banner_answer<R: tauri::Runtime>(app: &tauri::AppHandle<R>, hold: &str, allow: bool) {
     use tauri::Manager;
     let store = app.state::<SessionStore>();
     let decided = store.lock_conn().and_then(|conn| {
-        let now = alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+        let now = now(&store, &conn).map_err(|error| error.to_string())?;
         tyler_decides(&conn, hold, allow, now).map_err(|error| error.to_string())
     });
     if let Err(error) = decided {

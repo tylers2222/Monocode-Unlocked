@@ -6,7 +6,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// How long the provisioner has to answer, in active time (design 3).
-pub(crate) const ANSWER_MS: i64 = 120_000;
+pub(crate) const ANSWER_MS: i64 = super::ANSWER_CUT.as_millis() as i64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decision {
@@ -72,9 +72,10 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The outbox key of the hold's wake to its provisioner.
+/// The outbox key of the hold's wake to its provisioner. It reaches the
+/// front end as a request id, which keeps only `[A-Za-z0-9_-]`.
 pub(crate) fn outbox_key(id: &str) -> String {
-    format!("hold:{id}")
+    format!("hold-{id}")
 }
 
 pub(crate) fn new_id() -> String {
@@ -250,15 +251,28 @@ pub(crate) fn expire(tx: &Connection, (active, wall): (i64, i64)) -> rusqlite::R
         .query_map([active], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for id in &due {
-        tx.execute(
-            "UPDATE sleep_holds SET decision = 'timeout', decided_active_ms = ?2,
-               decided_wall_ms = ?3, decision_reason = 'no answer in 2 min'
-             WHERE id = ?1 AND decision IS NULL",
-            params![id, active, wall],
-        )?;
-        drop_wake(tx, id)?;
+        time_out(tx, id, (active, wall))?;
     }
     Ok(due.len())
+}
+
+/// Hold `id` is `timeout` unless it is decided already. `false` when a
+/// decision came first.
+pub(crate) fn time_out(
+    tx: &Connection,
+    id: &str,
+    (active, wall): (i64, i64),
+) -> rusqlite::Result<bool> {
+    let closed = tx.execute(
+        "UPDATE sleep_holds SET decision = 'timeout', decided_active_ms = ?2,
+           decided_wall_ms = ?3, decision_reason = 'no answer in 2 min'
+         WHERE id = ?1 AND decision IS NULL",
+        params![id, active, wall],
+    )? == 1;
+    if closed {
+        drop_wake(tx, id)?;
+    }
+    Ok(closed)
 }
 
 /// The hold client of `session` reported in: its hook is installed.
@@ -283,12 +297,13 @@ pub(crate) fn tyler_unshown(conn: &Connection) -> rusqlite::Result<Vec<HoldRow>>
     .collect()
 }
 
-pub(crate) fn tyler_shown(conn: &Connection, id: &str, wall: i64) -> rusqlite::Result<()> {
-    conn.execute(
+/// Claims hold `id`'s banner for this pass: `false` when another pass or
+/// process claimed it first, so each banner goes out once.
+pub(crate) fn claim_shown(conn: &Connection, id: &str, wall: i64) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
         "UPDATE sleep_holds SET notified_wall_ms = ?2 WHERE id = ?1 AND notified_wall_ms IS NULL",
         params![id, wall],
-    )?;
-    Ok(())
+    )? == 1)
 }
 
 /// Shown holds that are decided or expired and whose banner is still up.
@@ -303,10 +318,10 @@ pub(crate) fn tyler_settled(conn: &Connection) -> rusqlite::Result<Vec<String>> 
     .collect()
 }
 
-pub(crate) fn tyler_withdrawn(conn: &Connection, id: &str, wall: i64) -> rusqlite::Result<()> {
-    conn.execute(
+/// Claims the withdrawal of hold `id`'s banner, as [`claim_shown`].
+pub(crate) fn claim_withdrawn(conn: &Connection, id: &str, wall: i64) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
         "UPDATE sleep_holds SET withdrawn_wall_ms = ?2 WHERE id = ?1 AND withdrawn_wall_ms IS NULL",
         params![id, wall],
-    )?;
-    Ok(())
+    )? == 1)
 }

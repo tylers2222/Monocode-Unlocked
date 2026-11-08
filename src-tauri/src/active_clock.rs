@@ -49,6 +49,27 @@ const SLEEP_MIN_NS: u64 = 2_000_000_000;
 
 const NS_PER_MS: u64 = 1_000_000;
 
+/// The active time at wall time `wall` as any process reads it: `live`,
+/// this process's clock when it holds the lease, else the stored clock
+/// moved on by the wall time since it was written. The lease holder writes
+/// it every 5 s, so a longer gap is a holder that stopped and adds no more.
+pub(crate) fn active_at(live: Option<i64>, conn: &Connection, wall: i64) -> rusqlite::Result<i64> {
+    if let Some(active) = live {
+        return Ok(active);
+    }
+    let stored: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT active_ms, last_wall_ms FROM mono_clock WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let stale_ms = ms(PERSIST_EVERY_NS) + ms(TICK.as_nanos() as u64);
+    Ok(stored.map_or(0, |(active, last_wall)| {
+        active + (wall - last_wall).clamp(0, stale_ms)
+    }))
+}
+
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mono_clock (
@@ -528,5 +549,32 @@ mod tests {
         assert_eq!(wall(90_000), 91_000 + 8 * HOUR_MS, "after the sleep only");
         assert_eq!(wall(150_000), 151_000 + 9 * HOUR_MS, "after both");
         assert_eq!(wall(180_000), now.1);
+    }
+
+    // Defect: a process without the lease reads the clock its holder
+    // stored up to 5 s ago, so it takes a hold's answer after the cut; or
+    // a holder that stopped makes the clock run on with the wall clock.
+    #[test]
+    fn a_process_without_the_lease_reads_the_stored_clock_moved_on_by_wall_time() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_tables(&conn).unwrap();
+        assert_eq!(active_at(None, &conn, 9_000).unwrap(), 0, "no clock yet");
+        conn.execute(
+            "INSERT INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms)
+             VALUES (1, 100000, 50000, 0)",
+            [],
+        )
+        .unwrap();
+        let at = |wall| active_at(None, &conn, wall).unwrap();
+        assert_eq!(at(50_000), 100_000);
+        assert_eq!(at(54_000), 104_000, "4 s since the holder wrote it");
+        assert_eq!(at(49_000), 100_000, "a wall clock set back adds nothing");
+        assert_eq!(at(56_000), 106_000);
+        assert_eq!(at(500_000), 106_000, "a stopped holder adds no more");
+        assert_eq!(
+            active_at(Some(7), &conn, 54_000).unwrap(),
+            7,
+            "the lease holder's own"
+        );
     }
 }

@@ -13,17 +13,19 @@ use serde_json::{json, Value};
 
 use super::{
     classify, parse_payload, Harness, HoldRequest, HoldRequested, HoldWait, HoldWaitReply,
+    ANSWER_CUT,
 };
 
-/// The client's own deadline. The hook timeout is 150 s and Codex fails
-/// open when a hook times out, so the client must give up first.
-const DEADLINE: Duration = Duration::from_secs(120);
+/// The client's own deadline: its last wait ends at the app's answer cut.
+/// The hook timeout is 150 s and Codex fails open when a hook times out,
+/// so the client must give up first.
+const DEADLINE: Duration = Duration::from_secs(ANSWER_CUT.as_secs() + MARGIN.as_secs());
 /// The longest `hold.wait`, inside the app's reply window.
 const SLICE: Duration = Duration::from_secs(30);
 /// How long the app may take to answer any call (control.rs REPLY_WAIT).
 const REPLY_WAIT: Duration = Duration::from_secs(35);
 /// Time left for a reply to arrive after the app's wait ends.
-const MARGIN: Duration = Duration::from_secs(5);
+pub(crate) const MARGIN: Duration = Duration::from_secs(5);
 /// The least time between two `hold.wait` calls, so an app that answers
 /// `pending` at once is not polled in a tight loop.
 const POLL_FLOOR: Duration = Duration::from_secs(1);

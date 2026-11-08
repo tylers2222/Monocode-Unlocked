@@ -172,9 +172,8 @@ mod platform {
     use objc2_user_notifications::{
         UNAlertStyle, UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
         UNNotification, UNNotificationAction, UNNotificationActionOptions, UNNotificationCategory,
-        UNNotificationCategoryOptions, UNNotificationDismissActionIdentifier,
-        UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
-        UNNotificationSetting, UNNotificationSettings, UNNotificationSound,
+        UNNotificationCategoryOptions, UNNotificationPresentationOptions, UNNotificationRequest,
+        UNNotificationResponse, UNNotificationSetting, UNNotificationSettings, UNNotificationSound,
         UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
     use tauri::AppHandle;
@@ -393,7 +392,6 @@ mod platform {
         let allow = match action {
             HOLD_ALLOW => true,
             HOLD_DENY => false,
-            _ if action == unsafe { UNNotificationDismissActionIdentifier }.to_string() => return,
             _ => return super::handle_click(app, identifier),
         };
         let (app, hold) = (app.clone(), hold.to_string());

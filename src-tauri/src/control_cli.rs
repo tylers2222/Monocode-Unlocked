@@ -629,7 +629,8 @@ Actions:
                   Only the agent's provisioner or one above it answers; the
                   first answer stands. No answer in 2 min refuses the wait.
                   Codes for both: unknown_hold, not_your_hold, hold_decided
-                  (answered or timed out already), invalid_input.
+                  (answered or timed out already), invalid_input,
+                  unknown_caller, failed.
   holds.deny     {"hold":"sh_...","reason":"..."}  Refuse the wait; the
                   agent sees the reason. Short form: app holds.deny sh_x
                   --reason "...".

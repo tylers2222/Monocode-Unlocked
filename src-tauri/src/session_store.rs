@@ -74,14 +74,18 @@ impl SessionStore {
         read_conn
             .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|e| e.to_string())?;
-        Ok(Self {
+        Ok(Self::from_conn(conn, Some(read_conn)))
+    }
+
+    fn from_conn(conn: Connection, read_conn: Option<Connection>) -> Self {
+        Self {
             conn: Mutex::new(conn),
-            read_conn: Mutex::new(Some(read_conn)),
+            read_conn: Mutex::new(read_conn),
             run_id: uuid::Uuid::new_v4().simple().to_string(),
             restorer: OnceLock::new(),
             window_spaces: Mutex::default(),
             alarms: crate::alarms::Live::default(),
-        })
+        }
     }
 
     /// A second connection to the file `path`, as another thread's: no
@@ -92,14 +96,7 @@ impl SessionStore {
         let conn = crate::db_key::connect(&path, key.as_ref())?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|e| e.to_string())?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-            read_conn: Mutex::new(None),
-            run_id: uuid::Uuid::new_v4().simple().to_string(),
-            restorer: OnceLock::new(),
-            window_spaces: Mutex::default(),
-            alarms: crate::alarms::Live::default(),
-        })
+        Ok(Self::from_conn(conn, None))
     }
 
     #[cfg(test)]
@@ -108,14 +105,7 @@ impl SessionStore {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-            read_conn: Mutex::new(None),
-            run_id: uuid::Uuid::new_v4().simple().to_string(),
-            restorer: OnceLock::new(),
-            window_spaces: Mutex::default(),
-            alarms: crate::alarms::Live::default(),
-        })
+        Ok(Self::from_conn(conn, None))
     }
 
     pub(crate) fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {

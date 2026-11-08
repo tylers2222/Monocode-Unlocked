@@ -7,10 +7,17 @@ pub mod client;
 pub(crate) mod service;
 pub(crate) mod store;
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use classify::{classify, Wait, WaitKind};
+
+/// How long a hold takes an answer, from its request. The client's last
+/// wait ends here and the app closes the hold here, so a logged decision
+/// is always one the client received (lead ruling, H risk 1).
+pub const ANSWER_CUT: Duration = Duration::from_secs(115);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
