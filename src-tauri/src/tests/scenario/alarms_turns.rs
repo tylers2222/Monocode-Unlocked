@@ -4,12 +4,16 @@
 //! alarm; each pass still judges the turn `ControlHost` runs, by when it
 //! really went quiet.
 
+use serde_json::json;
+
 use super::alarms_stall::{
-    align, claude_tap, episodes, idle_open_work, start_lead, turn, Episode, MINUTE, N, P, PASS,
+    align, claude_tap, episodes, idle_open_work, ran_a_turn, start_lead, turn, Episode, MINUTE, N,
+    P, PASS, PERMISSION,
 };
 use super::world::World;
 use crate::alarms::taps::Pipe;
 use crate::alarms::test_taps;
+use crate::mono_messages::{SessionId, Tool};
 use crate::mono_roster::MonoRole;
 
 // Defect: a kill's turn end that reaches the store after the next turn
@@ -193,36 +197,69 @@ fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
     }
 }
 
+/// Starts a stall of `cause` in `world`, to be first seen by the next
+/// pass; the session whose `last_progress_wall_ms` it sets, when tapped.
+fn go_quiet(world: &mut World, cause: &str) -> Option<SessionId> {
+    let giga = world.add_mono_in("asw-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("asw-mono", MonoRole::Mono, &[P]);
+    if cause == "wake_missed" {
+        align(world);
+        ran_a_turn(world, &mono.chat);
+        let input = json!({
+            "message": "Is CI green?", "send_to": mono.id.as_str(),
+            "wanting_reply": false, "intent": "new",
+        });
+        world.call(&giga, "g1", "wake-1", Tool::SendMessage, input, &mono);
+        // First seen by the next pass.
+        world.advance(PASS);
+        return None;
+    }
+    let lead = start_lead(world, &mono, "asw-lead");
+    let claude = claude_tap(world, &lead);
+    align(world);
+    turn(world, &lead, "t1", true);
+    match cause {
+        "dialog" => claude.line(Pipe::Stdout, PERMISSION),
+        _ => claude.line(Pipe::Stdout, r#"{"type":"assistant"}"#),
+    }
+    if cause == "idle_open_work" {
+        turn(world, &lead, "t1", false);
+    }
+    Some(lead)
+}
+
 // Defect (lead, S1 r5 item 6): an episode's stalled_since_wall_ms is its
 // open's wall time less the active time since, so a stall that began
 // before an 8 h sleep reads as 8 h later; or the row keeps no wall time of
 // its last progress.
 #[test]
 fn a_stall_that_began_before_an_eight_hour_sleep_keeps_its_wall_time() {
-    for (cause, ends_turn) in [("hung", false), ("idle_open_work", true)] {
+    for cause in ["hung", "idle_open_work", "dialog", "wake_missed"] {
         let mut world = World::new(&format!("alarm-sleep-wall-{cause}"));
-        let mono = world.add_mono_in("asw-mono", MonoRole::Mono, &[P]);
-        let lead = start_lead(&world, &mono, "asw-lead");
-        let claude = claude_tap(&world, &lead);
-        align(&mut world);
-        turn(&mut world, &lead, "t1", true);
-        claude.line(Pipe::Stdout, r#"{"type":"assistant"}"#);
+        let tapped = go_quiet(&mut world, cause);
         let quiet_from = world.now();
-        if ends_turn {
-            turn(&mut world, &lead, "t1", false);
-        }
         world.advance(MINUTE);
         world.sleep(8 * 60 * MINUTE);
         world.advance(N);
-        let row: (String, i64, Option<i64>) = world
+        let episode: (String, i64) = world
             .conn()
             .query_row(
-                "SELECT e.cause, e.stalled_since_wall_ms, a.last_progress_wall_ms
-                   FROM alarm_episodes e JOIN agent_activity a ON 'session:' || a.session_id = e.actor",
+                "SELECT cause, stalled_since_wall_ms FROM alarm_episodes",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(row, (cause.to_string(), quiet_from, Some(quiet_from)));
+        assert_eq!(episode, (cause.to_string(), quiet_from));
+        if let Some(session) = tapped {
+            let progress: Option<i64> = world
+                .conn()
+                .query_row(
+                    "SELECT last_progress_wall_ms FROM agent_activity WHERE session_id = ?1",
+                    [session.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(progress, Some(quiet_from), "{cause}");
+        }
     }
 }

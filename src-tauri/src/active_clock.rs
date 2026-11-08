@@ -488,3 +488,41 @@ mod fake {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOUR_MS: i64 = 3_600_000;
+
+    fn log(conn: &Connection, (start, end): (i64, i64), cause: &str, active_ms: i64) {
+        conn.execute(
+            "INSERT INTO mono_downtime (start_wall_ms, end_wall_ms, cause, active_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![start, end, cause, active_ms],
+        )
+        .unwrap();
+    }
+
+    // Defect (lead, S1 r5 item 6): an active time before a logged gap maps
+    // to a wall time late by that gap; or a gap logged at the active time
+    // itself (the next tick after it) counts as before it; or a second
+    // gap, or an app downtime with no sleep, is missed.
+    #[test]
+    fn a_wall_time_takes_out_every_gap_logged_from_its_active_time_on() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_tables(&conn).unwrap();
+        // Active 0 at wall 1000. 8 h sleep logged at active 60 s, the app
+        // down 1 h logged at active 120 s; now active 180 s.
+        log(&conn, (61_000, 61_000 + 8 * HOUR_MS), "sleep", 60_000);
+        let up = 121_000 + 8 * HOUR_MS;
+        log(&conn, (up, up + HOUR_MS), "app_down", 120_000);
+        let now = (180_000, 181_000 + 9 * HOUR_MS);
+        let wall = |active| wall_at(&conn, active, now).unwrap();
+        assert_eq!(wall(30_000), 31_000, "before both gaps");
+        assert_eq!(wall(60_000), 61_000, "a gap logged at it came after it");
+        assert_eq!(wall(90_000), 91_000 + 8 * HOUR_MS, "after the sleep only");
+        assert_eq!(wall(150_000), 151_000 + 9 * HOUR_MS, "after both");
+        assert_eq!(wall(180_000), now.1);
+    }
+}
