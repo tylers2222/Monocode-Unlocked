@@ -290,11 +290,11 @@ fn claude_stdout(frame: &Value) -> Vec<Event> {
                 block.and_then(|block| text(block, "/type")),
                 block.and_then(|block| text(block, "/id")),
             ) {
-                (
-                    Some("content_block_start"),
-                    Some("tool_use" | "server_tool_use" | "mcp_tool_use"),
-                    Some(id),
-                ) => vec![Event::ToolStart(id.into())],
+                // A server or MCP tool's result is no `tool_result`, so no
+                // end would match its start.
+                (Some("content_block_start"), Some("tool_use"), Some(id)) => {
+                    vec![Event::ToolStart(id.into())]
+                }
                 _ => Vec::new(),
             }
         }
@@ -555,6 +555,16 @@ impl Tap {
         for event in events {
             self.apply(event, now);
         }
+        self.due(now)
+    }
+
+    /// The child exited at `now`: its tools and background tasks end with
+    /// it (S1 r4 F2). The row to write, when one is due.
+    pub(crate) fn exited(&mut self, now: i64) -> Option<Snapshot> {
+        if self.background() {
+            self.background_ended_at = Some(now);
+        }
+        self.tools.clear();
         self.due(now)
     }
 

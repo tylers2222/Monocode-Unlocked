@@ -80,7 +80,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
 /// those tables, and after a rebuild of any of them.
 pub(crate) fn ensure_indexes(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS mono_outbox_unsent
+        "CREATE INDEX IF NOT EXISTS mono_downtime_active ON mono_downtime (active_ms);
+         CREATE INDEX IF NOT EXISTS mono_outbox_unsent
            ON mono_outbox (recipient) WHERE sent_at IS NULL;
          CREATE INDEX IF NOT EXISTS mono_messages_untaken
            ON mono_messages (handled_by_session)
@@ -207,11 +208,11 @@ struct Rows {
     paused: HashSet<String>,
     /// The sessions a message waits for that no provider took.
     untaken: HashSet<String>,
-    /// The recipients an outbox reminder or alarm waits for.
+    /// The recipients an outbox reminder waits for (not the alarms' own rows).
     waiting: HashSet<String>,
     /// Mono completion results not yet in a chat, by chat session.
     notices: HashMap<String, Vec<String>>,
-    /// The items each watched session's saved queue holds.
+    /// The items each watched session's saved queue holds, but the alarms'.
     queued: HashMap<String, Vec<String>>,
     episodes: HashMap<String, (String, Episode)>,
     stall_minutes: HashMap<String, i64>,
@@ -328,11 +329,14 @@ impl Rows {
         )?);
         let queued = grouped(pairs(
             conn,
-            "SELECT s.id, json_extract(q.value, '$.id')
-               FROM agent_activity a JOIN sessions s ON s.id = a.session_id,
-                    json_each(s.queued_messages_json) q
-              WHERE s.queued_messages_json <> '[]' AND json_valid(s.queued_messages_json)
-                AND json_type(q.value, '$.id') = 'text'",
+            &format!(
+                "SELECT s.id, json_extract(q.value, '$.id')
+                   FROM agent_activity a JOIN sessions s ON s.id = a.session_id,
+                        json_each(s.queued_messages_json) q
+                  WHERE s.queued_messages_json <> '[]' AND json_valid(s.queued_messages_json)
+                    AND json_type(q.value, '$.id') = 'text' AND NOT {}",
+                crate::ask_scheduler::alarm_key_sql("json_extract(q.value, '$.id')")
+            ),
             [],
         )?);
         let episodes = conn
@@ -477,7 +481,7 @@ impl Pass<'_> {
                     .then_some(row.dialog_text.as_deref())
                     .flatten(),
                 stalled_since,
-                self.wall - (self.active - stalled_since),
+                crate::active_clock::wall_at(tx, stalled_since, (self.active, self.wall))?,
                 self.active,
                 self.wall,
                 self.active + self.settings.escalate_minutes * MINUTE_MS,
@@ -520,8 +524,9 @@ impl Pass<'_> {
     }
 
     /// What waits for the agent's provider (section 4): a message no
-    /// provider took, an outbox reminder or alarm, a completion result not
-    /// yet in its live chat, or an item its saved queue holds (review F4).
+    /// provider took, an outbox reminder, a completion result not yet in
+    /// its live chat, or an item its saved queue holds (review F4); none of
+    /// the alarms' own rows (lead ruling S1 r3 a).
     /// A notice or queue item an earlier episode listed counts no more.
     fn wakes(&self, actor: &Actor, session: &SessionId, gone: bool) -> Vec<Wake> {
         let rows = self.rows;
@@ -682,7 +687,7 @@ fn pass(
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     for (session, writes) in taken {
         for write in writes {
-            activity::apply(&tx, session, write, wall_ms)?;
+            activity::apply(&tx, session, write, (active_ms, wall_ms))?;
         }
     }
     if let Some(running) = sources.running {

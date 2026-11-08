@@ -67,6 +67,24 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// The wall time at which the clock read `active_ms`, when it reads
+/// `now_active` at `now_wall`: every sleep and app downtime logged since is
+/// taken out, so a time before an 8 h sleep stays before it. A downtime
+/// logged at `active_ms` itself came after it.
+pub(crate) fn wall_at(
+    conn: &Connection,
+    active_ms: i64,
+    (now_active, now_wall): (i64, i64),
+) -> rusqlite::Result<i64> {
+    let down: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(end_wall_ms - start_wall_ms), 0) FROM mono_downtime
+          WHERE active_ms >= ?1",
+        [active_ms],
+        |row| row.get(0),
+    )?;
+    Ok(now_wall - (now_active - active_ms) - down)
+}
+
 /// The running active clock of the one process that holds the lease. The
 /// lease is part of it, so a clock that ticks always holds its lease.
 pub(crate) struct ActiveClock<C: Clock> {

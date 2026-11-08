@@ -59,7 +59,7 @@ pub(super) fn turn(world: &mut World, session: &SessionId, turn_id: &str, starte
 }
 
 /// A turn of `session` that ends at an aligned active time.
-fn ran_a_turn(world: &mut World, session: &SessionId) {
+pub(super) fn ran_a_turn(world: &mut World, session: &SessionId) {
     let turn_id = format!("turn-{}", world.active_ms());
     turn(world, session, &turn_id, true);
     world.advance(MINUTE);
@@ -415,7 +415,12 @@ fn close_reason(world: &World, episode: &str) -> Option<String> {
 }
 
 /// The window saves `items` as `session`'s queue, as its session save does.
-fn save_queue(world: &World, session: &SessionId, items: serde_json::Value, status: &str) {
+pub(super) fn save_queue(
+    world: &World,
+    session: &SessionId,
+    items: serde_json::Value,
+    status: &str,
+) {
     world
         .conn()
         .execute(
@@ -513,27 +518,36 @@ fn a_stalled_worker_under_a_giga_mono_and_lead_is_one_episode() {
     world.advance(PASS);
     assert_eq!(episodes(&world), vec![episode.clone()], "and the next pass");
 
-    // Defect (S1 r3 M1, lead ruling a): no window takes the alarm, and a
-    // hold and a nudge wait claimed, so each recipient opens wake_missed and
-    // the one stall climbs to Tyler in minutes.
+    // Defect (S1 r3 M1, S1 r4 M1, lead ruling a): the lead's window claims
+    // the alarm and queues it under its key, a hold and a nudge wait claimed
+    // and queued the same way, and no provider takes them, so each recipient
+    // opens wake_missed and the one stall climbs to Tyler in minutes.
+    let alarm = test_taps::outbox_key(&episode.id, 1);
     world
         .conn()
-        .execute_batch(
-            "INSERT INTO mono_outbox (key, stage, recipient, at_active_ms, claimed_by)
+        .execute_batch(&format!(
+            "UPDATE mono_outbox SET claimed_by = 'main' WHERE key = '{alarm}';
+             INSERT INTO mono_outbox (key, stage, recipient, at_active_ms, claimed_by)
              VALUES ('hold-alc', 'hold', 'session:alc-lead', 0, 'main'),
-                    ('nudge-alc', 'nudge', 'mono:alc-mono', 0, 'main')",
-        )
+                    ('nudge-alc', 'nudge', 'mono:alc-mono', 0, 'main')"
+        ))
         .unwrap();
+    let queued =
+        |key: &str| json!({"id": key, "text": "..", "appRequestId": key, "waitForIdle": true});
+    save_queue(
+        &world,
+        &lead,
+        json!([queued(&alarm), queued("hold-alc")]),
+        "active",
+    );
+    save_queue(&world, &mono.chat, json!([queued("nudge-alc")]), "active");
     world.advance(2 * N);
     assert_eq!(episodes(&world), vec![episode.clone()]);
     let (outbox, _) = alarm_rows(&world);
     assert_eq!(
         outbox,
-        vec![(
-            test_taps::outbox_key(&episode.id, 1),
-            "session:alc-lead".to_string()
-        )],
-        "the alarm waits untaken"
+        vec![(alarm, "session:alc-lead".to_string())],
+        "the alarm waits unsent"
     );
 }
 

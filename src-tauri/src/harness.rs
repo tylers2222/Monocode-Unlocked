@@ -1253,7 +1253,9 @@ pub fn harness_spawn<R: Runtime>(
 }
 
 /// A child's stdout reader: each line feeds the stall tap, which takes no
-/// store lock, then goes to `forward` (false: stop reading).
+/// store lock, then goes to `forward` (false: stop reading). The end of the
+/// stream is the child's exit (a kill, a Stop, a crash), which the tap
+/// hears too.
 fn read_stdout(
     stdout: impl std::io::Read,
     tap: Option<&ChildTap>,
@@ -1265,8 +1267,11 @@ fn read_stdout(
             tap.line(Pipe::Stdout, &line);
         }
         if !forward(line) {
-            break;
+            return;
         }
+    }
+    if let Some(tap) = tap {
+        tap.exited();
     }
 }
 
@@ -3449,9 +3454,10 @@ pub(crate) mod tests {
             let held = store.lock_conn().unwrap();
             scope.spawn(|| {
                 let mut forwarded = Vec::new();
+                // It stops before the end, so the child runs on.
                 read_stdout(stdout.as_bytes(), Some(&tap), |line| {
                     forwarded.push(line);
-                    true
+                    forwarded.len() < 2
                 });
                 done.send(forwarded).unwrap();
             });
@@ -3469,6 +3475,48 @@ pub(crate) mod tests {
         crate::alarms::run(&conn, 7_000, 1, &sources).unwrap();
         let (_, _, progress, tool_running) = crate::alarms::test_taps::row(&conn, "s-1").unwrap();
         assert_eq!((progress, tool_running), (Some(7_000), true));
+    }
+
+    // Defect (S1 r4 F2): a killed child's stdout ends with a background task
+    // still running in its tap, so its idle agent with open work waits 4N
+    // for a job that died with it; or a reader that stops early (its
+    // receiver gone, the child still running) ends the child's tasks.
+    #[test]
+    fn the_end_of_a_childs_stdout_ends_its_background_tasks() {
+        for (forwarded, running) in [(true, false), (false, true)] {
+            let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+            store
+                .lock_conn()
+                .unwrap()
+                .execute_batch(
+                    "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                     VALUES ('s-1', '/', 'claude', 'm', 'default', 'S', 1, 1)",
+                )
+                .unwrap();
+            store.alarms.set_now(7_000);
+            let tap = store.alarms.tap("s-1", Some("claude")).unwrap();
+            let stdout = concat!(
+                r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
+                "\n",
+            );
+            read_stdout(stdout.as_bytes(), Some(&tap), |_| forwarded);
+            let conn = store.lock_conn().unwrap();
+            let sources = crate::alarms::Sources {
+                live: &store.alarms,
+                running: None,
+            };
+            crate::alarms::run(&conn, 7_000, 1, &sources).unwrap();
+            let row: (bool, Option<i64>) = conn
+                .query_row(
+                    "SELECT background_running, background_ended_active_ms
+                       FROM agent_activity WHERE session_id = 's-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let ended = (!running).then_some(7_000);
+            assert_eq!(row, (running, ended), "forwarded: {forwarded}");
+        }
     }
 
     fn spawn_group(script: &str) -> std::process::Child {

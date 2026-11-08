@@ -75,7 +75,7 @@ COPY = {
     # import reads to the detector as a restart (alarms design section 8).
     "agent_activity": (("session_id",), (
         "turn_started_active_ms", "turn_ended_active_ms", "last_progress_active_ms",
-        "dialog_since_active_ms", "wake_pending_since_active_ms",
+        "background_ended_active_ms", "dialog_since_active_ms", "wake_pending_since_active_ms",
     )),
     "alarm_episodes": (("id",), (
         "stalled_since_active_ms", "opened_active_ms", "next_escalate_active_ms",

@@ -154,6 +154,20 @@ fn claude_tools_and_background_tasks_run_until_their_end_frames() {
     );
 }
 
+// Defect (S1 r4 N2): a server or MCP tool block starts a tool that no
+// `tool_result` ends, so the turn reads as working on it until it ends.
+#[test]
+fn a_claude_server_tool_block_runs_no_tool() {
+    for kind in ["server_tool_use", "mcp_tool_use"] {
+        let mut tap = Tap::new(Harness::Claude);
+        let frame = format!(
+            r#"{{"type":"stream_event","event":{{"type":"content_block_start","content_block":{{"type":"{kind}","id":"srvtoolu_1","name":"web_search"}}}}}}"#
+        );
+        let row = feed(&mut tap, 0, &[(Pipe::Stdout, &frame)]).unwrap();
+        assert!(!row.tool_running, "{kind}");
+    }
+}
+
 // Defect: a TodoWrite list with an unfinished item is not open work, or
 // a finished one still is.
 #[test]

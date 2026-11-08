@@ -265,7 +265,7 @@ fn space_one(data: &Path) {
 /// projects (one only it lists, two Space 1's Mono lists too), a worker in a
 /// project only it used, an open ask with its event and outbox
 /// row on its clock, the worker's open stall alarm with its activity, send,
-/// outbox row and own N, an alarm setting, an approval numbered as Space
+/// outbox row and own N, its closed one, an alarm setting, an approval numbered as Space
 /// 1's, and a note.
 fn space_two(data: &Path) {
     app_folder(
@@ -283,13 +283,19 @@ fn space_two(data: &Path) {
                VALUES ('k2', 'mono:m2', 'session:s2-b', 2, 3, 'open', 1500, 1600, 1);
              INSERT INTO mono_ask_events (ask_id, kind, seq, at_active_ms, at_wall_ms) VALUES ('k2', 'update', 1, 1200, 1);
              INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms) VALUES ('o2', 'k2', 't5', 'mono:m2', 1400);
-             INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms, last_progress_active_ms, updated_wall_ms)
-               VALUES ('s2-b', 'claude', 900, 800, 1);
+             INSERT INTO agent_activity (session_id, harness, turn_started_active_ms, turn_ended_active_ms,
+               last_progress_active_ms, last_progress_wall_ms, background_ended_active_ms, dialog_kind,
+               dialog_since_active_ms, wake_pending_since_active_ms, updated_wall_ms)
+               VALUES ('s2-b', 'claude', 700, 900, 800, 7, 850, 'plan', 870, 950, 1);
              INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json, stalled_since_active_ms,
                stalled_since_wall_ms, opened_active_ms, opened_wall_ms, next_escalate_active_ms)
                VALUES ('al_2', 'session:s2-b', 'm2', 'mono:m2', 'idle_open_work', '[]', 900, 1, 1300, 1, 2200);
-             INSERT INTO alarm_sends (episode_id, level, recipient, outbox_key, created_active_ms)
-               VALUES ('al_2', 1, 'mono:m2', 'alarm-al_2-1', 1300);
+             INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json, stalled_since_active_ms,
+               stalled_since_wall_ms, opened_active_ms, opened_wall_ms, acted_active_ms, closed_active_ms,
+               closed_wall_ms, close_reason)
+               VALUES ('al_1', 'session:s2-b', 'm2', 'mono:m2', 'hung', '[]', 300, 3, 400, 4, 450, 500, 5, 'progress');
+             INSERT INTO alarm_sends (episode_id, level, recipient, outbox_key, created_active_ms, sent_wall_ms)
+               VALUES ('al_2', 1, 'mono:m2', 'alarm-al_2-1', 1300, 6);
              INSERT INTO mono_outbox (key, stage, recipient, at_active_ms) VALUES ('alarm-al_2-1', 'alarm', 'mono:m2', 1300);
              INSERT INTO agent_alarm_settings (actor, stall_minutes) VALUES ('session:s2-b', 30);
              INSERT INTO alarm_settings (key, value) VALUES ('stall_minutes', '20');
@@ -367,6 +373,7 @@ fn import_child() {
     apply_makes_the_prediction(&rig, &resumed);
     second_apply_changes_nothing(&rig);
     app_reads_the_rows(&rig);
+    every_alarm_clock_column_moves(&rig);
     app_reads_the_spaces(&rig);
     first_apps_codex_login_untouched(&rig, codex_mtime);
 }
@@ -416,7 +423,7 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 24);
+    assert_eq!(plan["changes"], 25);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
@@ -806,6 +813,58 @@ fn app_reads_the_rows(rig: &Rig) {
         ("SELECT count(*) FROM mono_downtime", 0),
     ] {
         assert_eq!(one_value(&conn, sql), want, "{sql}");
+    }
+}
+
+/// The alarms' tables, each with its key.
+const ALARM_TABLES: [(&str, &str); 4] = [
+    ("agent_activity", "session_id"),
+    ("alarm_episodes", "id"),
+    ("alarm_sends", "episode_id || '/' || level"),
+    ("mono_outbox", "key"),
+];
+
+/// Defect (S1 r4 F1): a column of the alarms' tables on the active clock
+/// that the import's list misses is copied raw, so an imported stall
+/// counts from Space 1's future (or past) by the clock difference; or a
+/// wall time is moved as if it were active time.
+fn every_alarm_clock_column_moves(rig: &Rig) {
+    let (source, target) = (rig.db(&rig.two), rig.db(&rig.one));
+    for (table, key) in ALARM_TABLES {
+        let columns: Vec<String> = source
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for column in columns {
+            let shift = match column {
+                ref c if c.ends_with("_active_ms") => DELTA,
+                ref c if c.ends_with("_wall_ms") => 0,
+                _ => continue,
+            };
+            let values = |conn: &Connection| -> BTreeMap<String, Option<i64>> {
+                conn.prepare(&format!("SELECT {key}, {column} FROM {table}"))
+                    .unwrap()
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            };
+            let (before, after) = (values(&source), values(&target));
+            assert!(
+                before.values().any(Option::is_some),
+                "{table}.{column}: set it in a MonoCode 2 row"
+            );
+            for (row, value) in before {
+                assert_eq!(
+                    after.get(&row).copied().flatten(),
+                    value.map(|value| value + shift),
+                    "{table}.{column} of {row}"
+                );
+            }
+        }
     }
 }
 

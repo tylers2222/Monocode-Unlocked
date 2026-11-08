@@ -1,6 +1,8 @@
 //! Alarms S1: the stall detector's view of turns. Turn records reach the
-//! hub late or out of order, and background tasks outlive the turn that
-//! started them; each pass still judges the turn `ControlHost` runs.
+//! hub late or out of order, background tasks outlive the turn that
+//! started them, and the Mac sleeps between a turn's last sign and its
+//! alarm; each pass still judges the turn `ControlHost` runs, by when it
+//! really went quiet.
 
 use super::alarms_stall::{
     align, claude_tap, episodes, idle_open_work, start_lead, turn, Episode, MINUTE, N, P, PASS,
@@ -120,13 +122,25 @@ fn a_turn_silent_on_a_background_task_is_hung_at_four_n() {
     );
 }
 
+/// How a lead's background task ends in the idle-background scenario.
+#[derive(Debug, Clone, Copy)]
+enum Finish {
+    Never,
+    /// The task's end frame comes at 2N.
+    TaskEnds,
+    /// The child is killed at 2N: its stdout ends (S1 r4 F2).
+    ChildExits,
+}
+
 // Defect (S1 r3 M2, lead ruling b): a lead that backgrounds a wait and
 // ends its turn with its Mono's ask open alarms at N while the job runs;
-// or once the job ends, its clock does not restart from that end.
+// or once the job ends, its clock does not restart from that end; or
+// (S1 r4 F2) a killed child's task reads as running, so the lead with
+// open work alarms at 4N instead of N after the kill.
 #[test]
 fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
-    for finish in [None, Some(2 * N)] {
-        let mut world = World::new(&format!("alarm-idle-background-{}", finish.is_some()));
+    for finish in [Finish::Never, Finish::TaskEnds, Finish::ChildExits] {
+        let mut world = World::new(&format!("alarm-idle-background-{finish:?}"));
         let mono = world.add_mono_in("aib-mono", MonoRole::Mono, &[P]);
         let lead = start_lead(&world, &mono, "aib-lead");
         let claude = claude_tap(&world, &lead);
@@ -142,20 +156,21 @@ fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
         world.advance(N);
         assert_eq!(episodes(&world), Vec::new(), "it waits on its job at N");
 
-        let stalled_from = match finish {
-            None => ended,
-            Some(after) => {
-                world.advance(after - N);
+        let (stalled_from, alarm_at) = match finish {
+            Finish::Never => (ended, ended + 4 * N),
+            Finish::TaskEnds => {
+                world.advance(N);
                 claude.line(
                     Pipe::Stdout,
                     r#"{"type":"system","subtype":"task_notification","task_id":"bg1"}"#,
                 );
-                world.active_ms()
+                (world.active_ms(), world.active_ms() + N)
             }
-        };
-        let alarm_at = match finish {
-            None => ended + 4 * N,
-            Some(_) => stalled_from + N,
+            Finish::ChildExits => {
+                world.advance(N);
+                claude.exited();
+                (world.active_ms(), world.active_ms() + N)
+            }
         };
         world.advance(alarm_at - PASS - world.active_ms());
         assert_eq!(episodes(&world), Vec::new(), "{finish:?}: not yet");
@@ -175,5 +190,39 @@ fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
             )
             .unwrap();
         assert_eq!(stalled, stalled_from, "{finish:?}");
+    }
+}
+
+// Defect (lead, S1 r5 item 6): an episode's stalled_since_wall_ms is its
+// open's wall time less the active time since, so a stall that began
+// before an 8 h sleep reads as 8 h later; or the row keeps no wall time of
+// its last progress.
+#[test]
+fn a_stall_that_began_before_an_eight_hour_sleep_keeps_its_wall_time() {
+    for (cause, ends_turn) in [("hung", false), ("idle_open_work", true)] {
+        let mut world = World::new(&format!("alarm-sleep-wall-{cause}"));
+        let mono = world.add_mono_in("asw-mono", MonoRole::Mono, &[P]);
+        let lead = start_lead(&world, &mono, "asw-lead");
+        let claude = claude_tap(&world, &lead);
+        align(&mut world);
+        turn(&mut world, &lead, "t1", true);
+        claude.line(Pipe::Stdout, r#"{"type":"assistant"}"#);
+        let quiet_from = world.now();
+        if ends_turn {
+            turn(&mut world, &lead, "t1", false);
+        }
+        world.advance(MINUTE);
+        world.sleep(8 * 60 * MINUTE);
+        world.advance(N);
+        let row: (String, i64, Option<i64>) = world
+            .conn()
+            .query_row(
+                "SELECT e.cause, e.stalled_since_wall_ms, a.last_progress_wall_ms
+                   FROM alarm_episodes e JOIN agent_activity a ON 'session:' || a.session_id = e.actor",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (cause.to_string(), quiet_from, Some(quiet_from)));
     }
 }

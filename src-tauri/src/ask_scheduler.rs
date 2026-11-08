@@ -428,14 +428,34 @@ pub(crate) fn waits(conn: &Connection, session: &SessionId) -> rusqlite::Result<
     Ok(!pending(conn, session)?.is_empty())
 }
 
+/// The alarms' own outbox stages. Each row's key is `<stage>-...` (lead
+/// U1 r2 M1), and a window that claims one queues it under that key. None
+/// waits for its recipient, in the outbox or in a saved queue: an untaken
+/// alarm escalates and a hold refuses on their own clocks (lead ruling S1
+/// r3 a).
+pub(crate) const ALARM_STAGES: [&str; 3] = ["alarm", "hold", "nudge"];
+
+/// SQL: outbox stage `stage` is one of `ALARM_STAGES`.
+fn alarm_stage_sql(stage: &str) -> String {
+    let stages = ALARM_STAGES.map(|alarm| format!("'{alarm}'")).join(", ");
+    format!("{stage} IN ({stages})")
+}
+
+/// SQL: key or queue item id `id` is one of the alarms' outbox keys, so
+/// it holds even after the row went with its episode.
+pub(crate) fn alarm_key_sql(id: &str) -> String {
+    let keys = ALARM_STAGES.map(|alarm| format!("{id} GLOB '{alarm}-*'"));
+    format!("({})", keys.join(" OR "))
+}
+
 /// Every recipient an unsent outbox row waits for: a row a window claimed
-/// and has not sent, or an unclaimed one with a prompt (`pending`). The
-/// alarms' own rows wait for no one: an untaken alarm escalates and a hold
-/// refuses on their own clocks (lead ruling S1 r3 a).
+/// and has not sent, or an unclaimed one with a prompt (`pending`); none of
+/// the alarms' own.
 pub(crate) fn waiting_recipients(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let rows = conn
         .prepare(&format!(
-            "{ROW} WHERE o.sent_at IS NULL AND o.stage NOT IN ('alarm', 'hold', 'nudge')"
+            "{ROW} WHERE o.sent_at IS NULL AND NOT {}",
+            alarm_stage_sql("o.stage")
         ))?
         .query_map([], |row| {
             Ok((row_text(row)?, row.get::<_, Option<String>>(11)?))

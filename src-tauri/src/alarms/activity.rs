@@ -25,6 +25,7 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            turn_started_active_ms  INTEGER,
            turn_ended_active_ms    INTEGER NOT NULL,
            last_progress_active_ms INTEGER,
+           last_progress_wall_ms   INTEGER,
            tool_running            INTEGER NOT NULL DEFAULT 0 CHECK (tool_running IN (0, 1)),
            background_running      INTEGER NOT NULL DEFAULT 0 CHECK (background_running IN (0, 1)),
            background_ended_active_ms INTEGER,
@@ -106,18 +107,23 @@ pub(crate) fn reconcile(
     Ok(())
 }
 
-/// One record of the taps, in the order they saw it.
+/// One record of the taps, in the order they saw it, by the pass at
+/// `now` (active, wall).
 pub(crate) fn apply(
     conn: &Connection,
     session: &SessionId,
     write: &Write,
-    wall: i64,
+    now: (i64, i64),
 ) -> rusqlite::Result<()> {
+    let wall = now.1;
+    let wall_at = |at: i64| crate::active_clock::wall_at(conn, at, now);
     match write {
         Write::TurnStarted { turn_id, at } => turn_started(conn, session, turn_id, *at, wall),
         Write::TurnEnded { turn_id, at } => turn_ended(conn, session, turn_id, *at, wall),
-        Write::Spawned { harness, at } => spawned(conn, session, *harness, *at, wall),
-        Write::Tap(row) => write_tap(conn, session, row, wall),
+        Write::Spawned { harness, at } => {
+            spawned(conn, session, *harness, (*at, wall_at(*at)?), wall)
+        }
+        Write::Tap(row) => write_tap(conn, session, row, wall_at(row.last_progress_at)?, wall),
     }
 }
 
@@ -175,25 +181,35 @@ fn spawned(
     conn: &Connection,
     session: &SessionId,
     harness: Option<Harness>,
-    at: i64,
+    (at, at_wall): (i64, i64),
     wall: i64,
 ) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms,
-           last_progress_active_ms, updated_wall_ms)
-         VALUES (?1, ?2, ?3, ?3, ?4)
+           last_progress_active_ms, last_progress_wall_ms, updated_wall_ms)
+         VALUES (?1, ?2, ?3, ?3, ?5, ?4)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
-           tool_running = 0, background_running = 0, background_ended_active_ms = NULL, todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL,
-           dialog_text = NULL, dialog_since_active_ms = NULL, updated_wall_ms = ?4",
-        params![session.as_str(), harness.map(Harness::as_str), at, wall],
+           last_progress_wall_ms = ?5, tool_running = 0, background_running = 0,
+           background_ended_active_ms = NULL, todo_open = 0, dialog_kind = NULL,
+           dialog_request_id = NULL, dialog_text = NULL, dialog_since_active_ms = NULL,
+           updated_wall_ms = ?4",
+        params![
+            session.as_str(),
+            harness.map(Harness::as_str),
+            at,
+            wall,
+            at_wall
+        ],
     )?;
     Ok(())
 }
 
+/// A snapshot that moved no progress keeps the progress's wall time.
 fn write_tap(
     conn: &Connection,
     session: &SessionId,
     row: &Snapshot,
+    progress_wall: i64,
     wall: i64,
 ) -> rusqlite::Result<()> {
     let dialog = row.dialog.as_ref();
@@ -201,10 +217,12 @@ fn write_tap(
         "INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms,
            last_progress_active_ms, tool_running, todo_open, dialog_kind, dialog_request_id,
            dialog_text, dialog_since_active_ms, updated_wall_ms, background_running,
-           background_ended_active_ms)
-         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-         ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
-           tool_running = ?4, todo_open = ?5, dialog_kind = ?6, dialog_request_id = ?7,
+           background_ended_active_ms, last_progress_wall_ms)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT (session_id) DO UPDATE SET harness = ?2,
+           last_progress_wall_ms = CASE WHEN last_progress_active_ms IS ?3
+                                        THEN last_progress_wall_ms ELSE ?13 END,
+           last_progress_active_ms = ?3, tool_running = ?4, todo_open = ?5, dialog_kind = ?6, dialog_request_id = ?7,
            dialog_text = ?8, dialog_since_active_ms = ?9, updated_wall_ms = ?10,
            background_running = ?11, background_ended_active_ms = ?12",
         params![
@@ -220,6 +238,7 @@ fn write_tap(
             wall,
             row.background,
             row.background_ended_at,
+            progress_wall,
         ],
     )?;
     Ok(())

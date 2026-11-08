@@ -166,11 +166,20 @@ pub(crate) struct ChildTap {
 
 impl ChildTap {
     pub(crate) fn line(&self, pipe: Pipe, line: &str) {
+        self.read(|tap, now| tap.line(pipe, line, now));
+    }
+
+    /// The child's stdout ended: it exited.
+    pub(crate) fn exited(&self) {
+        self.read(Tap::exited);
+    }
+
+    fn read(&self, read: impl FnOnce(&mut Tap, i64) -> Option<Snapshot>) {
         let Some(now) = self.live.now() else {
             return;
         };
         let mut tap = lock(&self.tap);
-        if let Some(row) = tap.line(pipe, line, now) {
+        if let Some(row) = read(&mut tap, now) {
             tap.wrote(row.clone(), now);
             self.live.record(&self.session, Write::Tap(row));
         }
