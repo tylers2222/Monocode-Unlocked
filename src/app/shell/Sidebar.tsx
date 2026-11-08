@@ -5126,7 +5126,11 @@ export const SessionCard = memo(function SessionCard({
           ? "text-content/55"
           : "text-content/45";
   const status = stall ? (
-    <StallChip marker={stall} focus={stallFocus.marker(session.id)} />
+    <StallChip
+      marker={stall}
+      // A dense row shows this chip only in its preview; its own marker owns the focus card.
+      focus={dense ? undefined : stallFocus.marker(session.id)}
+    />
   ) : (
     <span
       className={`flex shrink-0 items-center gap-1 text-[11px] tabular-nums ${statusClass}`}

@@ -37,14 +37,23 @@ export async function hoverStallMarker(
   };
 }
 
+/** The stall cards open in the document, by their headline. */
+function openStallCards(): number {
+  return Array.from(document.querySelectorAll('[role="tooltip"]')).filter(
+    (tooltip) => tooltip.textContent?.includes(" is stalled since "),
+  ).length;
+}
+
 /**
- * For tests: tabs to the row holding the stall marker labelled `label`, and
- * returns the text of the shown cards the row is described by, then tabs away.
+ * For tests: focuses the row holding the stall marker labelled `label`, and
+ * returns the text of the shown cards the row is described by and how many
+ * stall cards are open, then presses Escape and reports whether that closed
+ * them, then moves focus away.
  */
 export async function focusStallRow(
   scope: ParentNode,
   label: string,
-): Promise<{ card?: string }> {
+): Promise<{ card?: string; stallCards: number; closesOnEscape: boolean }> {
   const row = stallMarker(scope, label).closest<HTMLElement>(
     'button, [tabindex="0"]',
   );
@@ -52,9 +61,20 @@ export async function focusStallRow(
   await act(async () => row.focus());
   const card = (row.getAttribute("aria-describedby") ?? "")
     .split(" ")
-    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .map((id) =>
+      document.querySelectorAll(`[id="${id}"]`).length === 1
+        ? (document.getElementById(id)?.textContent ?? "")
+        : `<${id} is not unique>`,
+    )
     .join(" ")
     .trim();
+  const stallCards = openStallCards();
+  await act(async () =>
+    row.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  const closesOnEscape = openStallCards() === 0;
   await act(async () => row.blur());
-  return { card: card || undefined };
+  return { card: card || undefined, stallCards, closesOnEscape };
 }

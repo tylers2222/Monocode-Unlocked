@@ -12,8 +12,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
-const { readSession, sanitizeSessionForPersist } =
-  await import("../data/sessionStore");
+const {
+  getMonoTranscriptPage,
+  readSession,
+  sanitizeSessionForPersist,
+  upsertSession,
+} = await import("../data/sessionStore");
 
 const EPISODE = "al_7f3a9c2e1b04";
 /** Every alarms key that reaches the front end (design sections 2 and 6). */
@@ -32,11 +36,16 @@ const CARD: AlarmCardView = {
   next: { kind: "provisioner", name: "Fork Orchestrator", minutes: 15 },
 };
 
-/** Saves the session the way the app does, then reads it back. */
-async function saveAndLoad(blocks: Block[]) {
+function sessionWith(blocks: Block[]) {
   const session = newSession("claude", "/repo");
   session.blocks = blocks;
   session.queuedMessages = KEYS.map((id) => ({ id, text: `queued ${id}` }));
+  return session;
+}
+
+/** Saves the session the way the app does, then reads it back. */
+async function saveAndLoad(blocks: Block[]) {
+  const session = sessionWith(blocks);
   const saved = sanitizeSessionForPersist(session);
   invoke.mockImplementation((cmd: string) =>
     Promise.resolve(
@@ -46,29 +55,64 @@ async function saveAndLoad(blocks: Block[]) {
   return readSession(session.id);
 }
 
+/** Saves a Mono's transcript the way the app does, then reads its page back. */
+async function saveAndPageMono(blocks: Block[]) {
+  const session = {
+    ...sessionWith(blocks),
+    monoTranscript: { before: null, firstBlockId: null },
+  };
+  const written: { blocks?: Block[]; queuedMessages?: { id: string }[] } = {};
+  invoke.mockImplementation((cmd: string, args?: { session?: object }) => {
+    if (cmd === "mono_session_upsert") Object.assign(written, args?.session);
+    return Promise.resolve(
+      cmd === "mono_session_page"
+        ? { blocks: written.blocks, before: null, hasNewer: false }
+        : null,
+    );
+  });
+  await upsertSession(session);
+  const page = await getMonoTranscriptPage(session.id);
+  return { blocks: page.blocks, queuedMessages: written.queuedMessages };
+}
+
+function boundCards(blocks: Block[]): string[] {
+  const shown = renderToStaticMarkup(
+    createElement(AgentTranscript, {
+      blocks,
+      alarms: {
+        cards: createViewStore(new Map([[CARD.id, CARD]])),
+        holds: createViewStore(new Map()),
+      },
+    }),
+  );
+  return shown.match(/data-alarm="[^"]*"/g) ?? [];
+}
+
+const DELIVERED: Block[] = KEYS.map((key) => ({
+  id: `block-${key}`,
+  role: "user",
+  text: `<mono_alarm alarm="${EPISODE}" level="1" cause="idle_open_work">\nPR S1 builder is stalled.\n</mono_alarm>`,
+  appRequestId: key,
+}));
+
 describe("alarm request ids through a save and a load", () => {
   it("keeps every alarms key, so a delivered card still binds after reload", async () => {
     // Defect: a ':' key is dropped on save, and the card comes back as a raw <mono_alarm> tag.
-    const blocks: Block[] = KEYS.map((key) => ({
-      id: `block-${key}`,
-      role: "user",
-      text: `<mono_alarm alarm="${EPISODE}" level="1" cause="idle_open_work">\nPR S1 builder is stalled.\n</mono_alarm>`,
-      appRequestId: key,
-    }));
-    const loaded = await saveAndLoad(blocks);
+    const loaded = await saveAndLoad(DELIVERED);
 
     expect(loaded?.blocks.map((block) => block.appRequestId)).toEqual(KEYS);
     expect(loaded?.queuedMessages?.map((message) => message.id)).toEqual(KEYS);
-    const shown = renderToStaticMarkup(
-      createElement(AgentTranscript, {
-        blocks: loaded?.blocks ?? [],
-        alarms: {
-          cards: createViewStore(new Map([[CARD.id, CARD]])),
-          holds: createViewStore(new Map()),
-        },
-      }),
-    );
-    expect(shown.match(/data-alarm="/g)).toHaveLength(1);
-    expect(shown).toContain(`data-alarm="${EPISODE}"`);
+    expect(boundCards(loaded?.blocks ?? [])).toEqual([
+      `data-alarm="${EPISODE}"`,
+    ]);
+  });
+
+  it("keeps every alarms key in a Mono's transcript, so its card still binds after reload", async () => {
+    // Defect: a Mono provisioner's alarm is dropped by the Mono transcript save or page read.
+    const loaded = await saveAndPageMono(DELIVERED);
+
+    expect(loaded.blocks.map((block) => block.appRequestId)).toEqual(KEYS);
+    expect(loaded.queuedMessages?.map((message) => message.id)).toEqual(KEYS);
+    expect(boundCards(loaded.blocks)).toEqual([`data-alarm="${EPISODE}"`]);
   });
 });

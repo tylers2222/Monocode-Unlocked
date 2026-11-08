@@ -2609,9 +2609,11 @@ describe("sidebar stall alarms", () => {
       card().querySelector('[aria-label="Stalled 17m"]')?.textContent,
     ).toBe("Stalled 17m");
     expect(card().textContent).not.toContain("Working...");
-    // Defect: from the keyboard the row gives "Stalled 17m" but never why, or who was told.
+    // Defect: from the keyboard the row gives "Stalled 17m" but never why, or who was told, or Escape cannot close it.
     expect(await focusStallRow(card(), "Stalled 17m")).toEqual({
       card: expect.stringMatching(/Cause.*No turn for 17 min.*Told/),
+      stallCards: 1,
+      closesOnEscape: true,
     });
     expect(await hoverStallMarker(card(), "Stalled 17m")).toEqual({
       card: expect.stringContaining(
@@ -2641,8 +2643,14 @@ describe("sidebar stall alarms", () => {
       '[data-session-card="app-session-1-builder"]',
     )!;
     expect(builder.textContent).toContain("17m");
+    // Defect: one focus opens the stall card twice, once more from the chip in the row's preview, under one id.
+    // The row is described by its preview, which still shows the chip, then the card.
     expect(await focusStallRow(builder, "Stalled 17m")).toEqual({
-      card: expect.stringMatching(/Cause.*No turn for 17 min.*Told/),
+      card: expect.stringMatching(
+        /Stalled 17m.*Cause.*No turn for 17 min.*Told/,
+      ),
+      stallCards: 1,
+      closesOnEscape: true,
     });
     expect(await hoverStallMarker(builder, "Stalled 17m")).toEqual({
       card: expect.stringContaining(

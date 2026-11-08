@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useId,
   useRef,
   useState,
@@ -25,8 +26,11 @@ function MarkerIcon({ marker }: { marker: StallMarkerView }) {
   );
 }
 
-/** Whether the marker's row has keyboard focus, and the id its card takes so the row can point at it. */
-export type StallFocus = { open: boolean; cardId: string };
+/**
+ * Whether the marker's row has keyboard focus, the id its card takes so the
+ * row can point at it, and how Escape closes that card.
+ */
+export type StallFocus = { open: boolean; cardId: string; close: () => void };
 
 type MarkerProps = { marker: StallMarkerView; focus?: StallFocus };
 
@@ -38,11 +42,13 @@ type MarkerProps = { marker: StallMarkerView; focus?: StallFocus };
 export function useStallFocus() {
   const baseId = useId();
   const [focused, setFocused] = useState<string | null>(null);
+  const close = useCallback(() => setFocused(null), []);
   const cardId = (key: string) => `${baseId}${key}`;
   return {
     marker: (key: string): StallFocus => ({
       open: focused === key,
       cardId: cardId(key),
+      close,
     }),
     row: (key: string, stall: StallMarkerView | undefined) => ({
       onFocus: (event: FocusEvent<HTMLElement>) =>
@@ -108,6 +114,7 @@ function StallHover({
             role="tooltip"
             id={tooltipId}
             className="pointer-events-none px-3 py-2.5"
+            onDismiss={focus?.open ? focus.close : undefined}
           >
             <StallDetails marker={marker} />
           </Popover>

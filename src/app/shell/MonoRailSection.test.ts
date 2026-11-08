@@ -166,9 +166,11 @@ it("marks a stalled mono with its minutes only when it has an episode", async ()
   expect(
     container.querySelector('button[aria-label*="Stalled 22m"]'),
   ).not.toBeNull();
-  // Defect: from the keyboard the row gives "Stalled 22m" but never why, or who was told.
+  // Defect: from the keyboard the row gives "Stalled 22m" but never why, or who was told, or Escape cannot close it.
   expect(await focusStallRow(container, "Stalled 22m")).toEqual({
     card: expect.stringMatching(/Cause.*No turn for 22 min.*Told/),
+    stallCards: 1,
+    closesOnEscape: true,
   });
   expect(await hoverStallMarker(container, "Stalled 22m")).toEqual({
     card: expect.stringContaining("Mono Reviewer is stalled since 13:58"),

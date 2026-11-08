@@ -12,6 +12,7 @@ import {
   stalledSpan,
   statusWord,
   type AlarmActed,
+  type AlarmActKind,
   type AlarmActEvent,
   type AlarmAgent,
   type AlarmCardView,
@@ -194,8 +195,10 @@ function AlarmActs({
   onToggle: (act: OpenAct) => void;
   onSend: (body: CardActBody) => void;
 }) {
-  const target = actTarget(view, "nudge");
-  const named = target === view.stalled ? "" : ` ${target.name}`;
+  const named = (act: AlarmActKind) => {
+    const target = actTarget(view, act);
+    return target === view.stalled ? "" : ` ${target.name}`;
+  };
   // The landing is the read, so it drops Read and offers the lead instead.
   const lead = view.audience === "tyler" ? view.lead : undefined;
   return (
@@ -223,10 +226,14 @@ function AlarmActs({
         aria-expanded={open === "steer"}
         onClick={() => onToggle("steer")}
       >
-        Steer{named}
+        Steer{named("steer")}
       </SecondaryButton>
-      <SecondaryButton onClick={() => onSend({ act: "nudge", target })}>
-        Nudge{named}
+      <SecondaryButton
+        onClick={() =>
+          onSend({ act: "nudge", target: actTarget(view, "nudge") })
+        }
+      >
+        Nudge{named("nudge")}
       </SecondaryButton>
       <SecondaryButton
         aria-expanded={open === "dismiss"}
