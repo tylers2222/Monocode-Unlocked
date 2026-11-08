@@ -3426,11 +3426,8 @@ pub(crate) mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
 
-    // Defect (review M3/F3, m3): the stdout reader waits on the store lock
-    // (a long pass or save stops the child's stream and fills its pipe), or
-    // no longer feeds the stall tap, so a working agent reads as hung.
-    #[test]
-    fn the_stdout_reader_taps_each_line_without_waiting_for_the_store() {
+    /// A store with session `s-1`, its clock at 7 s, and a Claude child's tap.
+    fn tapped_store() -> (crate::session_store::SessionStore, ChildTap) {
         let store = crate::session_store::SessionStore::open_in_memory().unwrap();
         store
             .lock_conn()
@@ -3442,6 +3439,24 @@ pub(crate) mod tests {
             .unwrap();
         store.alarms.set_now(7_000);
         let tap = store.alarms.tap("s-1", Some("claude")).unwrap();
+        (store, tap)
+    }
+
+    /// One detector pass at 7 s writes what the tap recorded.
+    fn detector_pass(store: &crate::session_store::SessionStore) {
+        let sources = crate::alarms::Sources {
+            live: &store.alarms,
+            running: None,
+        };
+        crate::alarms::run(&store.lock_conn().unwrap(), 7_000, 1, &sources).unwrap();
+    }
+
+    // Defect (review M3/F3, m3): the stdout reader waits on the store lock
+    // (a long pass or save stops the child's stream and fills its pipe), or
+    // no longer feeds the stall tap, so a working agent reads as hung.
+    #[test]
+    fn the_stdout_reader_taps_each_line_without_waiting_for_the_store() {
+        let (store, tap) = tapped_store();
         let stdout = concat!(
             r#"{"type":"system","subtype":"init"}"#,
             "\n",
@@ -3467,12 +3482,8 @@ pub(crate) mod tests {
             assert_eq!(forwarded.len(), 2);
             drop(held);
         });
+        detector_pass(&store);
         let conn = store.lock_conn().unwrap();
-        let sources = crate::alarms::Sources {
-            live: &store.alarms,
-            running: None,
-        };
-        crate::alarms::run(&conn, 7_000, 1, &sources).unwrap();
         let (_, _, progress, tool_running) = crate::alarms::test_taps::row(&conn, "s-1").unwrap();
         assert_eq!((progress, tool_running), (Some(7_000), true));
     }
@@ -3484,29 +3495,16 @@ pub(crate) mod tests {
     #[test]
     fn the_end_of_a_childs_stdout_ends_its_background_tasks() {
         for (forwarded, running) in [(true, false), (false, true)] {
-            let store = crate::session_store::SessionStore::open_in_memory().unwrap();
-            store
-                .lock_conn()
-                .unwrap()
-                .execute_batch(
-                    "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
-                     VALUES ('s-1', '/', 'claude', 'm', 'default', 'S', 1, 1)",
-                )
-                .unwrap();
-            store.alarms.set_now(7_000);
-            let tap = store.alarms.tap("s-1", Some("claude")).unwrap();
+            let (store, tap) = tapped_store();
             let stdout = concat!(
                 r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
                 "\n",
             );
             read_stdout(stdout.as_bytes(), Some(&tap), |_| forwarded);
-            let conn = store.lock_conn().unwrap();
-            let sources = crate::alarms::Sources {
-                live: &store.alarms,
-                running: None,
-            };
-            crate::alarms::run(&conn, 7_000, 1, &sources).unwrap();
-            let row: (bool, Option<i64>) = conn
+            detector_pass(&store);
+            let row: (bool, Option<i64>) = store
+                .lock_conn()
+                .unwrap()
                 .query_row(
                     "SELECT background_running, background_ended_active_ms
                        FROM agent_activity WHERE session_id = 's-1'",
