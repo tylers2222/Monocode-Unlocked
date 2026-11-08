@@ -222,8 +222,9 @@ fn write_tap(
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2,
            last_progress_wall_ms = CASE WHEN last_progress_active_ms IS ?3
                                         THEN last_progress_wall_ms ELSE ?13 END,
-           last_progress_active_ms = ?3, tool_running = ?4, todo_open = ?5, dialog_kind = ?6, dialog_request_id = ?7,
-           dialog_text = ?8, dialog_since_active_ms = ?9, updated_wall_ms = ?10,
+           last_progress_active_ms = ?3, tool_running = ?4, todo_open = ?5, dialog_kind = ?6,
+           dialog_request_id = ?7, dialog_text = ?8, dialog_since_active_ms = ?9,
+           updated_wall_ms = ?10,
            background_running = ?11, background_ended_active_ms = ?12",
         params![
             session.as_str(),
