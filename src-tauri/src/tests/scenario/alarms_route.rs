@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use super::agents::{session_caller, Mono};
 use super::world::World;
 use crate::alarms::act::{self, Outcome, Refusal};
+use crate::alarms::deliver;
 use crate::alarms::taps::Pipe;
 use crate::alarms::{test_taps, ChildTap, TylerAlarm};
 use crate::ask_scheduler;
@@ -17,7 +18,11 @@ use crate::control::alarm_seam::{self, Sent};
 use crate::mono_messages::SessionId;
 use crate::mono_roster::MonoRole;
 
+mod window;
+
 const P: &str = "/p/alarm-route";
+/// The chain's Mono holds a second project, so the window cannot guess its.
+const P2: &str = "/p/alarm-route-2";
 const SECOND: i64 = 1_000;
 const MINUTE: i64 = 60 * SECOND;
 const HOUR: i64 = 60 * MINUTE;
@@ -25,8 +30,8 @@ const N: i64 = 15 * MINUTE;
 const ESCALATE: i64 = 15 * MINUTE;
 const PASS: i64 = 5 * SECOND;
 
-/// A Giga, its Mono, the Mono's lead and the lead's worker, each with
-/// the longest deadline on its ask, so no ask reminder runs.
+/// A Giga, its Mono (two projects), the Mono's lead and the lead's worker,
+/// each with the longest deadline on its ask, so no ask reminder runs.
 struct Chain {
     giga: Mono,
     mono: Mono,
@@ -36,7 +41,7 @@ struct Chain {
 
 fn chain(world: &World, name: &str) -> Chain {
     let giga = world.add_mono_in(&format!("{name}-giga"), MonoRole::Giga, &[P]);
-    let mono = world.add_mono_in(&format!("{name}-mono"), MonoRole::Mono, &[P]);
+    let mono = world.add_mono_in(&format!("{name}-mono"), MonoRole::Mono, &[P, P2]);
     let start = |caller, id: &str| {
         let input = json!({
             "prompt": "Do this", "harness": "codex", "model": "codex:default", "due_minutes": 480,
@@ -454,7 +459,7 @@ fn a_dismiss_records_its_reason_and_a_message_to_the_agent_is_an_act() {
     let [(fresh, _, _)] = <[_; 1]>::try_from(open_episodes(&world)).unwrap();
     {
         let conn = world.conn();
-        act::message(
+        deliver::message(
             &conn,
             chain.lead.as_str(),
             chain.worker.as_str(),
@@ -462,7 +467,7 @@ fn a_dismiss_records_its_reason_and_a_message_to_the_agent_is_an_act() {
             (world.active_ms(), world.now()),
         )
         .unwrap();
-        act::message(
+        deliver::message(
             &conn,
             chain.mono.chat.as_str(),
             chain.worker.as_str(),
@@ -490,7 +495,6 @@ fn a_dismiss_records_its_reason_and_a_message_to_the_agent_is_an_act() {
 }
 
 const PERMISSION: &str = r#"{"type":"control_request","request_id":"req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf target"}}}"#;
-const ANSWER: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{"behavior":"allow"}}}"#;
 
 // Defect: someone off the chain or the agent itself acts on it; a Mono
 // answers its worker's dialog past its lead; report or set skip their
@@ -607,81 +611,6 @@ fn blocked_worker(world: &mut World, chain: &Chain, claude: &ChildTap) -> String
     episode
 }
 
-const PERMISSION_2: &str = r#"{"type":"control_request","request_id":"req_2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push --force"}}}"#;
-
-// Defect: an answer reaches another session than the stalled agent's, or a
-// dialog other than the one the alarm named; it is logged before the
-// window answered; a retry answers twice or reports a failure.
-#[test]
-fn the_lead_answers_its_workers_dialog_through_the_workers_window_once() {
-    let mut world = World::new("alarm-answer");
-    let chain = chain(&world, "alw");
-    let claude = claude_tap(&world, &chain);
-    let episode = blocked_worker(&mut world, &chain, &claude);
-    let input = json!({"alarm": episode, "allow": true});
-    let lead = chain.lead.as_str();
-
-    let gone = json!({"ok": false, "code": "dialog_gone"});
-    let (refused, _) = seam(
-        &world,
-        &chain,
-        lead,
-        "alarms.answer",
-        input.clone(),
-        "a-0",
-        &gone,
-    );
-    assert_eq!(refused["code"], "dialog_gone");
-    assert_eq!(
-        acts(&world, &episode),
-        Vec::new(),
-        "no act before the window answered"
-    );
-
-    let (answered, sent) = seam(
-        &world,
-        &chain,
-        lead,
-        "alarms.answer",
-        input.clone(),
-        "a-1",
-        &ok(),
-    );
-    assert_eq!(answered["result"]["acted"], "answer", "{answered}");
-    assert_eq!(
-        sent,
-        vec![(
-            "worker-window".to_string(),
-            chain.worker.as_str().to_string(),
-            "alarms.answer".to_string(),
-            json!({"alarm": episode, "kind": "permission", "decision": "allow", "dialogRequestId": "req_1"}),
-        )],
-        "the worker's window answers the dialog the alarm named"
-    );
-
-    // The user answered req_1 and the agent asked req_2; the pass closes
-    // the episode. A retry of the answer is the first answer; a new one is
-    // refused.
-    claude.line(Pipe::Stdin, ANSWER);
-    claude.line(Pipe::Stdout, PERMISSION_2);
-    world.advance(PASS);
-    let (retried, sent) = seam(
-        &world,
-        &chain,
-        lead,
-        "alarms.answer",
-        input.clone(),
-        "a-1",
-        &ok(),
-    );
-    assert_eq!(retried["result"]["duplicate"], true, "{retried}");
-    assert_eq!(retried["result"]["seq"], answered["result"]["seq"]);
-    assert_eq!(sent, Vec::new(), "no second answer");
-    let (late, _) = seam(&world, &chain, lead, "alarms.answer", input, "a-2", &ok());
-    assert_eq!(late["code"], "alarm_closed");
-    assert_eq!(acts(&world, &episode).len(), 1);
-}
-
 // Defect: the lead loses its acts once the alarm went past it (rights
 // accumulate), a steer to a running session waits for its turn end, the
 // Mono acts on the worker past its lead, a lower recipient dismisses the
@@ -768,7 +697,7 @@ fn every_recipient_so_far_acts_one_level_down_and_a_steer_outlives_its_episode()
     );
     assert_eq!(sent, Vec::new(), "a Mono chat is steered by its outbox row");
     assert_eq!(steered["result"]["target"], mono_actor.as_str());
-    let key = act::nudge_key(&episode, steered["result"]["seq"].as_i64().unwrap());
+    let key = deliver::nudge_key(&episode, steered["result"]["seq"].as_i64().unwrap());
     ran_a_turn(&mut world, &chain.worker);
     world.advance(PASS);
     assert_eq!(close_reason(&world, &episode).as_deref(), Some("progress"));
@@ -828,6 +757,50 @@ fn raising_n_mid_episode_keeps_the_episode_and_its_escalation() {
     ran_a_turn(&mut world, &chain.worker);
     world.advance(PASS);
     assert_eq!(close_reason(&world, &episode).as_deref(), Some("progress"));
+}
+
+fn message(world: &World, from: &str, to: &str, request_id: &str) {
+    deliver::message(
+        &world.conn(),
+        from,
+        to,
+        request_id,
+        (world.active_ms(), world.now()),
+    )
+    .unwrap();
+}
+
+// Defect (r2 M1): a routine message from a provisioner the alarm has not
+// reached is logged as its act, so escalation stops and the alarm never
+// goes past the lead while the Mono talks to it.
+#[test]
+fn a_plain_message_counts_only_from_a_recipient_the_alarm_reached() {
+    let mut world = World::new("alarm-message-told");
+    let chain = chain(&world, "alt");
+    let episode = stalled_worker(&mut world, &chain);
+    let (lead, mono) = (chain.lead.as_str(), chain.mono.chat.as_str());
+
+    message(&world, mono, lead, "status-1");
+    assert_eq!(acts(&world, &episode), Vec::new(), "the Mono was not told");
+    world.advance(ESCALATE + PASS);
+    assert_eq!(
+        sends(&world, &episode).last(),
+        Some(&(2, format!("mono:{}", chain.mono.id.as_str()))),
+        "the Mono's message did not stop level 2"
+    );
+
+    message(&world, mono, lead, "status-2");
+    assert_eq!(
+        acts(&world, &episode),
+        vec![(
+            format!("mono:{}", chain.mono.id.as_str()),
+            "message".to_string(),
+            format!("session:{lead}")
+        )],
+        "told at level 2, the Mono's message to its lead is its act"
+    );
+    world.advance(ESCALATE + PASS);
+    assert_eq!(sends(&world, &episode).len(), 2, "acted: no level 3");
 }
 
 /// An episode row of the report: id, Mono, stalled since (wall), closed

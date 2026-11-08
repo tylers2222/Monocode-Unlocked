@@ -7,6 +7,7 @@
 
 pub(crate) mod act;
 mod activity;
+pub(crate) mod deliver;
 mod live;
 mod provisioner;
 mod rights;

@@ -5,18 +5,18 @@
 //! caller acts one level down its chain: a Mono steers its lead, never the
 //! worker. Every act is a row of `alarm_acts` and stops escalation.
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
+use super::deliver::{deliver, logged_before, Caller, Delivery};
 use super::provisioner::Provisioner;
 use super::rights::{authorize, standing, target_of, Denied, How};
 use super::route::{self, EpisodeRow};
-use super::store::{Settings, STALL_MINUTES};
+use super::store::{Settings, MINUTE_MS, STALL_MINUTES};
 use super::text;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
-const MINUTE_MS: i64 = 60_000;
 const TRANSCRIPT_BLOCKS: usize = 20;
 
 /// Why an `alarms.*` call was refused: a code and a hint, as every other
@@ -38,16 +38,17 @@ pub(crate) enum Refusal {
         target: String,
     },
     DialogGone,
-    PlanDialog,
     NotTheParent,
     MonoOnly,
     UnknownCaller,
-    Failed(String),
+    /// The store failed; the error goes to the log, not to the agent.
+    Failed,
 }
 
 impl From<rusqlite::Error> for Refusal {
     fn from(error: rusqlite::Error) -> Self {
-        Refusal::Failed(error.to_string())
+        eprintln!("An alarms call failed: {error}");
+        Refusal::Failed
     }
 }
 
@@ -61,11 +62,10 @@ impl Refusal {
             Refusal::MovedUp { .. } => "alarm_moved_up",
             Refusal::AnswerViaRecipient { .. } => "answer_via_recipient",
             Refusal::DialogGone => "dialog_gone",
-            Refusal::PlanDialog => "plan_dialog",
             Refusal::NotTheParent => "not_the_parent",
             Refusal::MonoOnly => "mono_only",
             Refusal::UnknownCaller => "unknown_caller",
-            Refusal::Failed(_) => "failed",
+            Refusal::Failed => "failed",
         }
     }
 
@@ -78,11 +78,10 @@ impl Refusal {
             Refusal::MovedUp { current } => format!("This alarm went up to {current}, so only {current} or one above it may dismiss it. You may still read, nudge or steer."),
             Refusal::AnswerViaRecipient { target } => format!("Only the stalled agent's own provisioner answers its dialog. Steer {target} with alarms.steer, or nudge it with alarms.nudge."),
             Refusal::DialogGone => "The dialog is no longer pending: it was answered or withdrawn. Read the alarm again with alarms.read.".into(),
-            Refusal::PlanDialog => "A plan waits for the agent's next turn, not for an answer. Tell it what to do with alarms.steer.".into(),
             Refusal::NotTheParent => "Only the agent's own provisioner (its lead, its Mono, its Giga) may set its stall minutes.".into(),
             Refusal::MonoOnly => "Only a Mono or a Giga runs alarms.report.".into(),
             Refusal::UnknownCaller => "MonoCode has no saved session for this caller.".into(),
-            Refusal::Failed(error) => error.clone(),
+            Refusal::Failed => "MonoCode could not read or write its alarm rows. Try again.".into(),
         }
     }
 
@@ -104,7 +103,7 @@ pub(crate) fn caller(conn: &Connection, session: &str) -> rusqlite::Result<Optio
 }
 
 /// A `send_to` or `sessionId` value: a Mono by id when one exists, else a session.
-fn named_actor(conn: &Connection, name: &str) -> rusqlite::Result<Option<Actor>> {
+pub(super) fn named_actor(conn: &Connection, name: &str) -> rusqlite::Result<Option<Actor>> {
     if let Some(actor) = Actor::parse(name) {
         return Ok(Some(actor));
     }
@@ -240,6 +239,8 @@ pub(crate) enum Outcome {
     Done {
         result: Value,
         notices: Notices,
+        /// The session whose plan this act answered.
+        answered_plan: Option<SessionId>,
     },
     /// A window does the act as `session`, then `forwarded` logs it.
     Forward(Forward),
@@ -261,6 +262,8 @@ pub(crate) struct Forward {
     pub how: &'static str,
     pub detail: String,
     pub request_id: String,
+    /// The session whose plan this act answers.
+    pub answered_plan: Option<SessionId>,
 }
 
 fn done_or(
@@ -277,6 +280,7 @@ fn done(result: Value) -> Outcome {
     Outcome::Done {
         result,
         notices: Notices::default(),
+        answered_plan: None,
     }
 }
 
@@ -291,6 +295,11 @@ pub(crate) fn call(
 ) -> Result<Outcome, Refusal> {
     let caller = caller(conn, caller_session)?.ok_or(Refusal::UnknownCaller)?;
     let settings = Settings::load(conn)?;
+    let by = Caller {
+        actor: &caller,
+        session: caller_session,
+        request_id,
+    };
     match action {
         "alarms.list" => {
             Input::new(input, &[])?;
@@ -327,7 +336,10 @@ pub(crate) fn call(
             done_or(found, |found| read(conn, &settings, &found, now).map(done))
         }
         "alarms.answer" => {
-            let input = Input::new(input, &["alarm", "allow", "deny", "text", "choice"])?;
+            let input = Input::new(
+                input,
+                &["alarm", "allow", "deny", "reason", "text", "choice"],
+            )?;
             let found = on_chain(
                 conn,
                 &settings,
@@ -336,9 +348,7 @@ pub(crate) fn call(
                 How::Answer,
                 request_id,
             )?;
-            done_or(found, |found| {
-                answer(conn, &found, &caller, &input, request_id).map(Outcome::Forward)
-            })
+            done_or(found, |found| answer(conn, &found, &by, &input, now))
         }
         "alarms.steer" | "alarms.nudge" | "alarms.dismiss" => {
             let (fields, how): (&[&str], How) = match action {
@@ -360,11 +370,6 @@ pub(crate) fn call(
                 how,
                 request_id,
             )?;
-            let by = Caller {
-                actor: &caller,
-                session: caller_session,
-                request_id,
-            };
             done_or(found, |found| {
                 act_on(conn, &settings, &found, &by, act, now)
             })
@@ -579,13 +584,14 @@ fn pending_dialog(
 fn answer(
     conn: &Connection,
     found: &OnChain,
-    caller: &Actor,
+    by: &Caller,
     input: &Input,
-    request_id: &str,
-) -> Result<Forward, Refusal> {
+    now: (i64, i64),
+) -> Result<Outcome, Refusal> {
     let agent = &found.episode.actor;
     let (allow, deny) = (input.flag("allow")?, input.flag("deny")?);
     let (text, choice) = (input.text("text", 8000)?, input.text("choice", 500)?);
+    let reason = input.text("reason", 2000)?;
     let given = [allow, deny, text.is_some(), choice.is_some()]
         .iter()
         .filter(|given| **given)
@@ -596,14 +602,26 @@ fn answer(
         ));
     }
     let (kind, pending) = pending_dialog(conn, agent)?.ok_or(Refusal::DialogGone)?;
+    if reason.is_some() && !(kind == "plan" && deny) {
+        return Err(Refusal::InvalidInput(
+            "A reason goes only with deny on a plan.".into(),
+        ));
+    }
     let id = &found.episode.id;
     // The answer is for the dialog the alarm named, never a newer one.
     let shown = route::dialog_shown(conn, id)?;
+    if kind == "plan" {
+        // A plan has no request id: the alarm named it if it showed a
+        // dialog with none.
+        if shown.is_some() || found.episode.cause != "dialog" {
+            return Err(Refusal::DialogGone);
+        }
+        return answer_plan(conn, found, by, allow, reason, now);
+    }
     if shown.is_none() || pending != shown {
         return Err(Refusal::DialogGone);
     }
     let (mut forward, detail) = match kind.as_str() {
-        "plan" => return Err(Refusal::PlanDialog),
         "question" => match (text, choice) {
             (Some(text), _) => (json!({"alarm": id, "kind": "question", "text": text}), text),
             (None, Some(choice)) => (
@@ -631,147 +649,63 @@ fn answer(
     };
     forward["dialogRequestId"] = json!(shown);
     let session = route::session_of(conn, agent)?.ok_or(Refusal::DialogGone)?;
-    Ok(Forward {
+    Ok(Outcome::Forward(Forward {
         episode: id.clone(),
-        caller: caller.clone(),
+        caller: by.actor.clone(),
         target: agent.clone(),
         session: session.as_str().to_string(),
         action: "alarms.answer",
         input: forward,
         how: "answer",
         detail,
-        request_id: request_id.to_string(),
-    })
+        request_id: by.request_id.to_string(),
+        answered_plan: None,
+    }))
+}
+
+/// Lead ruling (S2 r2 m1): a plan waits for no harness answer, so the
+/// answer is a new message to the agent.
+fn answer_plan(
+    conn: &Connection,
+    found: &OnChain,
+    by: &Caller,
+    allow: bool,
+    reason: Option<String>,
+    now: (i64, i64),
+) -> Result<Outcome, Refusal> {
+    let prompt = match (allow, reason) {
+        (true, _) => "Your plan is approved. Implement it.".to_string(),
+        (false, Some(reason)) => format!(
+            "Your plan is not approved: {}. Revise it.",
+            reason.trim().trim_end_matches('.')
+        ),
+        (false, None) => {
+            return Err(Refusal::InvalidInput(
+                "The dialog is a plan: answer it with allow, or with deny and a reason.".into(),
+            ))
+        }
+    };
+    let agent = &found.episode.actor;
+    let answered_plan = route::session_of(conn, agent)?.ok_or(Refusal::DialogGone)?;
+    deliver(
+        conn,
+        &found.episode,
+        by,
+        agent,
+        Delivery {
+            how: "answer",
+            detail: Some(&prompt),
+            prompt: Some(prompt.clone()),
+            answered_plan: Some(answered_plan),
+        },
+        now,
+    )
 }
 
 enum Act {
     Steer(String),
     Nudge,
     Dismiss(String),
-}
-
-/// Who makes an act call: the actor, the session it calls from, and the
-/// call's request id.
-struct Caller<'a> {
-    actor: &'a Actor,
-    session: &'a str,
-    request_id: &'a str,
-}
-
-/// The outbox key of act `seq`'s message on `episode`. `-` separated: the
-/// front end keeps a request id only if it matches `[A-Za-z0-9_-]+`.
-pub(crate) fn nudge_key(episode: &str, seq: i64) -> String {
-    format!("nudge-{episode}-{seq}")
-}
-
-/// A row an act writes: what it did, to whom, and the outbox prompt it
-/// sends that one, if any.
-struct Logged<'a> {
-    caller: &'a Actor,
-    target: &'a Actor,
-    how: &'a str,
-    detail: Option<&'a str>,
-    prompt: Option<String>,
-    request_id: &'a str,
-}
-
-/// The act `caller` logged on `episode` under `request_id` before, as its
-/// answer.
-fn logged_before(
-    conn: &Connection,
-    episode: &str,
-    caller: &Actor,
-    request_id: &str,
-) -> rusqlite::Result<Option<Value>> {
-    conn.query_row(
-        "SELECT episode_id, seq, how, target FROM alarm_acts
-          WHERE episode_id = ?1 AND actor = ?2 AND request_id = ?3",
-        params![episode, caller.to_string(), request_id],
-        |row| {
-            Ok(json!({
-                "alarm": row.get::<_, String>(0)?,
-                "seq": row.get::<_, i64>(1)?,
-                "acted": row.get::<_, String>(2)?,
-                "target": row.get::<_, String>(3)?,
-                "duplicate": true,
-            }))
-        },
-    )
-    .optional()
-}
-
-/// Logs one act on `episode` and marks it acted, so escalation stops.
-fn log(
-    tx: &Connection,
-    episode: &EpisodeRow,
-    act: &Logged,
-    notices: &mut Notices,
-    (active, wall): (i64, i64),
-) -> rusqlite::Result<Value> {
-    let seq: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(seq), 0) + 1 FROM alarm_acts WHERE episode_id = ?1",
-        [&episode.id],
-        |row| row.get(0),
-    )?;
-    let key = act.prompt.as_ref().map(|_| nudge_key(&episode.id, seq));
-    tx.execute(
-        "INSERT INTO alarm_acts (episode_id, seq, level, actor, target, how, detail, outbox_key,
-           request_id, at_active_ms, at_wall_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            episode.id,
-            seq,
-            episode.level,
-            act.caller.to_string(),
-            act.target.to_string(),
-            act.how,
-            act.detail,
-            key,
-            act.request_id,
-            active,
-            wall
-        ],
-    )?;
-    tx.execute(
-        "UPDATE alarm_episodes SET acted_by = ?2, acted_how = ?3, acted_active_ms = ?4
-          WHERE id = ?1",
-        params![episode.id, act.caller.to_string(), act.how, active],
-    )?;
-    if let (Some(key), Some(prompt)) = (&key, &act.prompt) {
-        let target = act.target.to_string();
-        tx.execute(
-            "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
-             VALUES (?1, NULL, 'nudge', ?2, ?3)",
-            params![key, target, active],
-        )?;
-        tx.execute(
-            "INSERT INTO alarm_prompts (outbox_key, episode_id, text) VALUES (?1, ?2, ?3)",
-            params![key, episode.id, prompt],
-        )?;
-        crate::ask_scheduler::name_chat(tx, notices, &target)?;
-    }
-    Ok(json!({
-        "alarm": episode.id,
-        "seq": seq,
-        "acted": act.how,
-        "target": act.target.to_string(),
-    }))
-}
-
-fn logged_in_tx(
-    conn: &Connection,
-    episode: &EpisodeRow,
-    act: &Logged,
-    now: (i64, i64),
-) -> rusqlite::Result<(Value, Notices)> {
-    if let Some(result) = logged_before(conn, &episode.id, act.caller, act.request_id)? {
-        return Ok((result, Notices::default()));
-    }
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let mut notices = Notices::default();
-    let result = log(&tx, episode, act, &mut notices, now)?;
-    tx.commit()?;
-    Ok((result, notices))
 }
 
 fn act_on(
@@ -783,9 +717,8 @@ fn act_on(
     (active, wall): (i64, i64),
 ) -> Result<Outcome, Refusal> {
     let episode = &found.episode;
-    let (caller, request_id) = (by.actor, by.request_id);
     let target = &found.target;
-    let from = caller.to_string();
+    let from = by.actor.to_string();
     let (how, detail, prompt) = match &act {
         Act::Steer(text) => (
             "steer",
@@ -794,108 +727,31 @@ fn act_on(
         ),
         Act::Nudge => {
             let stall = route::stall(conn, episode, settings, active, wall)?;
-            (
-                "nudge",
-                None,
-                Some(text::nudge(&stall, &from, target == &episode.actor)),
-            )
+            let level = usize::try_from(episode.level).unwrap_or(usize::MAX);
+            let to = if target == &episode.actor {
+                text::NudgeTo::Agent
+            } else {
+                text::NudgeTo::Recipient {
+                    may_dismiss: found.index > level,
+                }
+            };
+            ("nudge", None, Some(text::nudge(&stall, &from, to)))
         }
         Act::Dismiss(reason) => ("dismiss", Some(reason.as_str()), None),
     };
-    // A session's running turn takes a steer only through its window
-    // (`sessions.send` with whenBusy steer); an idle one starts a turn. A
-    // Mono chat takes the outbox row, which steers its running turn.
-    if let (Actor::Session(session), Some(prompt)) = (target, &prompt) {
-        return Ok(Outcome::Forward(Forward {
-            episode: episode.id.clone(),
-            caller: caller.clone(),
-            target: target.clone(),
-            session: by.session.to_string(),
-            action: "sessions.send",
-            input: json!({
-                "sessionId": session.as_str(),
-                "prompt": prompt,
-                "whenBusy": "steer",
-            }),
-            how,
-            detail: detail.unwrap_or_default().to_string(),
-            request_id: request_id.to_string(),
-        }));
-    }
-    let (result, notices) = logged_in_tx(
+    deliver(
         conn,
         episode,
-        &Logged {
-            caller,
-            target,
+        by,
+        target,
+        Delivery {
             how,
             detail,
             prompt,
-            request_id,
+            answered_plan: None,
         },
         (active, wall),
-    )?;
-    Ok(Outcome::Done { result, notices })
-}
-
-/// A window did `plan`'s act: it is logged.
-pub(crate) fn forwarded(
-    conn: &Connection,
-    plan: &Forward,
-    now: (i64, i64),
-) -> Result<Value, Refusal> {
-    let episode = route::episode(conn, &plan.episode)?.ok_or(Refusal::UnknownAlarm)?;
-    let logged = logged_in_tx(
-        conn,
-        &episode,
-        &Logged {
-            caller: &plan.caller,
-            target: &plan.target,
-            how: plan.how,
-            detail: (!plan.detail.is_empty()).then_some(plan.detail.as_str()),
-            prompt: None,
-            request_id: &plan.request_id,
-        },
-        now,
-    )?;
-    Ok(logged.0)
-}
-
-/// A plain `messages.send` or `sessions.send` from `caller_session` to
-/// `to` was accepted: it is an act (`message`) on each open episode where
-/// the caller is on the chain and `to` is the one it acts on.
-pub(crate) fn message(
-    conn: &Connection,
-    caller_session: &str,
-    to: &str,
-    request_id: &str,
-    now: (i64, i64),
-) -> rusqlite::Result<()> {
-    let (Some(caller), Some(to)) = (caller(conn, caller_session)?, named_actor(conn, to)?) else {
-        return Ok(());
-    };
-    let settings = Settings::load(conn)?;
-    for episode in route::open_episodes(conn)? {
-        let chain = route::chain(conn, &episode, settings.root_giga.as_deref())?;
-        let Some(index) = standing(&chain, &caller) else {
-            continue;
-        };
-        if target_of(&chain, index) != Some(&to) {
-            continue;
-        }
-        let act = Logged {
-            caller: &caller,
-            target: &to,
-            how: "message",
-            detail: None,
-            prompt: None,
-            request_id,
-        };
-        if let Err(error) = logged_in_tx(conn, &episode, &act, now) {
-            eprintln!("Could not log a message act on {}: {error}", episode.id);
-        }
-    }
-    Ok(())
+    )
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ import {
 import { newSession, type Session } from "../../sessions/model/session";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 import { AppActionError } from "./appActionError";
+import steer from "./alarmsMonoSteer.fixtures.json";
 
 vi.mock("../../../integrations/harness/core/registry", () => ({
   harnessWireRequestId: vi.fn(),
@@ -128,4 +129,51 @@ it("answers the dialog the alarm named as the user does, or says it is gone", as
   expect(await refusal(worker(), { ...question, text: "x" })).toBe(
     "dialog_gone",
   );
+});
+
+/** The Mono's window as control.rs forwards to it (alarmsMonoSteer.fixtures.json). */
+function monoWindow() {
+  const chat = {
+    ...newSession("claude", steer.monoChat.cwd),
+    id: steer.monoChat.id,
+  };
+  const lead = { ...newSession("codex", steer.lead.cwd), id: steer.lead.id };
+  const send = vi.fn(async () => ({
+    alreadySubmitted: false,
+    delivery: "steered",
+  }));
+  const host = {
+    levels: { check: async () => ({ leadSessionId: null }) },
+    isMono: (id: string) => id === chat.id,
+    monoOf: (id: string) =>
+      id === chat.id ? { id: "alp-mono", projects: steer.projects } : undefined,
+    sessions: async (cwd: string) =>
+      cwd === lead.cwd ? [{ id: lead.id, busy: true }] : [],
+    session: async (id: string) => (id === lead.id ? lead : null),
+    send,
+  } as unknown as AgentAppHost;
+  return { chat, host, send };
+}
+
+// Defect (S2 r2 M2): the steer a Mono with two projects forwards is
+// refused by its own window, which cannot tell which project the lead is
+// in, so the Mono's steer never reaches its stalled lead.
+it("sends a Mono's alarm steer into its lead's running turn", async () => {
+  const { chat, host, send } = monoWindow();
+  await expect(
+    handleAgentApp(chat, steer.requestId, steer.action, steer.input, host),
+  ).resolves.toMatchObject({ sessionId: steer.lead.id, submitted: true });
+  expect(send).toHaveBeenCalledWith(
+    steer.lead.id,
+    steer.input.prompt,
+    `app-${chat.id}-${steer.requestId}`,
+    { whenBusy: "steer" },
+  );
+
+  const unnamed: Record<string, unknown> = { ...steer.input };
+  delete unnamed.project;
+  await expect(
+    handleAgentApp(chat, "s-2", steer.action, unnamed, host),
+  ).rejects.toThrow('Pass "project" to choose one');
+  expect(send).toHaveBeenCalledTimes(1);
 });

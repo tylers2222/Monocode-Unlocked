@@ -28,6 +28,8 @@ pub(crate) enum Write {
         at: i64,
     },
     Tap(Snapshot),
+    /// The agent's provisioner answered its plan (lead ruling, S2 r2 m1).
+    PlanAnswered,
 }
 
 /// Which edge of a turn a hook saw.
@@ -130,6 +132,13 @@ impl Live {
                 Edge::Ended => Write::TurnEnded { turn_id, at },
             },
         );
+    }
+
+    /// `session`'s plan was answered: it waits on no dialog now.
+    pub(crate) fn plan_answered(&self, session: &SessionId) {
+        if self.now().is_some() {
+            self.record(session, Write::PlanAnswered);
+        }
     }
 
     /// `session`'s child is now the one `tap` reads (`None`: one no tap

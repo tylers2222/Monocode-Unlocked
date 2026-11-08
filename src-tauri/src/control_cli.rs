@@ -565,8 +565,9 @@ Actions:
                   alarm, agent, cause, level, stalledMinutes and actsOn (the
                   agent your acts reach: the one just below you, so a Mono
                   acts on its lead, never on the worker). Every alarm act
-                  below stops the alarm going up a level; a plain
-                  messages.send or sessions.send to actsOn counts too. If
+                  below stops the alarm going up a level; once the alarm
+                  reached you, a plain messages.send or sessions.send to
+                  actsOn counts too. If
                   the agent still makes no progress N minutes after the act,
                   a new alarm opens. Each act takes the short form the
                   <mono_alarm> shows, e.g. app alarms.nudge al_x, or --json.
@@ -577,10 +578,11 @@ Actions:
                   not_your_alarm, alarm_closed, invalid_input.
   alarms.answer  {"alarm":"al_...","allow":true}  Answer the agent's pending
                   dialog as the user would: allow or deny for a permission,
-                  text or choice for a question. Only the agent's own
-                  provisioner answers, and only the dialog the alarm named.
-                  Codes: dialog_gone (answered, withdrawn or another one
-                  now), plan_dialog (use alarms.steer), answer_via_recipient.
+                  text or choice for a question. A plan takes allow, or deny
+                  with a reason; the agent gets it as a new message. Only
+                  the agent's own provisioner answers, and only the dialog
+                  the alarm named. Codes: dialog_gone (answered, withdrawn
+                  or another one now), answer_via_recipient.
   alarms.steer   {"alarm":"al_...","text":"..."}  Steer the text into the
                   running turn of actsOn, or wake it with it when idle.
   alarms.nudge   {"alarm":"al_..."}  Tell actsOn its open work: into its

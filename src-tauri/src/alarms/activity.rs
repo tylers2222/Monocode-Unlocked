@@ -133,7 +133,18 @@ pub(crate) fn apply(
             spawned(conn, session, *harness, (*at, wall_at(*at)?), wall)
         }
         Write::Tap(row) => write_tap(conn, session, row, wall_at(row.last_progress_at)?, wall),
+        Write::PlanAnswered => plan_answered(conn, session, wall),
     }
+}
+
+fn plan_answered(conn: &Connection, session: &SessionId, wall: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agent_activity SET dialog_kind = NULL, dialog_request_id = NULL,
+           dialog_text = NULL, dialog_since_active_ms = NULL, updated_wall_ms = ?2
+         WHERE session_id = ?1 AND dialog_kind = 'plan'",
+        params![session.as_str(), wall],
+    )?;
+    Ok(())
 }
 
 /// Turn `turn_id` of `session` was authorized at active time `at`. Each

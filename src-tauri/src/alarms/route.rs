@@ -6,12 +6,11 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::provisioner::{self, Provisioner};
-use super::store::{agent_stall_minutes, outbox_key, Settings};
+use super::store::{agent_stall_minutes, outbox_key, Settings, MINUTE_MS};
 use super::text::{self, DialogLine, Missed, Next, Stall, Who};
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, Notices, SessionId};
 
-const MINUTE_MS: i64 = 60_000;
 /// Worker, lead, Mono, Giga, Tyler, and the agent: a longer chain is a
 /// loop in the rows, and ends at Tyler.
 const MAX_CHAIN: usize = 8;

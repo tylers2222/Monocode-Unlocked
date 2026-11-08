@@ -1,0 +1,13 @@
+{
+  "action": "sessions.send",
+  "input": {
+    "project": "/p/alarm-route",
+    "prompt": "<mono_steer alarm=\"al0\" from=\"mono:alp-mono\">\nYour worker is idle with its ask.\n</mono_steer>",
+    "sessionId": "alp-lead",
+    "whenBusy": "steer"
+  },
+  "lead": { "cwd": "/p/alarm-route", "id": "alp-lead" },
+  "monoChat": { "cwd": "/", "id": "alp-mono-chat" },
+  "projects": ["/p/alarm-route", "/p/alarm-route-2"],
+  "requestId": "s-1"
+}

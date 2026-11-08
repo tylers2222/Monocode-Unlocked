@@ -16,7 +16,7 @@ use super::tree::{self, Edge, Edges};
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
-const MINUTE_MS: i64 = 60_000;
+pub(super) const MINUTE_MS: i64 = 60_000;
 
 /// The per-agent stall threshold's bounds (section 9).
 pub(crate) const STALL_MINUTES: std::ops::RangeInclusive<i64> = 5..=240;

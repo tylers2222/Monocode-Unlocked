@@ -657,8 +657,15 @@ fn alarm_act(
     };
     let plan = match outcome {
         Err(refusal) => return Ok((refusal.response(), Default::default())),
-        Ok(Outcome::Done { result, notices }) => {
-            return Ok((json!({"ok": true, "result": result}), notices))
+        Ok(Outcome::Done {
+            result,
+            notices,
+            answered_plan,
+        }) => {
+            if let Some(session) = answered_plan {
+                store.alarms.plan_answered(&session);
+            }
+            return Ok((json!({"ok": true, "result": result}), notices));
         }
         Ok(Outcome::Forward(plan)) => plan,
     };
@@ -686,8 +693,13 @@ fn alarm_act(
     }
     let conn = store.lock_conn()?;
     let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
-    let response = match act::forwarded(&conn, &plan, now) {
-        Ok(result) => json!({"ok": true, "result": result}),
+    let response = match crate::alarms::deliver::forwarded(&conn, &plan, now) {
+        Ok(result) => {
+            if let Some(session) = &plan.answered_plan {
+                store.alarms.plan_answered(session);
+            }
+            json!({"ok": true, "result": result})
+        }
         Err(refusal) => refusal.response(),
     };
     Ok((response, Default::default()))
@@ -771,7 +783,7 @@ fn message_act<R: Runtime>(app: &AppHandle<R>, caller: &str, to: &str, request_i
     let store = app.state::<SessionStore>();
     let logged = store.lock_conn().and_then(|conn| {
         let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
-        crate::alarms::act::message(&conn, caller, to, request_id, now)
+        crate::alarms::deliver::message(&conn, caller, to, request_id, now)
             .map_err(|error| error.to_string())
     });
     if let Err(error) = logged {
