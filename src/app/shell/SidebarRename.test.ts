@@ -2556,3 +2556,95 @@ it("labels preserved sessions as having no branch selected", () => {
   expect(card().textContent).not.toContain("No branch selected");
   expect(card().textContent).toContain("project/main");
 });
+
+describe("sidebar stall alarms", () => {
+  const stall = {
+    id: "al_7Q2",
+    cause: "idle_open_work" as const,
+    stalled: {
+      name: "Original conversation",
+      actor: "session:session-1",
+      role: "session" as const,
+    },
+    stalledSince: "14:05",
+    minutes: 17,
+    openWork: [],
+    sends: [],
+  };
+
+  function menuItem(label: string) {
+    return Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent?.startsWith(label));
+  }
+
+  function openSessionMenu() {
+    act(() =>
+      card().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      ),
+    );
+  }
+
+  it("shows no marker and no Stall alarm item without alarm data", () => {
+    // Defect: a marker or the menu item shows before row U2 passes data.
+    props.busySessionIds = new Set();
+    act(() => render());
+    expect(card().querySelector('[aria-label^="Stalled"]')).toBeNull();
+    openSessionMenu();
+    expect(menuItem("Remind me")).toBeDefined();
+    expect(menuItem("Stall alarm")).toBeUndefined();
+  });
+
+  it("swaps the row's status words for the stall marker", () => {
+    // Defect: a stalled session still reads Working or its time, so nobody notices.
+    props.sessionStalls = new Map([["session-1", stall]]);
+    act(() => render());
+    expect(
+      card().querySelector('[aria-label="Stalled 17m"]')?.textContent,
+    ).toBe("Stalled 17m");
+    expect(card().textContent).not.toContain("Working...");
+  });
+
+  it("counts the stalled sessions a lead started on its row", () => {
+    // Defect: a lead whose workers stalled reads as fine while its rail is folded.
+    props.inset = true;
+    props.busySessionIds = new Set();
+    props.sessions = [
+      props.sessions[0],
+      { ...props.sessions[0], id: "app-session-1-builder" },
+      { ...props.sessions[0], id: "app-session-1-reviewer" },
+    ];
+    props.sessionStalls = new Map([["app-session-1-builder", stall]]);
+    act(() => render());
+    expect(card().textContent).toContain("1 stalled");
+    expect(
+      container.querySelector('[data-session-card="app-session-1-builder"]')
+        ?.textContent,
+    ).toContain("17m");
+  });
+
+  it("sets the session's stall time from Stall alarm in its menu", () => {
+    // Defect: the pick sets another session, or Default stores a number.
+    props.busySessionIds = new Set();
+    props.sessionStallMinutes = new Map([
+      ["session-1", { minutes: null, defaultMinutes: 15 }],
+    ]);
+    props.onSetStallMinutes = vi.fn();
+    act(() => render());
+    openSessionMenu();
+    const trigger = menuItem("Stall alarm")!;
+    expect(trigger.textContent).toBe("Stall alarm15 min");
+    act(() =>
+      trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })),
+    );
+    const submenu = document.querySelector<HTMLElement>(
+      '[role="menu"][aria-label="Stall alarm"]',
+    )!;
+    const hour = Array.from(
+      submenu.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((item) => item.textContent === "1 hour")!;
+    act(() => hour.click());
+    expect(props.onSetStallMinutes).toHaveBeenCalledWith("session-1", 60);
+  });
+});

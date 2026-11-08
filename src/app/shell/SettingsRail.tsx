@@ -1,4 +1,5 @@
 import {
+  AlarmClock,
   Archive,
   ArrowLeft,
   Bot,
@@ -32,6 +33,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   mcp: Globe,
   skills: Sparkles,
   monos: Ghost,
+  alarms: AlarmClock,
   inbox: Inbox,
   worktrees: FolderTree,
   archive: Archive,

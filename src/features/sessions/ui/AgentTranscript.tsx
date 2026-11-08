@@ -83,6 +83,13 @@ import {
 } from "../../monos/model/monoMessages";
 import { SentDecision } from "../../approvals/ui/BoardDecisionLine";
 import { SentNotice } from "./SentNotice";
+import {
+  DeliveredAlarm,
+  ToolSleepHold,
+  TranscriptAlarms,
+  useDeliveredAlarm,
+  type TranscriptAlarmsView,
+} from "../../alarms/ui/TranscriptAlarms";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import type { ApprovalDecision } from "../../../integrations/harness";
 import type { UserQuestionReply } from "../model/userQuestion";
@@ -301,6 +308,8 @@ type Props = {
   managed?: boolean;
   /** Saved session that omitted tool output is fetched from. */
   sessionId?: string;
+  /** Alarm cards and sleep holds to show; without them nothing changes. */
+  alarms?: TranscriptAlarmsView;
 };
 
 function AgentTranscriptComponent({
@@ -1843,7 +1852,9 @@ export const AgentTranscript = memo(
       <TranscriptVisibility.Provider value={props.visible ?? true}>
         <TranscriptPacing.Provider value={!props.bottomAligned}>
           <ToolDetailSession.Provider value={props.sessionId}>
-            <AgentTranscriptComponent {...props} />
+            <TranscriptAlarms.Provider value={props.alarms}>
+              <AgentTranscriptComponent {...props} />
+            </TranscriptAlarms.Provider>
           </ToolDetailSession.Provider>
         </TranscriptPacing.Provider>
       </TranscriptVisibility.Provider>
@@ -2420,6 +2431,14 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onEditLastTurn?: () => void;
   editing?: boolean;
 }) {
+  const alarm = useDeliveredAlarm(block.role === "user" ? block.text : "");
+  if (alarm) {
+    return (
+      <div className={`pt-1.5 pb-5 ${embedded ? "" : "px-4"}`}>
+        <DeliveredAlarm view={alarm} />
+      </div>
+    );
+  }
   const notice = block.role === "user" ? parseMonoNotice(block) : undefined;
   if (notice) {
     const sentence = noticeSentence(notice);
@@ -4723,6 +4742,7 @@ function ActivityToolRow({
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}
+      <ToolSleepHold callId={block.tool?.callId} />
       {errorOpen && errorDetail ? (
         <pre
           className={`min-w-0 whitespace-pre-wrap break-words py-1 font-mono text-[12px] leading-5 text-red-400/80 ${bare ? "" : "pl-5"}`}
@@ -5039,6 +5059,7 @@ function ToolCall({
         </pre>
       ) : null}
       <ApprovalControls block={block} onApproval={onApproval} />
+      <ToolSleepHold callId={block.tool?.callId} />
     </div>
   );
 }

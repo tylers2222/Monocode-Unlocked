@@ -12,8 +12,12 @@ import {
   CLASSIC_LAYOUT_HIDDEN_SETTINGS,
   INSET_LAYOUT_HIDDEN_SETTINGS,
   SETTINGS_SECTIONS,
+  isSettingsSectionId,
+  searchSettings,
+  settingsSectionsByGroup,
   type SettingsSectionId,
 } from "../model/settings";
+import { ALARM_SETTINGS_DEFAULTS } from "../../alarms/model/alarmViews";
 import { loadInsetLayout } from "../model/appearance";
 import {
   providerAccounts,
@@ -1551,5 +1555,74 @@ describe("providers scope inheritance", () => {
     expect(cursorToggle.closest(".settings-row")?.textContent).toContain(
       "Hidden globally",
     );
+  });
+});
+
+// Frame 5 (alarms U1): the page renders from props and saves nothing yet.
+describe("Settings > Alarms", () => {
+  const alarmSettings = {
+    ...ALARM_SETTINGS_DEFAULTS,
+    gigas: ["Monocode General", "Fork Orchestrator"],
+  };
+
+  it("stays off the rail, out of search, and empty until it has data", async () => {
+    // Defect: the Alarms page shows in the app before row U2 wires it.
+    expect(
+      settingsSectionsByGroup().flatMap((group) =>
+        group.sections.map((section) => section.id),
+      ),
+    ).not.toContain("alarms");
+    expect(
+      searchSettings("alarms").some((result) => result.section === "alarms"),
+    ).toBe(false);
+    expect(isSettingsSectionId("alarms")).toBe(false);
+    await render("alarms");
+    expect(container.textContent).not.toContain("Stall after");
+  });
+
+  it("shows the frame's rows with Tyler's defaults", async () => {
+    // Defect: a default differs from the approved one (Tyler's sleeps held, 10 s skip), or short sleeps still read as pending.
+    await render("alarms", { alarmSettings });
+    const text = container.textContent ?? "";
+    for (const line of [
+      "Stall alarm",
+      "Stall after",
+      "Root Giga",
+      "Sleep hold",
+      "Hold foreground waits",
+      "Hold Tyler's agents' sleeps",
+      "Skip short sleeps",
+    ])
+      expect(text).toContain(line);
+    expect(text).toContain("15 min");
+    expect(text).toContain("Monocode General");
+    expect(text).toContain("10 s");
+    expect(text).toContain("Let a sleep under 10 s run without asking.");
+    expect(text).not.toContain("Pending Tyler");
+    const switches = Array.from(
+      container.querySelectorAll<HTMLElement>('[role="switch"]'),
+      (node) => [
+        node.getAttribute("aria-label"),
+        node.getAttribute("aria-checked"),
+      ],
+    );
+    expect(switches).toEqual([
+      ["Hold foreground waits", "true"],
+      ["Hold Tyler's agents' sleeps", "true"],
+    ]);
+  });
+
+  it("flips a switch on the page without saving it", async () => {
+    // Defect: the page writes a setting before alarm_settings exists to hold it.
+    await render("alarms", { alarmSettings });
+    vi.mocked(invoke).mockClear();
+    const before = { ...localStorage };
+    const hold = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Hold Tyler\'s agents\' sleeps"]',
+    )!;
+    await act(async () => hold.click());
+    expect(hold.getAttribute("aria-checked")).toBe("false");
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+    expect({ ...localStorage }).toEqual(before);
   });
 });

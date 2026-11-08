@@ -2458,3 +2458,76 @@ describe("Composer message target", () => {
     });
   }
 });
+
+describe("Composer alarm landing", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  const render = (props: Partial<Parameters<typeof Composer>[0]>) =>
+    act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "claude-sonnet",
+          runtimeMode: "supervised",
+          executionCwd: "/repo",
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          onFocus: vi.fn(),
+          onCwdChange: vi.fn(),
+          onModelChange: vi.fn(),
+          onRuntimeModeChange: vi.fn(),
+          onSubmit: vi.fn(),
+          ...props,
+        }),
+      ),
+    );
+
+  it("docks the alarm above the input only when it has one", async () => {
+    // Defect: the landing card shows before row U2 passes an alarm, or not at all.
+    await render({});
+    expect(container.querySelector("[data-alarm]")).toBeNull();
+
+    await render({
+      alarm: {
+        view: {
+          id: "al_7Q2",
+          cause: "idle_open_work",
+          stalled: {
+            name: "PR S1 builder",
+            actor: "session:9f3c",
+            role: "worker",
+          },
+          stalledSince: "14:05",
+          minutes: 60,
+          openWork: [],
+          sends: [],
+          level: 4,
+          audience: "tyler",
+          next: { kind: "last" },
+        },
+      },
+    });
+    const card = container.querySelector("[data-alarm]");
+    expect(card?.getAttribute("data-alarm")).toBe("al_7Q2");
+    expect(
+      card!.compareDocumentPosition(
+        container.querySelector("textarea, [contenteditable]")!,
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});

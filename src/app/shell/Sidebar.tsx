@@ -207,6 +207,18 @@ import { SessionFiltersMenu } from "../../features/sessions/ui/SessionFiltersMen
 import { LinkSessionWorkItemDialog } from "../../features/sessions/ui/LinkSessionWorkItemDialog";
 import { sessionReminderPresets } from "../../features/sessions/ui/sessionReminderPresets";
 import {
+  StallChip,
+  StallRailMarker,
+} from "../../features/alarms/ui/StallMarker";
+import {
+  stallAlarmMenuItem,
+  stallAlarmPick,
+} from "../../features/alarms/ui/stallAlarmMenu";
+import type {
+  StallMarkerView,
+  StallMinutesView,
+} from "../../features/alarms/model/alarmViews";
+import {
   formatReminderTime,
   reminderTime,
   type SessionReminder,
@@ -342,6 +354,12 @@ type Props = {
   reminders?: readonly SessionReminder[];
   onSetReminders?: (sessionIds: readonly string[], dueAt: number) => void;
   onCancelReminders?: (sessionIds: readonly string[]) => void;
+  /** Open alarm episodes, by session id. */
+  sessionStalls?: ReadonlyMap<string, StallMarkerView>;
+  /** Each session's own stall time, by session id, for its menu. */
+  sessionStallMinutes?: ReadonlyMap<string, StallMinutesView>;
+  /** Sets a session's stall time; null follows Settings. */
+  onSetStallMinutes?: (sessionId: string, minutes: number | null) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDeleteSessions?: (sessionIds: readonly string[]) => void;
   onOpenFile: OpenFileFn;
@@ -459,6 +477,9 @@ function SidebarComponent({
   reminders = [],
   onSetReminders,
   onCancelReminders,
+  sessionStalls,
+  sessionStallMinutes,
+  onSetStallMinutes,
   onDeleteSession: onDeleteLocalSession,
   onDeleteSessions: onDeleteLocalSessions,
   onOpenFile,
@@ -1501,6 +1522,10 @@ function SidebarComponent({
     { kind: "sep" },
     { kind: "item", id: "ungroup", label: "Ungroup" },
   ];
+  const menuStallMinutes =
+    !multipleMenuSessions && onSetStallMinutes && sessionMenu
+      ? sessionStallMinutes?.get(sessionMenu.sessionId)
+      : undefined;
   const sessionMenuItems: ExplorerMenuItem[] = [
     ...(onCancelReminders && menuReminderTimes.length > 0
       ? [
@@ -1575,6 +1600,7 @@ function SidebarComponent({
       disabled: !onSetReminders,
       submenu: sessionReminderPresets(),
     },
+    ...(menuStallMinutes ? [stallAlarmMenuItem(menuStallMinutes)] : []),
     { kind: "sep" as const },
     { kind: "item" as const, id: "folder-new", label: "New folder" },
     ...(sessionFolders.length > 0 ? [{ kind: "sep" as const }] : []),
@@ -1673,6 +1699,11 @@ function SidebarComponent({
     closeSessionMenu();
     if (id === "reminder:cancel") {
       onCancelReminders?.(sessionIds);
+      return;
+    }
+    const stallMinutes = stallAlarmPick(id);
+    if (stallMinutes !== undefined) {
+      onSetStallMinutes?.(sessionId, stallMinutes);
       return;
     }
     if (id.startsWith("reminder:")) {
@@ -1921,6 +1952,8 @@ function SidebarComponent({
       inPlay(session.id) || started.some((child) => inPlay(child.id));
     const card = renderSessionRow(session, compact, {
       startedCount: started.length,
+      startedStalled: started.filter((child) => sessionStalls?.has(child.id))
+        .length,
       startedOpen: open,
       startedInView: started.some(
         (child) =>
@@ -1964,11 +1997,13 @@ function SidebarComponent({
     {
       nested = false,
       startedCount = 0,
+      startedStalled = 0,
       startedOpen = false,
       startedInView = false,
     }: {
       nested?: boolean;
       startedCount?: number;
+      startedStalled?: number;
       startedOpen?: boolean;
       startedInView?: boolean;
     } = {},
@@ -1998,8 +2033,10 @@ function SidebarComponent({
         dense={inset}
         nested={nested}
         startedCount={startedCount}
+        startedStalled={startedStalled}
         startedOpen={startedOpen}
         startedInView={startedInView}
+        stall={sessionStalls?.get(session.id)}
         now={now}
         onSelect={cardActions.select}
         onOpenWorkItem={
@@ -4925,6 +4962,8 @@ export const SessionCard = memo(function SessionCard({
   startedInView = false,
   modelInFooter = false,
   statusLabel,
+  stall,
+  startedStalled = 0,
   project,
   now,
   onSelect,
@@ -4965,6 +5004,10 @@ export const SessionCard = memo(function SessionCard({
   modelInFooter?: boolean;
   /** Stands in for the time, for a session with no state of its own to show. */
   statusLabel?: string;
+  /** Its open alarm episode: an amber marker takes the status words' place. */
+  stall?: StallMarkerView;
+  /** How many of the sessions it started are stalled, in place of the time. */
+  startedStalled?: number;
   /** Names its project before the branch, where sessions span several. */
   project?: string;
   now: number;
@@ -5079,7 +5122,9 @@ export const SessionCard = memo(function SessionCard({
         : draft
           ? "text-content/55"
           : "text-content/45";
-  const status = (
+  const status = stall ? (
+    <StallChip marker={stall} />
+  ) : (
     <span
       className={`flex shrink-0 items-center gap-1 text-[11px] tabular-nums ${statusClass}`}
     >
@@ -5498,7 +5543,13 @@ export const SessionCard = memo(function SessionCard({
                         : ""
                     }`}
                   >
-                    {needsApproval ? (
+                    {stall ? (
+                      <StallRailMarker marker={stall} />
+                    ) : startedStalled > 0 ? (
+                      <span className="text-amber-400">
+                        {startedStalled} stalled
+                      </span>
+                    ) : needsApproval ? (
                       <CircleAlert
                         role="img"
                         aria-label={

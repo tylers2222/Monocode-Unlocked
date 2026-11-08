@@ -216,6 +216,8 @@ import {
   type ComposerIntent,
 } from "./ComposerIntentBar";
 import type { BarSend } from "./composerIntent";
+import { AlarmCard, type AlarmCardActions } from "../../alarms/ui/AlarmCard";
+import type { AlarmCardView } from "../../alarms/model/alarmViews";
 
 type Props = {
   enabled?: boolean;
@@ -261,6 +263,8 @@ type Props = {
   queueStatus?: MessageQueueStatus;
   queuePauseNotice?: string;
   usageLimit?: UsageLimit;
+  /** Tyler's landing on a stalled agent: its alarm, docked above the input. */
+  alarm?: AlarmCardActions & { view: AlarmCardView };
   hotkeys?: boolean;
   onFocus: () => void;
   onCwdChange: (cwd: string) => void;
@@ -391,6 +395,7 @@ export function Composer({
   queueStatus,
   queuePauseNotice,
   usageLimit,
+  alarm,
   onFocus,
   onCwdChange,
   onBranchChange,
@@ -1944,6 +1949,11 @@ export function Composer({
         />
       ) : null}
       {children}
+      {alarm ? (
+        <div className="px-1.5 pb-1.5">
+          <AlarmCard {...alarm} />
+        </div>
+      ) : null}
       {usageLimit ? (
         <UsageLimitNotice
           limit={usageLimit}

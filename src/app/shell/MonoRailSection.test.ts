@@ -128,3 +128,33 @@ it("shows no Giga Monos section while there are none", () => {
     container.querySelector('[role="group"][aria-label="Monos"]'),
   ).not.toBeNull();
 });
+
+it("marks a stalled mono with its minutes only when it has an episode", () => {
+  // Defect: the rail marker shows before row U2 passes data, or hides a stalled Mono.
+  const mono = createMono();
+  render();
+  expect(container.querySelector('[role="status"]')).toBeNull();
+
+  render({
+    stalls: new Map([
+      [
+        mono.id,
+        {
+          id: "al_9",
+          cause: "idle_open_work",
+          stalled: {
+            name: "Mono Reviewer",
+            actor: `mono:${mono.id}`,
+            role: "mono",
+          },
+          stalledSince: "13:58",
+          minutes: 22,
+          openWork: [],
+          sends: [],
+        },
+      ],
+    ]),
+  });
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("22m");
+  expect(container.querySelector('[aria-label*="Stalled 22m"]')).not.toBeNull();
+});
