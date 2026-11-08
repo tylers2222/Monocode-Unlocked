@@ -44,6 +44,15 @@ import {
   spacesView,
   subscribeSpaces,
 } from "../../features/spaces/model/activeSpace";
+import {
+  StallRailMarker,
+  useStallFocus,
+  type StallFocus,
+} from "../../features/alarms/ui/StallMarker";
+import {
+  stallChipLabel,
+  type StallMarkerView,
+} from "../../features/alarms/model/alarmViews";
 
 export type MonoRailProps = {
   /** The Mono open in the main area, if any. */
@@ -52,6 +61,8 @@ export type MonoRailProps = {
   states: ReadonlyMap<string, MonoState>;
   /** Replies each Mono has that the user has not looked at yet, by Mono id. */
   unseenCounts?: ReadonlyMap<string, number>;
+  /** Open alarm episodes, by Mono id. */
+  stalls?: ReadonlyMap<string, StallMarkerView>;
   onOpen: (monoId: string) => void;
   /** Creates a Mono, given these projects to start with. */
   onCreate: (projects?: readonly string[]) => void;
@@ -74,6 +85,7 @@ export function MonoRailSection({
   activeId,
   states,
   unseenCounts,
+  stalls,
   onOpen,
   onCreate,
   onDelete,
@@ -119,6 +131,7 @@ export function MonoRailSection({
     activeId,
     states,
     unseenCounts,
+    stalls,
     onOpen,
     inset: !!project,
     onMenu: (id: string, anchor: PopoverAnchor) => setMenu({ id, anchor }),
@@ -227,16 +240,21 @@ function MonoRows({
   activeId,
   states,
   unseenCounts,
+  stalls,
   onOpen,
   inset,
   onMenu,
-}: Pick<MonoRailProps, "activeId" | "states" | "unseenCounts" | "onOpen"> & {
+}: Pick<
+  MonoRailProps,
+  "activeId" | "states" | "unseenCounts" | "stalls" | "onOpen"
+> & {
   monos: readonly Mono[];
   inset: boolean;
   onMenu: (monoId: string, anchor: PopoverAnchor) => void;
 }) {
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
+  const stallFocus = useStallFocus();
   return (
     <div className={`flex flex-col gap-px${inset ? "" : " px-2"}`}>
       {monos.map((mono) => {
@@ -244,6 +262,8 @@ function MonoRows({
         const state = states.get(mono.id) ?? IDLE;
         const selected = mono.id === activeId;
         const unseen = selected ? 0 : (unseenCounts?.get(mono.id) ?? 0);
+        const stall = stalls?.get(mono.id);
+        const stallRow = stallFocus.row(mono.id, stall);
         const projects = look.projects.length
           ? monoProjectsPhrase(look.projects)
           : "No projects yet";
@@ -284,15 +304,17 @@ function MonoRows({
             <button
               type="button"
               title={[look.name, projects, status].filter(Boolean).join("\n")}
-              aria-label={[
+              aria-label={monoRowLabel(
                 look.name,
-                status ?? "idle",
-                unseen ? unreadLabel(unseen) : undefined,
+                status,
+                stall,
+                unseen,
                 projects,
-              ]
-                .filter(Boolean)
-                .join(", ")}
+              )}
               aria-current={selected ? "true" : undefined}
+              aria-describedby={stallRow.describedBy}
+              onFocus={stallRow.onFocus}
+              onBlur={stallRow.onBlur}
               className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[button:focus-visible]:pr-6"
             >
               <MonoRailMascot
@@ -313,15 +335,11 @@ function MonoRows({
                   {look.name}
                 </span>
               )}
-              {unseen ? (
-                <span
-                  aria-hidden
-                  data-mono-unread={unseen}
-                  className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-accent px-1 text-[10px] font-medium tabular-nums leading-none text-white group-hover:hidden group-has-[button:focus-visible]:hidden"
-                >
-                  {countBadge(unseen)}
-                </span>
-              ) : null}
+              <MonoRowMarks
+                stall={stall}
+                focus={stallFocus.marker(mono.id)}
+                unseen={unseen}
+              />
             </button>
             <button
               type="button"
@@ -342,6 +360,51 @@ function MonoRows({
         );
       })}
     </div>
+  );
+}
+
+function monoRowLabel(
+  name: string,
+  status: string | undefined,
+  stall: StallMarkerView | undefined,
+  unseen: number,
+  projects: string,
+): string {
+  return [
+    name,
+    status ?? "idle",
+    stall && stallChipLabel(stall),
+    unseen ? unreadLabel(unseen) : undefined,
+    projects,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+/** What sits at a Mono row's end: its stall minutes, then its unread count. */
+function MonoRowMarks({
+  stall,
+  focus,
+  unseen,
+}: {
+  stall?: StallMarkerView;
+  focus: StallFocus;
+  unseen: number;
+}) {
+  return (
+    <>
+      {/* Stays through hover, beside the menu button, so its card can open. */}
+      {stall ? <StallRailMarker marker={stall} focus={focus} /> : null}
+      {unseen ? (
+        <span
+          aria-hidden
+          data-mono-unread={unseen}
+          className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-accent px-1 text-[10px] font-medium tabular-nums leading-none text-white group-hover:hidden group-has-[button:focus-visible]:hidden"
+        >
+          {countBadge(unseen)}
+        </span>
+      ) : null}
+    </>
   );
 }
 
