@@ -1,6 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("hold") {
+        std::process::exit(monocode_lib::sleep_hold::client::run(
+            std::env::args().skip(2).collect(),
+        ));
+    }
     if let Some(code) = monocode_lib::ssh_askpass::maybe_run() {
         std::process::exit(code);
     }
