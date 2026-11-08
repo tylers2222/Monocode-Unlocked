@@ -2636,6 +2636,72 @@ describe("codex live turn sequence", () => {
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     expect(await turn).toBe("sent");
   });
+
+  // Defect: an alarm's answer, named for the approval the user already
+  // answered, lands on the newer approval Codex asked since; or an answer
+  // is written for an RPC id Codex never sent.
+  it("answers an alarm only for the pending Codex approval its RPC id names", async () => {
+    const { ensureCodexRegistered } = await import("./codexAdapter");
+    const { answerAlarmDialog } =
+      await import("../../../../features/agent-app/model/agentAppAlarms");
+    ensureCodexRegistered();
+    const { events, turn } = await startTurn("codex-live");
+    const approvals = () =>
+      events.flatMap((event) =>
+        event.type === "approval.requested" ? [event.requestId] : [],
+      );
+    const asked = (id: number) =>
+      onLine!(
+        JSON.stringify({
+          id,
+          method: "item/commandExecution/requestApproval",
+          params: { itemId: `cmd_${id}`, command: "git push --force" },
+        }),
+      );
+    const answeredFor = (id: number) => parse().filter((m) => m.id === id).length;
+    asked(91);
+    await waitFor(() => approvals().length === 1, "91 asked");
+    const [a] = approvals();
+    respondCodexApproval("codex-live", a!, "deny");
+    await waitFor(() => answeredFor(91) === 1, "the user's answer to 91");
+    asked(92);
+    await waitFor(() => approvals().length === 2, "92 asked");
+    const b = approvals()[1]!;
+    const session = {
+      ...newSession("codex", "/repo"),
+      id: "codex-live",
+      blocks: [
+        {
+          id: "a",
+          role: "tool" as const,
+          text: "",
+          approval: { requestId: a!, decided: "deny" as const },
+        },
+        { id: "b", role: "tool" as const, text: "", approval: { requestId: b } },
+      ],
+    };
+    const answer = (dialogRequestId: string) => {
+      try {
+        return answerAlarmDialog(session, {
+          kind: "permission",
+          decision: "allow",
+          dialogRequestId,
+        });
+      } catch (error) {
+        return (error as { code?: string }).code;
+      }
+    };
+    expect(answer("91")).toBe("dialog_gone");
+    expect(answer("93")).toBe("dialog_gone");
+    expect(answeredFor(92)).toBe(0);
+    expect(answer("92")).toEqual({ answered: "permission" });
+    await waitFor(() => answeredFor(92) === 1, "the alarm's answer to 92");
+    expect(parse().find((m) => m.id === 92)?.result).toEqual({
+      decision: "accept",
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
 });
 
 describe("codex subagents", () => {
