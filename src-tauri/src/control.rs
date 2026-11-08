@@ -3126,6 +3126,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_wait_longer_than_thirty_seconds_is_refused_and_the_reader_serves_on() {
+        // Defect: a client's timeoutSeconds goes into a sum unchecked, so
+        // u64::MAX panics the wait thread, or past the cap the reader
+        // itself, which is never started again.
+        let (app, host) = hold_app();
+        let wait = |timeout: &Value| {
+            let input = json!({"hold": "sh_a1", "timeoutSeconds": timeout});
+            let request = hold_request(&host.token, "wait", input);
+            reply_line(&mut send_through_serve(&host, &app, request))
+        };
+        let extremes = [json!(u64::MAX), json!(31), json!(-1), json!(1.5)];
+        for timeout in &extremes {
+            assert_eq!(wait(timeout)["code"], "invalid_input", "{timeout}");
+        }
+        let taken: Vec<_> = std::iter::from_fn(|| host.take_wait()).collect();
+        for timeout in &extremes {
+            assert_eq!(
+                wait(timeout)["code"],
+                "invalid_input",
+                "past the cap: {timeout}"
+            );
+        }
+        assert_eq!(
+            wait(&json!(30)),
+            json!({"ok": true, "status": "pending"}),
+            "the reader serves on"
+        );
+        drop(taken);
+    }
+
+    #[test]
     fn a_wait_whose_client_hangs_up_closes_its_hold() {
         // Defect: the hook client is killed mid-wait and the app keeps the
         // hold open, so a later allow is logged that no client heard.

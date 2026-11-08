@@ -4,12 +4,15 @@
 //! downtime and sleep never make a deadline pass. A 1 s tick adds the
 //! uptime that passed, read straight from a clock that stops during sleep,
 //! never from `Instant` or a Tokio timer (Rust leaves their sleep behaviour
-//! unspecified). Raw uptime is never stored: it restarts at every boot.
+//! unspecified). One exception: between ticks the lease holder's hold
+//! reading moves the last tick on by `Instant`, at most one step
+//! ([`crate::alarms::Live::now_at`]). Raw uptime is never stored: it
+//! restarts at every boot.
 //! Downtime and sleep are kept in `mono_downtime` only to explain delays.
 
 use std::fs::{File, TryLockError};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use tauri::{AppHandle, Manager};
@@ -198,6 +201,7 @@ impl<C: Clock> ActiveClock<C> {
         conn: &Connection,
         alarms: &crate::alarms::Sources,
     ) -> rusqlite::Result<Notices> {
+        let read_at = Instant::now();
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
@@ -223,7 +227,7 @@ impl<C: Clock> ActiveClock<C> {
             self.persisted_ns = self.active_ns;
         }
         let active = self.active_ms();
-        alarms.live.set_now(active);
+        alarms.live.set_now_at(active, read_at);
         let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
         // A hold fault must not stop the reminders or the clock either.
         if let Err(error) = crate::sleep_hold::service::sweep(conn, (active, now.wall_ms)) {

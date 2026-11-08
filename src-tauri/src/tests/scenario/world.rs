@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::MutexGuard;
+use std::time::Instant;
 
 use rusqlite::Connection;
 
@@ -31,6 +32,8 @@ struct FakeTime {
     monotonic_ns: Cell<u64>,
     wall_ms: Cell<i64>,
     boot_wall_ms: Cell<i64>,
+    /// When the app last read the clocks.
+    read_at: Cell<Option<Instant>>,
 }
 
 impl FakeClock {
@@ -40,6 +43,7 @@ impl FakeClock {
             monotonic_ns: Cell::new(0),
             wall_ms: Cell::new(START_MS),
             boot_wall_ms: Cell::new(START_MS),
+            read_at: Cell::new(None),
         }))
     }
 
@@ -72,6 +76,7 @@ fn ns(ms: i64) -> u64 {
 
 impl Clock for FakeClock {
     fn now(&mut self) -> Reading {
+        self.0.read_at.set(Some(Instant::now()));
         Reading {
             uptime_ns: self.0.uptime_ns.get(),
             monotonic_ns: self.0.monotonic_ns.get(),
@@ -217,6 +222,15 @@ impl World {
             running: Some(&self.running),
         };
         app.active.tick(&app.store.lock_conn().unwrap(), &alarms)
+    }
+
+    /// When the app's active clock last read the computer's clocks.
+    pub(crate) fn clock_read_at(&self) -> Instant {
+        self.clock
+            .0
+            .read_at
+            .get()
+            .expect("the clock was never read")
     }
 
     /// The app's active clock now (what it holds, not what it stored).

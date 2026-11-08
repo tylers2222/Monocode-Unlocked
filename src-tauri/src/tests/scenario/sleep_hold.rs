@@ -1018,14 +1018,14 @@ fn every_way_the_client_stops_closes_the_hold_before_a_later_answer() {
 fn a_live_client_keeps_its_hold_through_a_stalled_tick() {
     let world = World::new("hold-stalled-tick");
     let chain = chain(&world, "ht");
-    // The 2nd wait queues 4 s between the ticks at 30 s and 35 s.
-    for (n, queued) in [None, Some((2, Duration::from_secs(4)))]
-        .into_iter()
-        .enumerate()
-    {
+    // Ticks 12 s apart: the 2nd wait starts 6.35 s after the tick at 24 s.
+    // Ticks 5 s apart: the 2nd wait queues 4 s between the ticks at 30 s
+    // and 35 s.
+    let stalls = [(12, None), (5, Some((2, Duration::from_secs(4))))];
+    for (n, (tick, queued)) in stalls.into_iter().enumerate() {
         let plan = Plan {
             queued,
-            tick: Duration::from_secs(5),
+            tick: Duration::from_secs(tick),
             ..Plan::default()
         };
         let run = allowed_at(
@@ -1035,8 +1035,25 @@ fn a_live_client_keeps_its_hold_through_a_stalled_tick() {
             plan,
             Duration::from_secs(100),
         );
-        assert!(heard(&world, &run, &format!("queued {queued:?}")));
+        let case = format!("ticks every {tick} s, queued {queued:?}");
+        assert!(heard(&world, &run, &case), "{case}");
     }
+}
+
+// Defect: the tick stamps its reading after its store writes, so a write
+// that stalls (another process holds the database) holds the hold clock
+// back by the stall until the next tick, and a client's idle budget
+// shrinks by as much.
+#[test]
+fn the_hold_clock_runs_on_from_when_the_tick_read_the_clocks() {
+    let mut world = World::new("hold-clock-read");
+    // The 5th tick writes the clock row after it reads the clocks.
+    world.advance(5_000);
+    let (read, active) = (world.clock_read_at(), world.active_ms());
+    assert_eq!(
+        world.store().alarms.now_at(read + Duration::from_secs(1)),
+        Some(active + 1_000)
+    );
 }
 
 /// A call the app took `0` ago, with no tick since.

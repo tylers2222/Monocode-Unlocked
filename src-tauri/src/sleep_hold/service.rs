@@ -202,9 +202,30 @@ struct WireWait {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WaitInput {
     hold: String,
-    timeout_seconds: u64,
+    timeout_seconds: WaitFor,
     #[serde(default)]
     last: bool,
+}
+
+/// A wait's `timeoutSeconds`, at most [`MAX_WAIT`]. The client never asks
+/// for more, so a longer one is refused before any time is added to it.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(try_from = "u64")]
+struct WaitFor(Duration);
+
+impl TryFrom<u64> for WaitFor {
+    type Error = String;
+
+    fn try_from(seconds: u64) -> Result<Self, String> {
+        let wait = Duration::from_secs(seconds);
+        if wait > MAX_WAIT {
+            return Err(format!(
+                "timeoutSeconds must be 0 to {}",
+                MAX_WAIT.as_secs()
+            ));
+        }
+        Ok(Self(wait))
+    }
 }
 
 #[derive(Deserialize)]
@@ -487,7 +508,8 @@ pub(crate) fn status(
 /// client's read timeout, or with the active clock stopped. It first reads
 /// the hold as it stood when the app took the call, so a wait for a free
 /// reader does not make a client that sent it on time look
-/// [idle](HoldRow::lapsed). Past the cap on running waits a `last` wait
+/// [idle](HoldRow::lapsed), unless a tick swept the hold while the wait
+/// queued (fails closed). Past the cap on running waits a `last` wait
 /// closes at once, before the client's cut (fails closed). No store lock
 /// is held while it blocks.
 fn wait(
@@ -498,12 +520,13 @@ fn wait(
     caller: &dyn HoldCaller,
 ) -> Result<Value, Refusal> {
     let input: WaitInput = parsed(input, "hold wait")?;
+    let WaitFor(asked) = input.timeout_seconds;
     let slice = if caller.may_block() {
-        Duration::from_secs(input.timeout_seconds).min(MAX_WAIT)
+        asked
     } else {
         Duration::ZERO
     };
-    let read_timeout = Duration::from_secs(input.timeout_seconds) + super::client::MARGIN;
+    let read_timeout = asked + super::client::MARGIN;
     let mut marked = false;
     loop {
         let seen = version();

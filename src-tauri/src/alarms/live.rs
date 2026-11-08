@@ -110,11 +110,13 @@ impl Live {
     }
 
     /// The active time at `at`, with no tick lag: the last tick moved on by
-    /// the time since it ran, at most the step the next tick may add, so a
-    /// stalled tick (App Nap, a busy store) does not hold the clock back
-    /// and the reading never runs past that tick. `Instant` reads the
-    /// clock the tick adds on macOS and Linux, which stops during sleep;
-    /// elsewhere the cap bounds what a sleep adds.
+    /// the time since it read its clock, at most the step the next tick may
+    /// add, so a stalled tick (App Nap, a busy store) does not hold the
+    /// clock back. On macOS and Linux `Instant` is the clock the tick adds,
+    /// which stops during sleep, so the reading never runs past the next
+    /// tick. Where `Instant` counts sleep (Windows), a reading in the second
+    /// after a wake can run up to one step ahead, and the tick then sets it
+    /// back, so a hold timed then closes up to that much late.
     pub(crate) fn now_at(&self, at: Instant) -> Option<i64> {
         let (active, ticked) = (*lock(&self.0.ticked))?;
         let since = at
