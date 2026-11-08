@@ -101,7 +101,8 @@ export async function handleQuitRequested(): Promise<boolean> {
       return false;
     }
   }
-  const { resumed } = await loadBootWorkspace();
+  // main.tsx starts boot with the roster first; a quit only reads its result.
+  const { resumed } = await loadBootWorkspace(Promise.resolve());
   const pending = resumed ?? bootingResumed;
   quitting = true;
   if (!pending) return true;
@@ -169,13 +170,25 @@ export async function closeBusyWindow(): Promise<void> {
   await confirmAndCloseWindow(liveWorkspace.read());
 }
 
-export function loadResumedWorkspace(): Promise<WindowWorkspace | null> {
-  if (!resumedPromise) resumedPromise = loadResumedWorkspaceOnce();
+/**
+ * `monoRoster` settles once the Mono roster has loaded: `readSession` picks
+ * the Mono store by it. Restore runs once, so only the first call's roster counts.
+ */
+export function loadResumedWorkspace(
+  monoRoster: Promise<unknown> = Promise.resolve(),
+): Promise<WindowWorkspace | null> {
+  if (!resumedPromise) resumedPromise = loadResumedWorkspaceOnce(monoRoster);
   return resumedPromise;
 }
 
-/** Restore runs once; callers share the same promise. */
-export function loadBootWorkspace(): Promise<BootWorkspace> {
+/**
+ * Restore runs once; callers share the same promise. `monoRoster` gates the
+ * session reads, as in `loadResumedWorkspace`; its failure never stops boot.
+ */
+export function loadBootWorkspace(
+  monoRoster: Promise<unknown>,
+): Promise<BootWorkspace> {
+  const roster = monoRoster.catch(() => undefined);
   if (!bootPromise) {
     bootPromise = (async () => {
       const hintedCwd = lastProjectPath();
@@ -184,7 +197,7 @@ export function loadBootWorkspace(): Promise<BootWorkspace> {
       // behind, before any session it loads can start a turn.
       await invoke("control_window_booted").catch(console.error);
       const [resumed, monoCompletions] = await Promise.all([
-        loadResumedWorkspace(),
+        loadResumedWorkspace(roster),
         claimMonoCompletions().catch((error: unknown) => {
           console.error(error);
           return [];
@@ -218,10 +231,13 @@ async function listProjectHistory(
   }
 }
 
-async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
+async function loadResumedWorkspaceOnce(
+  monoRoster: Promise<unknown>,
+): Promise<WindowWorkspace | null> {
   const [snapshotRaw, refs] = await Promise.all([
     loadWorkspaceSnapshot().catch(() => null),
     listInFlightSessions().catch(() => []),
+    monoRoster.catch(() => undefined),
   ]);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
   const snapshot = parseWorkspaceSnapshot(snapshotRaw);

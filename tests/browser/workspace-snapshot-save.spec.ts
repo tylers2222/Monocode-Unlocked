@@ -148,9 +148,13 @@ test("a tab opened while a turn streams is saved before the turn ends", async ({
       );
   }, callsBefore);
 
-  expect(saves, "workspace_set_snapshot calls during the turn").toEqual([
-    ["login", "docs"],
-  ]);
+  // The login tab's own 250 ms save can still land after `callsBefore` when
+  // the docs tab takes longer than that to open, so count from the docs tab.
+  const opened = saves.findIndex((tabs) => tabs.includes("docs"));
+  expect(
+    saves.slice(Math.max(opened, 0)),
+    "workspace_set_snapshot calls during the turn",
+  ).toEqual([["login", "docs"]]);
   await tab(page, "Fix the login redirect").click();
   await expect(page.getByText("Step 14")).toBeVisible();
 });

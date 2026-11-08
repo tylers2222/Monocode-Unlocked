@@ -22,6 +22,7 @@ import { OpenCard } from "./ApprovalCard";
 import { ClosedCard, ClosedRow } from "./ClosedCard";
 
 type Props = {
+  tabbed?: boolean;
   besideRail?: boolean;
   compactRail?: boolean;
   /** The project the page opens on: the one with the selected session. */

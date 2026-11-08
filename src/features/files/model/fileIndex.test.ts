@@ -227,6 +227,19 @@ describe("loadProjectFiles", () => {
     stop();
   });
 
+  it("keeps the same array and stays quiet when a rescan finds nothing new", async () => {
+    const first = await loadProjectFiles(cwd);
+    const onChange = vi.fn();
+    const stop = subscribeProjectFiles(onChange);
+    list.mockResolvedValue(files.map((file) => ({ ...file })));
+    invalidateProjectFiles(cwd);
+    onChange.mockClear();
+    expect(await loadProjectFiles(cwd, true)).toBe(first);
+    expect(peekProjectFiles(cwd)).toBe(first);
+    expect(onChange).not.toHaveBeenCalled();
+    stop();
+  });
+
   it("keeps the published array and stays quiet when a rescan finds the same files", async () => {
     const dir = {
       name: "apps",
@@ -285,7 +298,7 @@ describe("loadProjectFiles", () => {
     stop();
   });
 
-  it("keeps the array after an invalidation and notifies once on the unchanged rescan", async () => {
+  it("keeps the array after an invalidation and stays quiet on the unchanged rescan", async () => {
     await loadProjectFiles(cwd);
     list.mockResolvedValue(files.map((file) => ({ ...file })));
     const onChange = vi.fn();
@@ -295,7 +308,7 @@ describe("loadProjectFiles", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(await loadProjectFiles(cwd)).toBe(files);
     expect(peekProjectFiles(cwd)).toBe(files);
-    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledTimes(1);
     stop();
   });
 

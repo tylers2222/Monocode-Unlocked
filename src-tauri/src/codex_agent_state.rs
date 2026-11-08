@@ -27,7 +27,7 @@ pub(crate) const AGENT_STATE: &str = ".monocode-agent-state";
 /// and a linked login, so a link, folder or FIFO it plants is never picked. The
 /// path is under the home's real path, as SQLITE_OPEN_NOFOLLOW refuses a link at
 /// any folder on it (macOS's /var, a linked login or home).
-fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
+pub(crate) fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
     let home = match home.canonicalize() {
         Ok(home) => home,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -109,15 +109,19 @@ pub(crate) fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), St
     };
     let edges: Vec<AgentEdge> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let path = state_db(home)?.ok_or("Codex has not initialized the private Mono index")?;
-    let mut db = open_state(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    apply_agent_edges(&path, edges)?;
+    state.remove(&snapshot)
+}
+
+pub(crate) fn apply_agent_edges(path: &Path, edges: Vec<AgentEdge>) -> Result<(), String> {
+    let mut db = open_state(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
     for edge in edges {
         validate_thread_id(&edge.parent)?;
         validate_thread_id(&edge.child)?;
         tx.execute("INSERT INTO thread_spawn_edges(parent_thread_id, child_thread_id, status) VALUES (?1, ?2, ?3) ON CONFLICT(child_thread_id) DO UPDATE SET status=excluded.status WHERE parent_thread_id=excluded.parent_thread_id", rusqlite::params![edge.parent, edge.child, edge.status]).map_err(|e| e.to_string())?;
     }
-    tx.commit().map_err(|e| e.to_string())?;
-    state.remove(&snapshot)
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[cfg(all(test, unix))]

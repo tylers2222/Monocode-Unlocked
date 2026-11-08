@@ -86,6 +86,22 @@ describe("replaceMentionToken", () => {
   });
 });
 
+describe("sharedMentionIndex", () => {
+  it("builds once per listing and extras, matching a direct build", () => {
+    const note: ProjectFile = {
+      name: "Plan",
+      path: "note:1",
+      relative: "note/plan",
+    };
+    const shared = sharedMentionIndex(files, [note]);
+    expect(sharedMentionIndex(files, [{ ...note }])).toBe(shared);
+    expect(sharedMentionIndex(files, [])).not.toBe(shared);
+    expect([...shared.labels.keys()]).toEqual([
+      ...buildMentionIndex([...files, note]).labels.keys(),
+    ]);
+  });
+});
+
 describe("buildMentionIndex", () => {
   it("labels unique basenames short and ambiguous ones by path", () => {
     expect(mentionLabel(files[2], index)).toBe("Composer.tsx");

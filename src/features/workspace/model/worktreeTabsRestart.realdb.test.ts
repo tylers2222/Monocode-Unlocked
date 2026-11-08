@@ -238,7 +238,7 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
     await first.saveWorkspaceSnapshot(first.workspaceSnapshot([window]), Date.now());
 
     const booting = await webview();
-    await booting.loadBootWorkspace();
+    await booting.loadBootWorkspace(Promise.resolve());
     expect(await booting.handleQuitRequested()).toBe(true);
     expectRestored(window, await boot());
   });

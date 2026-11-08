@@ -102,6 +102,7 @@ import {
 } from "../model/inboxFilters";
 import { copyText } from "../../../platform/tauri/clipboard";
 import { projectKey, projectName } from "../../../shared/lib/paths";
+import { inProjectScope } from "../../projects/model/projectScope";
 import { playCue } from "../../settings/model/sounds";
 import {
   sameProjectPath,
@@ -369,10 +370,14 @@ type CiRepairProps = {
 };
 
 type Props = {
+  tabbed?: boolean;
+  active?: boolean;
   onAsk: (item: InboxItem) => Promise<string>;
   onAskRestart: (item: InboxItem) => Promise<string>;
   onAskMount: (portal: InboxSessionPortal | null) => void;
   cwd: string;
+  /** Shows only this project's items, plus ones not tied to any project. */
+  scopeProject?: string;
   recents: RecentProject[];
   besideRail?: boolean;
   compactRail?: boolean;
@@ -390,10 +395,13 @@ type Props = {
 };
 
 export function InboxView({
+  tabbed = false,
+  active = true,
   onAsk,
   onAskRestart,
   onAskMount,
   cwd,
+  scopeProject,
   recents,
   besideRail = false,
   compactRail = false,
@@ -464,22 +472,43 @@ export function InboxView({
   const [jiraProjects, setJiraProjects] = useState<JiraProject[]>([]);
   const prevRefresh = useRef(refresh);
 
+  // Fetches still cover every project, sharing the background poll's cache,
+  // so switching projects is instant; a scoped Inbox only shows its own.
   const projects = useMemo(
     () => inboxProjectsForRail(recents, cwd),
     [cwd, recents],
   );
-  const projectOptions = useMemo(
-    () => inboxProjectOptions(projects, logos),
-    [logos, projects],
+  const shownProjects = useMemo(
+    () =>
+      scopeProject
+        ? projects.filter((project) =>
+            sameProjectPath(project.path, scopeProject),
+          )
+        : projects,
+    [projects, scopeProject],
   );
-  const linearProjects = useMemo(() => linearProjectOptions(items), [items]);
+  const scopedItems = useMemo(
+    () =>
+      scopeProject
+        ? items.filter((item) => inProjectScope(item.projectPath, scopeProject))
+        : items,
+    [items, scopeProject],
+  );
+  const projectOptions = useMemo(
+    () => inboxProjectOptions(shownProjects, logos),
+    [logos, shownProjects],
+  );
+  const linearProjects = useMemo(
+    () => linearProjectOptions(scopedItems),
+    [scopedItems],
+  );
   const activeFilters = useMemo(
     () =>
       pruneInboxFilters(
         filters,
-        projects.map((project) => project.path),
+        shownProjects.map((project) => project.path),
       ),
-    [filters, projects],
+    [filters, shownProjects],
   );
   const filtersActive = hasActiveInboxFilters(
     activeFilters,
@@ -521,6 +550,7 @@ export function InboxView({
   }, [target]);
 
   useEffect(() => {
+    if (!active) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -537,7 +567,7 @@ export function InboxView({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [connectMenuOpen, filterMenu]);
+  }, [active, connectMenuOpen, filterMenu]);
 
   useEffect(() => {
     const onChange = () => {
@@ -754,7 +784,7 @@ export function InboxView({
   const visibleItems = useMemo(() => {
     if (!sourceAvailable) return [];
     const visible = applyInboxFilters(
-      items,
+      scopedItems,
       activeFilters,
       searchInput,
       Date.now(),
@@ -771,6 +801,7 @@ export function InboxView({
   }, [
     activeFilters,
     items,
+    scopedItems,
     searchInput,
     source,
     sourceAvailable,
@@ -791,14 +822,14 @@ export function InboxView({
   const sourceEntries = useMemo(
     () =>
       sourceAvailable
-        ? items
+        ? scopedItems
             .filter((item) => item.provider === source)
             .map((item) => ({
               key: inboxItemKey(item),
               updatedAt: item.updatedAt,
             }))
         : [],
-    [items, source, sourceAvailable],
+    [scopedItems, source, sourceAvailable],
   );
   const sourceHasUnseen = useMemo(
     () => sourceEntries.some(isInboxEntryUnseen),
@@ -1142,6 +1173,7 @@ export function InboxView({
       compactRail={compactRail}
       onClose={onClose}
       onToggleSidebar={onToggleSidebar}
+      tabbed={tabbed}
     >
       <div className="flex min-h-0 min-w-0 flex-1">
         {list}

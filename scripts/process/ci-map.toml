@@ -86,6 +86,7 @@ host = [
 check = [
   "src/**",
   "src-tauri/**",
+  "crates/mobile-link/**",
   "tests/**",
   "vendor/**",
   "host/windows-acl.ps1",
@@ -103,6 +104,7 @@ check = [
 # Fedora and AlmaLinux rpm builds (and the clean install after them).
 rpm = [
   "src-tauri/**",
+  "crates/mobile-link/**",
   "vendor/**",
   "scripts/repack-appimage.sh",
   "scripts/assert-appimage-host-libs.sh",
@@ -124,6 +126,7 @@ appimage = [
 e2e-linux = [
   "src/**",
   "src-tauri/**",
+  "crates/mobile-link/**",
   "vendor/**",
   "host/windows-acl.ps1",
   "public/**",
@@ -145,6 +148,7 @@ e2e-linux = [
 e2e-macos = [
   "src/**",
   "src-tauri/**",
+  "crates/mobile-link/**",
   "vendor/**",
   "host/windows-acl.ps1",
   "public/**",
@@ -157,4 +161,23 @@ e2e-macos = [
   "scripts/giga-eval/**",
   "scripts/milestones-e2e/**",
   "scripts/e2e-macos.sh",
+]
+
+# The Expo app's lint, tsc and vitest. Its vitest also runs tests/mobile, which
+# imports the desktop's mobile protocol models from src/.
+mobile = [
+  "mobile/**",
+  "tests/mobile/**",
+  "src/**",
+]
+
+# .github/workflows/native.yml: the GPUI app, its core crates and their scripts.
+native = [
+  "crates/monocode-core/**",
+  "crates/monocode-gpui/**",
+  "crates/mobile-link/**",
+  "vendor/gpui-pre*/**",
+  "scripts/*native*",
+  "scripts/native-editor/**",
+  "scripts/native-settings/**",
 ]
