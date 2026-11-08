@@ -75,6 +75,14 @@ const ESCALATED: AlarmCardView = {
   escalation: { target: LEAD, missed: "its worker's stall", minutes: 15 },
 };
 
+/** Frame 2, state C over state B's dialog: the lead did not answer its worker's dialog. */
+const ESCALATED_DIALOG: AlarmCardView = {
+  ...DIALOG,
+  level: 2,
+  next: { kind: "provisioner", name: "Monocode General", minutes: 15 },
+  escalation: { target: LEAD, missed: "its worker's dialog", minutes: 15 },
+};
+
 /** Frame 4: Tyler's landing in the stalled session, last level. */
 const LANDING: TylerLandingView = {
   ...EPISODE,
@@ -361,6 +369,20 @@ describe("AlarmCard, frame 2 state C (level 2, escalated)", () => {
     ]);
   });
 
+  it("shows the worker's dialog question it would answer", async () => {
+    // Defect: an escalated card enables Answer but hides the question, so the Mono approves a command it cannot read.
+    await render({ view: ESCALATED_DIALOG });
+    expect(text()).toContain(
+      'DialogDialog (permission, 4 min): Allow Bash "rm -rf target"?',
+    );
+  });
+
+  it("shows no Dialog row when the worker has no dialog", async () => {
+    // Defect: an escalated idle stall grows a "Dialog: none" row frame 2C does not draw.
+    await render({ view: ESCALATED });
+    expect(text()).not.toContain("Dialog");
+  });
+
   it("names the lead in the acted line, since the act landed on it", async () => {
     // Defect: "nudged PR S1 builder" when the Mono nudged the lead.
     await render({
@@ -376,17 +398,11 @@ describe("AlarmCard, frame 2 state C (level 2, escalated)", () => {
 
   it("names the stalled worker once Read or Answer, which land on it, acted", async () => {
     // Defect: "answered the dialog for PR-S1" when the dialog answered was PR S1 reviewer's.
-    const escalatedDialog: AlarmCardView = {
-      ...DIALOG,
-      level: 2,
-      next: { kind: "provisioner", name: "Monocode General", minutes: 15 },
-      escalation: { target: LEAD, missed: "its worker's dialog", minutes: 15 },
-    };
     const lines: string[] = [];
     for (const how of ["answer", "read"] as const) {
       await render({
         view: {
-          ...escalatedDialog,
+          ...ESCALATED_DIALOG,
           acted: { how, by: "Fork Orchestrator", at: "14:36" },
         },
       });
@@ -436,6 +452,22 @@ describe("AlarmCard, frame 4 (Tyler's landing)", () => {
       target: BUILDER,
     });
     expect(onOpenLead).toHaveBeenCalledWith(LEAD);
+  });
+
+  it("shows the dialog question Tyler would answer", async () => {
+    // Defect: Tyler's landing enables Answer but shows the command only as last activity, never the question.
+    await render({
+      view: { ...LANDING, cause: "dialog", dialog: DIALOG.dialog },
+    });
+    expect(text()).toContain(
+      'DialogDialog (permission, 4 min): Allow Bash "rm -rf target"?',
+    );
+  });
+
+  it("shows no Dialog row when there is no dialog", async () => {
+    // Defect: an idle landing grows a "Dialog: none" row frame 4 does not draw.
+    await render({ view: LANDING });
+    expect(text()).not.toContain("Dialog");
   });
 
   it("shows no Told row when nobody was told before Tyler", async () => {

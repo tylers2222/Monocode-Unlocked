@@ -145,6 +145,11 @@ function alarmFacts(
     label: "Open work",
     value: view.openWork.join("; ") || "none",
   };
+  // Any card that can Answer shows the question; only frame 2A draws "Dialog: none".
+  const dialog: Fact[] =
+    view.dialog || (!escalation && view.audience !== "tyler")
+      ? [{ label: "Dialog", value: dialogLine(view.dialog) }]
+      : [];
   if (escalation)
     return [
       {
@@ -152,6 +157,7 @@ function alarmFacts(
         value: `${agentLabel(view.stalled)}, stalled ${stalledSpan(view)}`,
       },
       openWork,
+      ...dialog,
       ...toldFact(
         "Told",
         view.sends,
@@ -173,13 +179,14 @@ function alarmFacts(
         "none"
       ),
     },
+    ...dialog,
     ...(view.audience === "tyler"
       ? toldFact(
           view.acted ? "Told" : "Told, no act",
           view.sends,
           (send) => `${send.recipient} ${send.at}`,
         )
-      : [{ label: "Dialog", value: dialogLine(view.dialog) }]),
+      : []),
   ];
 }
 
