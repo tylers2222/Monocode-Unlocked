@@ -3,6 +3,7 @@ use tauri::Manager;
 mod account_identity;
 mod active_clock;
 mod agent_sandbox;
+mod alarms;
 mod approvals;
 mod artifacts;
 mod ask_gate;

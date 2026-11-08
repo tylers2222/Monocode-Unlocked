@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use crate::alarms::taps::Pipe;
 use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
@@ -158,6 +159,9 @@ struct LiveChild {
     pid: u32,
     identity: Option<String>,
     account: Option<HarnessAccount>,
+    /// The stall detector's tap on this child's stdio, for a session's own
+    /// child of a harness it reads.
+    tap: Option<Arc<Mutex<crate::alarms::taps::Tap>>>,
 }
 
 struct LiveSse {
@@ -1141,12 +1145,18 @@ pub fn harness_spawn<R: Runtime>(
         .take()
         .ok_or_else(|| "Failed to open harness stderr".to_string())?;
 
+    let tap = helper
+        .is_none()
+        .then(|| crate::alarms::tap_for(binary_provider.as_deref()))
+        .flatten()
+        .map(|tap| Arc::new(Mutex::new(tap)));
     let live = Arc::new(LiveChild {
         cwd: workdir.clone(),
         stdin: Mutex::new(stdin),
         pid,
         identity: crate::resources::identity(pid),
         account,
+        tap: tap.clone(),
     });
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
         // A kill, or a newer spawn, won the race while this one was forking.
@@ -1158,6 +1168,9 @@ pub fn harness_spawn<R: Runtime>(
             let _ = child.wait();
         });
         return Err(SPAWN_CANCELLED.to_string());
+    }
+    if helper.is_none() {
+        crate::alarms::spawned(&app, &session_id, binary_provider.as_deref());
     }
 
     let stdout_app = app.clone();
@@ -1173,9 +1186,14 @@ pub fn harness_spawn<R: Runtime>(
     });
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
+    let tap_app = app.clone();
+    let tap_session = session_id.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
+            if let Some(tap) = &tap {
+                crate::alarms::tap_line(&tap_app, &tap_session, tap, Pipe::Stdout, &line);
+            }
             if let Some(store) = &stdout_store {
                 if line.contains("\"turn/completed\"")
                     || line.contains("\"item/started\"")
@@ -1373,6 +1391,7 @@ fn apply_provider_account(cmd: &mut Command, login: Option<&LoginDir>) {
 /// where it would starve `harness_kill` and make the wedged child unrecoverable.
 #[tauri::command]
 pub async fn harness_write(
+    app: AppHandle,
     host: State<'_, HarnessHost>,
     session_id: String,
     line: String,
@@ -1386,7 +1405,13 @@ pub async fn harness_write(
             .write_all(line.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
-            .map_err(|e| format!("Failed to write to harness: {e}"))
+            .map_err(|e| format!("Failed to write to harness: {e}"))?;
+        drop(stdin);
+        // Only a line the child received answers its dialog.
+        if let Some(tap) = &live.tap {
+            crate::alarms::tap_line(&app, &session_id, tap, Pipe::Stdin, &line);
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("Harness write task failed: {e}"))?
@@ -3425,6 +3450,7 @@ pub(crate) mod tests {
                 pid,
                 identity: crate::resources::identity(pid),
                 account: None,
+                tap: None,
             }),
             child,
         )
@@ -3656,6 +3682,7 @@ pub(crate) mod tests {
                 pid,
                 identity: crate::resources::identity(pid),
                 account: None,
+                tap: None,
             }),
             child,
         )

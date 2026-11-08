@@ -9,6 +9,7 @@
 
 use std::fs::{File, TryLockError};
 use std::path::Path;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -49,6 +50,17 @@ const SLEEP_MIN_NS: u64 = 2_000_000_000;
 
 const NS_PER_MS: u64 = 1_000_000;
 
+/// The active time of this process's clock at its last tick, for the
+/// alarm taps on threads that hold no clock; -1 while no clock runs here.
+static LATEST_ACTIVE_MS: AtomicI64 = AtomicI64::new(-1);
+
+/// `None` when another process holds the lease: it runs the detector, and
+/// this one's taps would measure against no clock.
+pub(crate) fn latest_active_ms() -> Option<i64> {
+    let latest = LATEST_ACTIVE_MS.load(Ordering::Relaxed);
+    (latest >= 0).then_some(latest)
+}
+
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mono_clock (
@@ -76,6 +88,8 @@ pub(crate) struct ActiveClock<C: Clock> {
     persisted_ns: u64,
     uptime_ns: u64,
     monotonic_ns: u64,
+    /// The `alarms::PASS_MS` slice the detector last ran in.
+    alarm_slice: Option<i64>,
 }
 
 impl<C: Clock> ActiveClock<C> {
@@ -117,6 +131,7 @@ impl<C: Clock> ActiveClock<C> {
         )?;
         tx.commit()?;
         let active_ns = u64::try_from(active_ms).unwrap_or(0) * NS_PER_MS;
+        LATEST_ACTIVE_MS.store(active_ms, Ordering::Relaxed);
         Ok(Self {
             _lease: lease,
             uptime_ns: now.uptime_ns,
@@ -124,13 +139,15 @@ impl<C: Clock> ActiveClock<C> {
             clock,
             active_ns,
             persisted_ns: active_ns,
+            alarm_slice: None,
         })
     }
 
     /// Adds the uptime since the last tick, at most 30 s; logs a sleep when
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep. Then it enqueues the reminders
-    /// that fell due (`ask_scheduler::run`) and names their chats.
+    /// that fell due (`ask_scheduler::run`), runs the stall detector once
+    /// per 5 s of active time, and names the chats of both.
     pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<Notices> {
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
@@ -156,7 +173,19 @@ impl<C: Clock> ActiveClock<C> {
             )?;
             self.persisted_ns = self.active_ns;
         }
-        crate::ask_scheduler::run(conn, self.active_ms(), now.wall_ms)
+        let active = self.active_ms();
+        LATEST_ACTIVE_MS.store(active, Ordering::Relaxed);
+        let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
+        let slice = active / crate::alarms::PASS_MS;
+        if self.alarm_slice != Some(slice) {
+            self.alarm_slice = Some(slice);
+            // A detector fault must not stop the reminders or the clock.
+            match crate::alarms::run(conn, active, now.wall_ms) {
+                Ok(alarms) => notices.merge(alarms),
+                Err(error) => eprintln!("Could not run the stall detector: {error}"),
+            }
+        }
+        Ok(notices)
     }
 
     pub(crate) fn active_ms(&self) -> i64 {

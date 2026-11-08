@@ -1280,6 +1280,8 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::asks::ensure_tables(conn)?;
     crate::mono_completions::ensure_tables(conn)?;
     crate::ask_scheduler::ensure_tables(conn)?;
+    // The outbox read joins the alarms' sends, so they come after it.
+    crate::alarms::ensure_tables(conn)?;
     Ok(())
 }
 

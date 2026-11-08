@@ -771,13 +771,9 @@ fn authorize_window_turn<R: Runtime>(
         next: None,
     };
     let app = window.app_handle();
-    let (folder, notices) = authorize_turn(
-        &host.inner,
-        &app.state::<SessionStore>(),
-        session,
-        &real,
-        turn,
-    )?;
+    let store = app.state::<SessionStore>();
+    let (folder, notices) = authorize_turn(&host.inner, &store, session, &real, turn)?;
+    record_start(&host.inner, &store, session);
     notices.emit(app);
     Ok(if folder == real {
         cwd.to_owned()
@@ -849,7 +845,10 @@ fn finish_turn(
         .lock()
         .ok()
         .and_then(|mut inner| inner.finish_turn(session, turn_id));
-    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
+    let notices = end_turns(store, ended.map(|turn| (session.to_string(), turn)));
+    // The harness run that waited for this turn may run now.
+    record_start(inner, store, session);
+    notices
 }
 
 /// Design 5.3 (review r2): the Stop and kill paths. The process is gone, so
@@ -936,6 +935,7 @@ fn end_turns(
             continue;
         };
         let ended = store.lock_conn().and_then(|conn| {
+            crate::alarms::turn(&conn, session.as_str(), &turn.turn_id, false);
             mono_messages::turn_ended(&conn, &session, &turn.turn_id, mono_messages::now_ms())
                 .map_err(|error| error.to_string())
         });
@@ -949,6 +949,19 @@ fn end_turns(
         }
     }
     notices
+}
+
+/// The stall detector's turn tap: the turn `active` runs for `session`
+/// now has started. The control lock is let go before the store lock (5.3
+/// lock order).
+fn record_start(inner: &Mutex<Inner>, store: &SessionStore, session: &str) {
+    let running = inner
+        .lock()
+        .ok()
+        .and_then(|inner| inner.active.get(session).map(|turn| turn.turn_id.clone()));
+    if let (Some(turn_id), Ok(conn)) = (running, store.lock_conn()) {
+        crate::alarms::turn(&conn, session, &turn_id, true);
+    }
 }
 
 /// Design 2 (review r5): the slots window `label` set that no provider took.
