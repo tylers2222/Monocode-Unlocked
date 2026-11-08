@@ -41,7 +41,7 @@ pub struct Reading {
 const TICK: Duration = Duration::from_secs(1);
 /// The most one tick adds, so a tick that stalled (App Nap, a busy store)
 /// cannot add a long gap at once.
-const MAX_STEP_NS: u64 = 30_000_000_000;
+pub(crate) const MAX_STEP: Duration = Duration::from_secs(30);
 /// The active time a crash may lose: the row is written this often.
 const PERSIST_EVERY_NS: u64 = 5_000_000_000;
 /// A monotonic minus uptime gap below this is scheduling noise, not sleep.
@@ -77,6 +77,9 @@ pub(crate) fn active_at(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
+    // One persist interval plus one tick: the tightest bound that never
+    // reads a holder that keeps pace as stopped. A holder tick late by more
+    // than a second reads as stopped here, which fails closed.
     let stale_ms = ms(PERSIST_EVERY_NS) + ms(TICK.as_nanos() as u64);
     Ok(match stored {
         None => Active::Stopped(0),
@@ -203,7 +206,7 @@ impl<C: Clock> ActiveClock<C> {
             .saturating_sub(awake);
         self.uptime_ns = uptime;
         self.monotonic_ns = monotonic;
-        self.active_ns += awake.min(MAX_STEP_NS);
+        self.active_ns += awake.min(MAX_STEP.as_nanos() as u64);
         if slept >= SLEEP_MIN_NS {
             let wall = now.wall_ms;
             conn.execute(

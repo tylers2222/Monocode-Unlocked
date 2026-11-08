@@ -5,8 +5,9 @@
 //! takes the records and writes them in its own transaction.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use super::taps::{Harness, Pipe, Snapshot, Tap};
 use crate::mono_messages::SessionId;
@@ -62,9 +63,10 @@ impl Pending {
 }
 
 struct Hub {
-    /// The active time of this process's clock at its last tick; -1 while
-    /// no clock runs here (another process holds the lease and the rows).
-    now: AtomicI64,
+    /// The active time of this process's clock at its last tick, and when
+    /// that tick ran; `None` while no clock runs here (another process
+    /// holds the lease and the rows).
+    ticked: Mutex<Option<(i64, Instant)>>,
     /// The id of the last tap made.
     taps: AtomicU64,
     pending: Mutex<Pending>,
@@ -79,7 +81,7 @@ pub(crate) struct Live(Arc<Hub>);
 impl Default for Live {
     fn default() -> Self {
         Self(Arc::new(Hub {
-            now: AtomicI64::new(-1),
+            ticked: Mutex::default(),
             taps: AtomicU64::new(0),
             pending: Mutex::default(),
             fault: Mutex::default(),
@@ -96,12 +98,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Live {
     /// The clock thread's tick: taps measure against `active` from now on.
     pub(crate) fn set_now(&self, active: i64) {
-        self.0.now.store(active, Ordering::Relaxed);
+        self.set_now_at(active, Instant::now());
+    }
+
+    pub(crate) fn set_now_at(&self, active: i64, at: Instant) {
+        *lock(&self.0.ticked) = Some((active, at));
     }
 
     pub(crate) fn now(&self) -> Option<i64> {
-        let now = self.0.now.load(Ordering::Relaxed);
-        (now >= 0).then_some(now)
+        lock(&self.0.ticked).map(|(active, _)| active)
+    }
+
+    /// The active time at `at`, with no tick lag: the last tick moved on by
+    /// the time since it ran, at most the step the next tick may add, so a
+    /// stalled tick (App Nap, a busy store) does not hold the clock back
+    /// and the reading never runs past that tick. `Instant` reads the
+    /// clock the tick adds on macOS and Linux, which stops during sleep;
+    /// elsewhere the cap bounds what a sleep adds.
+    pub(crate) fn now_at(&self, at: Instant) -> Option<i64> {
+        let (active, ticked) = (*lock(&self.0.ticked))?;
+        let since = at
+            .saturating_duration_since(ticked)
+            .min(crate::active_clock::MAX_STEP);
+        Some(active.saturating_add(i64::try_from(since.as_millis()).unwrap_or(i64::MAX)))
     }
 
     fn record(&self, session: &SessionId, write: Write) {
@@ -247,6 +266,8 @@ impl ChildTap {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn session() -> SessionId {
@@ -272,6 +293,24 @@ mod tests {
         assert_eq!(writes.len(), 2, "{writes:?}");
         assert!(matches!(&writes[1], Write::Tap(row) if row.last_progress_at == 20_000));
         assert!(live.take().is_empty());
+    }
+
+    // Defect: a hold reads the clock its last tick left, so a tick that
+    // stalled for seconds makes a live hold client look idle; or the
+    // reading runs past what the next tick adds.
+    #[test]
+    fn the_live_reading_moves_on_from_the_last_tick_up_to_one_step() {
+        let live = Live::default();
+        let ticked = Instant::now();
+        assert_eq!(live.now_at(ticked), None, "no clock runs here");
+        live.set_now_at(40_000, ticked);
+        assert_eq!(live.now_at(ticked), Some(40_000));
+        assert_eq!(
+            live.now_at(ticked + Duration::from_millis(4_900)),
+            Some(44_900)
+        );
+        assert_eq!(live.now_at(ticked + Duration::from_secs(90)), Some(70_000));
+        assert_eq!(live.now(), Some(40_000), "taps still read the tick");
     }
 
     // Defect: the writes of a pass that rolled back are lost, or come back

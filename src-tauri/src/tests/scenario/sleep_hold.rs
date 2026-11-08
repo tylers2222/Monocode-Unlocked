@@ -18,6 +18,7 @@ use super::agents::{mono_caller, session_caller, Mono};
 use super::world::World;
 use crate::active_clock::Active;
 use crate::alarms::act::Refusal;
+use crate::alarms::Live;
 use crate::ask_scheduler;
 use crate::control::TestHoldHost;
 use crate::mono_messages::SessionId;
@@ -663,7 +664,13 @@ type Due<'a> = Option<(Duration, Box<dyn FnOnce(HoldTime) + 'a>)>;
 /// One fake time for the hook client and the app, so a test runs both
 /// sides of a hold on the same clock. `at` runs once, when time gets there.
 struct SharedTime<'a> {
+    world: &'a World,
     base: (i64, i64),
+    /// The app's active clock, ticked as the clock thread ticks it.
+    live: Live,
+    started: Instant,
+    tick: Duration,
+    ticked: Cell<Duration>,
     passed: Cell<Duration>,
     /// When the app took the call it serves now.
     accepted: Cell<Duration>,
@@ -672,32 +679,52 @@ struct SharedTime<'a> {
     at: RefCell<Due<'a>>,
 }
 
+fn ms(time: Duration) -> i64 {
+    i64::try_from(time.as_millis()).unwrap()
+}
+
 impl SharedTime<'_> {
-    /// The app's time: its live active clock moves once a tick, so it runs
-    /// up to a second behind.
+    /// The app's time, as `service::now` reads it in the lease holder.
     fn app_now(&self) -> HoldTime {
         let passed = self.passed.get();
-        let ticked = i64::try_from(passed.as_secs() * 1_000).unwrap();
-        let passed = i64::try_from(passed.as_millis()).unwrap();
-        (self.base.0 + ticked, self.base.1 + passed).into()
+        HoldTime {
+            active: Active::Running(self.live.now_at(self.started + passed).unwrap()),
+            wall: self.base.1 + ms(passed),
+        }
     }
 
     fn killed(&self) -> bool {
         self.killed_at.is_some_and(|at| self.passed.get() >= at)
     }
 
-    /// Moves time on by `by`, or only up to `at` when it falls inside, and
-    /// runs it there.
+    /// The clock thread's tick: it catches up, then sweeps the holds.
+    fn run_tick(&self, at: Duration) {
+        self.passed.set(at);
+        self.ticked.set(at);
+        let active = self.base.0 + ms(at);
+        self.live.set_now_at(active, self.started + at);
+        service::sweep(&self.world.conn(), (active, self.base.1 + ms(at))).unwrap();
+    }
+
+    /// Moves time on by `by`, ticking on the way, or only up to `at` when
+    /// it falls inside, and runs it there.
     fn pass(&self, by: Duration) {
         let to = self.passed.get() + by;
-        let due = self.at.borrow().as_ref().is_some_and(|(at, _)| *at <= to);
-        if !due {
-            self.passed.set(to);
-            return;
+        loop {
+            let tick = self.ticked.get() + self.tick;
+            let answer = self.at.borrow().as_ref().map(|(at, _)| *at);
+            if answer.is_some_and(|at| at <= to && at < tick) {
+                let (at, run) = self.at.borrow_mut().take().unwrap();
+                self.passed.set(at.max(self.passed.get()));
+                run(self.app_now());
+                return;
+            }
+            if tick > to {
+                break;
+            }
+            self.run_tick(tick);
         }
-        let (at, run) = self.at.borrow_mut().take().unwrap();
-        self.passed.set(at.max(self.passed.get()));
-        run(self.app_now());
+        self.passed.set(to);
     }
 }
 
@@ -738,13 +765,26 @@ const ONE_WAY: Duration = Duration::from_millis(10);
 const BEFORE_REQUEST: Duration = Duration::from_millis(300);
 
 /// How a run of the hook client goes, apart from the lead's answer.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Plan {
     /// Call `n` (0 is the request) waits this long for a free reader.
     queued: Option<(usize, Duration)>,
     /// The client crashes once the reply to call `n` is in.
     panics_after: Option<usize>,
     killed_at: Option<Duration>,
+    /// How often the app's clock ticks: 1 s, or slower while stalled.
+    tick: Duration,
+}
+
+impl Default for Plan {
+    fn default() -> Self {
+        Self {
+            queued: None,
+            panics_after: None,
+            killed_at: None,
+            tick: Duration::from_secs(1),
+        }
+    }
 }
 
 /// The hook client's calls run straight on the app's `hold` namespace on
@@ -802,7 +842,7 @@ struct Answered {
 
 /// The worker's hook client asks to wait as `plan` says; the lead allows
 /// `answer_at` after the client started, while it waits or after it
-/// stopped. Then the tick sweeps, as it does every second.
+/// stopped. The app's clock ticks as `plan` says, and once more at the end.
 fn allowed_at(
     world: &World,
     chain: &Chain,
@@ -811,8 +851,16 @@ fn allowed_at(
     answer_at: Duration,
 ) -> Answered {
     let answer = Cell::new("not answered");
+    let base = now(world);
+    let (live, started) = (Live::default(), Instant::now());
+    live.set_now_at(base.0, started);
     let time = SharedTime {
-        base: now(world),
+        world,
+        base,
+        live,
+        started,
+        tick: plan.tick,
+        ticked: Cell::new(Duration::ZERO),
         passed: Cell::new(Duration::ZERO),
         accepted: Cell::new(Duration::ZERO),
         killed_at: plan.killed_at,
@@ -845,7 +893,7 @@ fn allowed_at(
     }))
     .ok();
     time.pass(answer_at.saturating_sub(time.passed.get()));
-    service::sweep(&world.conn(), time.app_now().pair()).unwrap();
+    service::sweep(&world.conn(), time.app_now().closing()).unwrap();
     Answered {
         outcome,
         answer: answer.get(),
@@ -908,58 +956,138 @@ fn the_client_hears_every_answer_the_app_logs_up_to_the_cut() {
 
 // Defect: the hook client stops (its last wait ends, a reply comes too
 // late, it crashes or is killed) and the app keeps the hold open, so a
-// later allow is logged that no client heard.
+// later allow is logged that no client heard; or with the app's tick
+// stalled the hold stays open for as long as the stall.
 #[test]
 fn every_way_the_client_stops_closes_the_hold_before_a_later_answer() {
     let world = World::new("hold-stops");
     let chain = chain(&world, "hs");
     let second = Duration::from_secs(1);
     let idle = Duration::from_millis(u64::try_from(crate::sleep_hold::store::IDLE_MS).unwrap());
-    let stops = [
-        (
-            "last wait",
-            Plan::default(),
-            crate::sleep_hold::ANSWER_CUT + second,
-        ),
-        (
-            "read timeout",
-            Plan {
-                queued: Some((2, 40 * second)),
-                ..Plan::default()
-            },
-            50 * second,
-        ),
-        (
-            "crash",
-            Plan {
-                panics_after: Some(2),
-                ..Plan::default()
-            },
-            61 * second + idle,
-        ),
-        (
-            "killed",
-            Plan {
-                killed_at: Some(45 * second),
-                ..Plan::default()
-            },
-            47 * second,
-        ),
-    ];
-    for (n, (stop, plan, after)) in stops.into_iter().enumerate() {
-        let before = allowed_at(&world, &chain, &format!("toolu_{n}_b"), plan, 10 * second);
-        assert!(heard(
-            &world,
-            &before,
-            &format!("{stop}: allowed while it waits")
-        ));
-        let late = allowed_at(&world, &chain, &format!("toolu_{n}_a"), plan, after);
-        assert!(!heard(
-            &world,
-            &late,
-            &format!("{stop}: allowed after it stopped")
-        ));
+    let stops = |tick| {
+        [
+            (
+                "last wait",
+                Plan::default(),
+                crate::sleep_hold::ANSWER_CUT + second,
+            ),
+            (
+                "read timeout",
+                Plan {
+                    queued: Some((2, 40 * second)),
+                    ..Plan::default()
+                },
+                50 * second,
+            ),
+            (
+                "crash",
+                Plan {
+                    panics_after: Some(2),
+                    ..Plan::default()
+                },
+                61 * second + idle,
+            ),
+            (
+                "killed",
+                Plan {
+                    killed_at: Some(45 * second),
+                    ..Plan::default()
+                },
+                47 * second,
+            ),
+        ]
+        .map(|(stop, plan, after)| (stop, Plan { tick, ..plan }, after))
+    };
+    for tick in [second, 5 * second] {
+        for (n, (stop, plan, after)) in stops(tick).into_iter().enumerate() {
+            let id = |when: &str| format!("toolu_{}_{n}_{when}", tick.as_secs());
+            let case = |what: &str| format!("{stop}, ticks every {tick:?}: allowed {what}");
+            let before = allowed_at(&world, &chain, &id("b"), plan, 10 * second);
+            assert!(heard(&world, &before, &case("while it waits")));
+            let late = allowed_at(&world, &chain, &id("a"), plan, after);
+            assert!(!heard(&world, &late, &case("after it stopped")));
+        }
     }
+}
+
+// Defect: the app times a hold by the clock its last tick left, so with
+// the tick stalled for seconds (App Nap, a busy store) a live client looks
+// idle and its hold times out; or a wait that waited for a free reader
+// finds its hold idle although the client sent it on time.
+#[test]
+fn a_live_client_keeps_its_hold_through_a_stalled_tick() {
+    let world = World::new("hold-stalled-tick");
+    let chain = chain(&world, "ht");
+    // The 2nd wait queues 4 s between the ticks at 30 s and 35 s.
+    for (n, queued) in [None, Some((2, Duration::from_secs(4)))]
+        .into_iter()
+        .enumerate()
+    {
+        let plan = Plan {
+            queued,
+            tick: Duration::from_secs(5),
+            ..Plan::default()
+        };
+        let run = allowed_at(
+            &world,
+            &chain,
+            &format!("toolu_{n}"),
+            plan,
+            Duration::from_secs(100),
+        );
+        assert!(heard(&world, &run, &format!("queued {queued:?}")));
+    }
+}
+
+/// A call the app took `0` ago, with no tick since.
+struct Queued(Duration);
+
+impl HoldCaller for Queued {
+    fn elapsed(&self) -> Duration {
+        self.0
+    }
+
+    fn block(&self, _seen: u64, _timeout: Duration) {}
+
+    fn hung_up(&self) -> bool {
+        false
+    }
+
+    fn may_block(&self) -> bool {
+        true
+    }
+}
+
+// Defect: a wait the app serves after its client's read timeout leaves the
+// hold open, as the client sent it on time, so a later answer is logged
+// that no client hears.
+#[test]
+fn a_wait_served_after_its_client_stopped_reading_closes_its_hold() {
+    let world = World::new("hold-read-late");
+    let chain = chain(&world, "hr");
+    let at = now(&world);
+    let app_now = |_: &Connection| -> rusqlite::Result<HoldTime> { Ok(at.into()) };
+    let wait = |hold: &str, queued: u64| {
+        let input = json!({"hold": hold, "timeoutSeconds": 30, "last": false});
+        let caller = Queued(Duration::from_secs(queued));
+        let (reply, _) = service::call(
+            world.store(),
+            chain.worker.as_str(),
+            "wait",
+            &input,
+            &app_now,
+            &caller,
+        );
+        reply["status"].clone()
+    };
+    let read = request(&world, &chain.worker, "toolu_read", "sleep 60");
+    assert_eq!(wait(&read, 34), "pending", "the client still reads");
+    let gone = request(&world, &chain.worker, "toolu_gone", "sleep 60");
+    assert_eq!(wait(&gone, 35), "timeout");
+    assert_eq!(
+        logged(&world, &gone).2.as_deref(),
+        Some("the hold client stopped waiting")
+    );
 }
 
 /// One banner pass of `store`: how many it showed and took down.
@@ -1109,4 +1237,15 @@ fn with_the_active_clock_stopped_a_hold_fails_closed() {
         &caller,
     );
     assert_eq!(reply["code"], "clock_stale");
+
+    set(&world, "tyler_sleep_hold", "on");
+    let solo = world.add_session("solo", P, None);
+    let tyler = request(&world, &solo, "toolu_tyler", "sleep 60");
+    let (active, wall) = now(&world);
+    let stopped = HoldTime {
+        active: Active::Stopped(active),
+        wall,
+    };
+    assert!(!service::tyler_decides(&world.conn(), &tyler, true, stopped).unwrap());
+    assert_eq!(logged(&world, &tyler).0.as_deref(), Some("timeout"));
 }

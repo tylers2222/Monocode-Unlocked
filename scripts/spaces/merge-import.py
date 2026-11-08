@@ -92,6 +92,7 @@ COPY = {
     # Sleep holds are the hold log; an open one times out on Space 1's clock.
     "sleep_holds": (("id",), (
         "requested_active_ms", "deadline_active_ms", "decided_active_ms",
+        "waiting_until_active_ms",
     )),
     "mono_session_ends": (("session_id",), ()),
     "mono_completion_deliveries": (("group_id",), ()),
