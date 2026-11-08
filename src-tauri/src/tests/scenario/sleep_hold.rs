@@ -1220,7 +1220,7 @@ fn with_the_active_clock_stopped_a_hold_fails_closed() {
         hold
     };
     let other_now = |conn: &Connection| service::now(&other, conn);
-    let allow = |hold: &str| {
+    let allow_hold = |hold: &str| {
         let input = json!({"hold": hold});
         service::decide_call(
             &other,
@@ -1232,10 +1232,14 @@ fn with_the_active_clock_stopped_a_hold_fails_closed() {
         )
     };
     let fresh = held("toolu_fresh", 4 * SECOND);
-    assert_eq!(allow(&fresh)["ok"], true, "a clock written 4 s ago runs");
+    assert_eq!(
+        allow_hold(&fresh)["ok"],
+        true,
+        "a clock written 4 s ago runs"
+    );
 
     let stopped = held("toolu_stopped", 60 * SECOND);
-    assert_eq!(allow(&stopped)["code"], "clock_stale");
+    assert_eq!(allow_hold(&stopped)["code"], "clock_stale");
     assert_eq!(
         logged(&world, &stopped),
         (
