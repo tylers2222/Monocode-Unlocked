@@ -2,7 +2,12 @@
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AlarmAgent, AlarmCardView } from "../model/alarmViews";
+import type {
+  AlarmAgent,
+  AlarmCardView,
+  AlarmEpisodeView,
+  TylerLandingView,
+} from "../model/alarmViews";
 import { AlarmCard } from "./AlarmCard";
 
 const BUILDER: AlarmAgent = {
@@ -12,8 +17,7 @@ const BUILDER: AlarmAgent = {
 };
 const LEAD: AlarmAgent = { name: "PR-S1", actor: "session:51aa", role: "lead" };
 
-/** Frame 2, state A: level 1, idle with open work, in the lead's chat. */
-const IDLE: AlarmCardView = {
+const EPISODE: AlarmEpisodeView = {
   id: "al_7Q2",
   cause: "idle_open_work",
   stalled: BUILDER,
@@ -27,6 +31,11 @@ const IDLE: AlarmCardView = {
     state: "completed",
   },
   sends: [{ recipient: "PR-S1", at: "14:20", level: 1 }],
+};
+
+/** Frame 2, state A: level 1, idle with open work, in the lead's chat. */
+const IDLE: AlarmCardView = {
+  ...EPISODE,
   level: 1,
   audience: "provisioner",
   next: { kind: "provisioner", name: "Fork Orchestrator", minutes: 15 },
@@ -67,19 +76,17 @@ const ESCALATED: AlarmCardView = {
 };
 
 /** Frame 4: Tyler's landing in the stalled session, last level. */
-const LANDING: AlarmCardView = {
-  ...IDLE,
+const LANDING: TylerLandingView = {
+  ...EPISODE,
   minutes: 60,
   openWork: ['ask m_tngc "Build S1 stall detector" (overdue 31 min)'],
   level: 4,
   audience: "tyler",
-  next: { kind: "last" },
   sends: [
     { recipient: "PR-S1", at: "14:20", level: 1 },
     { recipient: "Fork Orchestrator", at: "14:35", level: 2 },
     { recipient: "Monocode General", at: "14:50", level: 3 },
   ],
-  escalation: { target: LEAD, missed: "its worker's stall", minutes: 15 },
   lead: LEAD,
 };
 
@@ -113,6 +120,28 @@ function button(label: string): HTMLButtonElement {
   );
   if (!found) throw new Error(`no button ${label}`);
   return found;
+}
+
+function field(label: string): HTMLInputElement {
+  const found = container.querySelector<HTMLInputElement>(
+    `input[aria-label="${label}"]`,
+  );
+  if (!found) throw new Error(`no field ${label}`);
+  return found;
+}
+
+async function type(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function click(label: string) {
+  await act(async () => button(label).click());
 }
 
 function buttonLabels(): string[] {
@@ -152,19 +181,47 @@ describe("AlarmCard, frame 2 state A (level 1, idle)", () => {
     expect(button("Answer").disabled).toBe(true);
   });
 
-  it("aims every act at the stalled agent", async () => {
-    // Defect: a level-1 act lands on someone other than the stalled agent.
+  it("aims every act at the stalled agent, with the alarm's id", async () => {
+    // Defect: a level-1 act lands on someone other than the stalled agent, or loses its alarm.
     const onAct = vi.fn();
     await render({ view: IDLE, onAct });
-    for (const label of ["Read", "Steer", "Nudge", "Dismiss"]) {
-      await act(async () => button(label).click());
-    }
+    await click("Read");
+    await click("Nudge");
+    await click("Steer");
+    await type(field("Steer PR S1 builder"), "Run the tests again");
+    await click("Send");
+    await click("Dismiss");
+    await type(field("Reason to dismiss"), "It is waiting on CI");
+    await click("Send");
+    const on = { kind: "alarm", alarmId: "al_7Q2", target: BUILDER };
     expect(onAct.mock.calls).toEqual([
-      ["read", BUILDER],
-      ["steer", BUILDER],
-      ["nudge", BUILDER],
-      ["dismiss", BUILDER],
+      [{ ...on, act: "read" }],
+      [{ ...on, act: "nudge" }],
+      [{ ...on, act: "steer", text: "Run the tests again" }],
+      [{ ...on, act: "dismiss", text: "It is waiting on CI" }],
     ]);
+  });
+
+  it("opens a one-line Steer box and a Dismiss reason, sending nothing empty", async () => {
+    // Defect: Steer or Dismiss fire at once with no text for alarms.steer --text or alarms.dismiss --reason.
+    const onAct = vi.fn();
+    await render({ view: IDLE, onAct });
+    await click("Steer");
+    expect(button("Steer").getAttribute("aria-expanded")).toBe("true");
+    expect(text()).toContain("Steer PR S1 builder:");
+    expect(button("Send").disabled).toBe(true);
+    await type(field("Steer PR S1 builder"), "   ");
+    expect(button("Send").disabled).toBe(true);
+
+    await click("Dismiss");
+    expect(text()).not.toContain("Steer PR S1 builder:");
+    expect(text()).toContain("Reason to dismiss:");
+    await act(async () =>
+      field("Reason to dismiss").form!.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(onAct).not.toHaveBeenCalled();
   });
 
   it("swaps the countdown for the act once someone acted", async () => {
@@ -199,16 +256,69 @@ describe("AlarmCard, frame 2 state B (level 1, dialog)", () => {
   });
 
   it("opens the dialog's own options under Answer and sends the one picked", async () => {
-    // Defect: Answer shows no options, or sends a different one than clicked.
-    const onAnswer = vi.fn();
-    await render({ view: DIALOG, onAnswer });
+    // Defect: Answer shows no options, sends a different one than clicked, or loses its alarm.
+    const onAct = vi.fn();
+    await render({ view: DIALOG, onAct });
     expect(button("Answer").disabled).toBe(false);
+    expect(button("Answer").getAttribute("aria-expanded")).toBe("false");
     expect(text()).not.toContain("Answer for PR S1 reviewer:");
 
-    await act(async () => button("Answer").click());
+    await click("Answer");
+    // Frame 2 B fills the open Answer button.
+    expect(button("Answer").getAttribute("aria-expanded")).toBe("true");
+    expect(button("Answer").className).toContain("aria-expanded:bg-selection");
     expect(text()).toContain("Answer for PR S1 reviewer:");
-    await act(async () => button("Deny").click());
-    expect(onAnswer).toHaveBeenCalledWith("Deny");
+    await click("Deny");
+    expect(onAct).toHaveBeenCalledWith({
+      kind: "alarm",
+      alarmId: "al_8R3",
+      act: "answer",
+      target: DIALOG.stalled,
+      answer: { kind: "option", option: "Deny" },
+    });
+  });
+
+  it("answers a question with no choices in a text box", async () => {
+    // Defect: a free-text question dialog has no way to be answered from the card.
+    const onAct = vi.fn();
+    await render({
+      view: {
+        ...DIALOG,
+        cause: "dialog",
+        dialog: {
+          kind: "question",
+          minutes: 4,
+          text: "Which branch should I rebase on?",
+          options: [],
+        },
+      },
+      onAct,
+    });
+    await click("Answer");
+    await type(field("Answer for PR S1 reviewer"), "tyler/main");
+    await click("Send");
+    expect(onAct).toHaveBeenCalledWith(
+      expect.objectContaining({
+        act: "answer",
+        answer: { kind: "text", text: "tyler/main" },
+      }),
+    );
+  });
+
+  it("starts closed again for the next episode", async () => {
+    // Defect: Answer stays open from the last episode, so one stray click answers an unread dialog.
+    await render({ view: DIALOG });
+    await click("Answer");
+    expect(text()).toContain("Answer for PR S1 reviewer:");
+    await act(async () =>
+      root.render(
+        createElement(AlarmCard, {
+          key: "al_9Z1",
+          view: { ...DIALOG, id: "al_9Z1" },
+        }),
+      ),
+    );
+    expect(text()).not.toContain("Answer for PR S1 reviewer:");
   });
 });
 
@@ -239,14 +349,29 @@ describe("AlarmCard, frame 2 state C (level 2, escalated)", () => {
       "Nudge PR-S1",
       "Dismiss",
     ]);
-    await act(async () => button("Steer PR-S1").click());
-    await act(async () => button("Nudge PR-S1").click());
-    await act(async () => button("Dismiss").click());
-    expect(onAct.mock.calls).toEqual([
-      ["steer", LEAD],
+    await click("Nudge PR-S1");
+    await click("Steer PR-S1");
+    await type(field("Steer PR-S1"), "Read your worker's alarm");
+    await click("Send");
+    expect(
+      onAct.mock.calls.map(([event]) => [event.act, event.target]),
+    ).toEqual([
       ["nudge", LEAD],
-      ["dismiss", LEAD],
+      ["steer", LEAD],
     ]);
+  });
+
+  it("names the lead in the acted line, since the act landed on it", async () => {
+    // Defect: "nudged PR S1 builder" when the Mono nudged the lead.
+    await render({
+      view: {
+        ...ESCALATED,
+        acted: { how: "nudge", by: "Fork Orchestrator", at: "14:36" },
+      },
+    });
+    expect(text()).toContain(
+      "NudgedFork Orchestrator nudged PR-S1 at 14:36 · escalation stopped",
+    );
   });
 });
 
@@ -276,9 +401,22 @@ describe("AlarmCard, frame 4 (Tyler's landing)", () => {
       "Dismiss",
       "Open PR-S1",
     ]);
-    await act(async () => button("Steer").click());
-    await act(async () => button("Open PR-S1").click());
-    expect(onAct).toHaveBeenCalledWith("steer", BUILDER);
+    await click("Nudge");
+    await click("Open PR-S1");
+    expect(onAct).toHaveBeenCalledWith({
+      kind: "alarm",
+      alarmId: "al_7Q2",
+      act: "nudge",
+      target: BUILDER,
+    });
     expect(onOpenLead).toHaveBeenCalledWith(LEAD);
+  });
+
+  it("shows no Told row when nobody was told before Tyler", async () => {
+    // Defect: a session Tyler started lands with an empty "Told, no act" row.
+    await render({ view: { ...LANDING, level: 1, sends: [] } });
+    expect(text()).not.toContain("Told");
+    expect(text()).toContain("Alarm from the app · to you");
+    expect(text()).not.toContain("level 1");
   });
 });

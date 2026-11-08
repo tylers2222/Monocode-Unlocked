@@ -57,6 +57,7 @@ import {
 } from "../model/draftCache";
 import type { ComposerIntent } from "./ComposerIntentBar";
 import type { UserQuestionPrompt } from "../model/userQuestion";
+import type { TylerLandingView } from "../../alarms/model/alarmViews";
 
 function renderAction(
   busy: boolean,
@@ -2497,31 +2498,30 @@ describe("Composer alarm landing", () => {
       ),
     );
 
+  const landing = (id: string): TylerLandingView => ({
+    id,
+    cause: "dialog",
+    stalled: { name: "PR S1 builder", actor: "session:9f3c", role: "worker" },
+    stalledSince: "14:05",
+    minutes: 60,
+    openWork: [],
+    sends: [],
+    dialog: {
+      kind: "permission",
+      minutes: 60,
+      text: 'Allow Bash "git push"?',
+      options: ["Allow", "Deny"],
+    },
+    level: 4,
+    audience: "tyler",
+  });
+
   it("docks the alarm above the input only when it has one", async () => {
     // Defect: the landing card shows before row U2 passes an alarm, or not at all.
     await render({});
     expect(container.querySelector("[data-alarm]")).toBeNull();
 
-    await render({
-      alarm: {
-        view: {
-          id: "al_7Q2",
-          cause: "idle_open_work",
-          stalled: {
-            name: "PR S1 builder",
-            actor: "session:9f3c",
-            role: "worker",
-          },
-          stalledSince: "14:05",
-          minutes: 60,
-          openWork: [],
-          sends: [],
-          level: 4,
-          audience: "tyler",
-          next: { kind: "last" },
-        },
-      },
-    });
+    await render({ alarm: { view: landing("al_7Q2") } });
     const card = container.querySelector("[data-alarm]");
     expect(card?.getAttribute("data-alarm")).toBe("al_7Q2");
     expect(
@@ -2529,5 +2529,20 @@ describe("Composer alarm landing", () => {
         container.querySelector("textarea, [contenteditable]")!,
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("closes Answer when the next episode docks in its place", async () => {
+    // Defect: the next dialog docks with Allow / Deny already open, so one stray click answers it unread.
+    await render({ alarm: { view: landing("al_7Q2") } });
+    const answer = () =>
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Answer",
+      )!;
+    await act(async () => answer().click());
+    expect(container.textContent).toContain("Answer for PR S1 builder:");
+
+    await render({ alarm: { view: landing("al_8X1") } });
+    expect(container.textContent).not.toContain("Answer for PR S1 builder:");
+    expect(answer().getAttribute("aria-expanded")).toBe("false");
   });
 });

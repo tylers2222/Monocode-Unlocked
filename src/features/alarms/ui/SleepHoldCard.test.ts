@@ -86,15 +86,28 @@ describe("SleepHoldCard, frame 3 held", () => {
     expect(text()).toContain("Reason(none given)");
   });
 
-  it("answers the hold by its id", async () => {
+  it("answers the hold by its id and its tool call", async () => {
     // Defect: Allow or Deny answers some other hold, or nothing.
-    const onAllow = vi.fn();
-    const onDeny = vi.fn();
-    await render({ view: HELD, onAllow, onDeny });
+    const onAct = vi.fn();
+    await render({ view: HELD, onAct });
     await act(async () => button("Allow")!.click());
     await act(async () => button("Deny")!.click());
-    expect(onAllow).toHaveBeenCalledWith("sh_K1");
-    expect(onDeny).toHaveBeenCalledWith("sh_K1");
+    const hold = {
+      kind: "hold",
+      holdId: "sh_K1",
+      toolUseId: "toolu_912",
+      target: HELD.agent,
+    };
+    expect(onAct.mock.calls).toEqual([
+      [{ ...hold, act: "allow" }],
+      [{ ...hold, act: "deny" }],
+    ]);
+  });
+
+  it("words the answer window from the hold, not a fixed 2 min", async () => {
+    // Defect: the card says 2 min while the hold waits some other time.
+    await render({ view: { ...HELD, windowMs: 180_000 } });
+    expect(text()).toContain("No answer in 3 min = refused.");
   });
 });
 

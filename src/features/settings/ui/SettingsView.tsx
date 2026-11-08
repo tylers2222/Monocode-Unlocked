@@ -466,7 +466,7 @@ import {
 } from "../../source-control/model/worktrees";
 import type { Session } from "../../sessions/model/session";
 import {
-  STALL_MINUTE_PRESETS,
+  stallMinuteChoices,
   stallMinutesLabel,
   type AlarmSettingsView,
 } from "../../alarms/model/alarmViews";
@@ -4736,10 +4736,12 @@ function AlarmsPage({ initial }: { initial: AlarmSettingsView }) {
           <Select
             label="Stall after"
             value={String(settings.stallMinutes)}
-            options={STALL_MINUTE_PRESETS.map((minutes) => ({
-              value: String(minutes),
-              label: stallMinutesLabel(minutes),
-            }))}
+            options={stallMinuteChoices(settings.stallMinutes).map(
+              (minutes) => ({
+                value: String(minutes),
+                label: stallMinutesLabel(minutes),
+              }),
+            )}
             onChange={(value) => set({ stallMinutes: Number(value) })}
           />
         </Row>
@@ -4782,20 +4784,27 @@ function AlarmsPage({ initial }: { initial: AlarmSettingsView }) {
             onChange={(holdTylerSleeps) => set({ holdTylerSleeps })}
           />
         </Row>
-        <Row
-          label={<span className="opacity-60">Skip short sleeps</span>}
-          description={
-            <span className="opacity-60">
-              {`Let a sleep under ${settings.shortSleepSkipSeconds} s run without asking. A sleep in a loop, or repeated in one command, always asks, and waits with no bound never skip.`}
-            </span>
-          }
-        >
-          <span className="rounded-md border border-content/10 bg-content/5 px-2 py-1 text-[12px] text-content opacity-40">
-            {settings.shortSleepSkipSeconds} s
-          </span>
-        </Row>
+        <ShortSleepRow seconds={settings.shortSleepSkipSeconds} />
       </Group>
     </>
+  );
+}
+
+/** Closed by Tyler (card #87), so a fact on the page, not a setting. */
+function ShortSleepRow({ seconds }: { seconds: number }) {
+  return (
+    <Row
+      label={<span className="opacity-60">Skip short sleeps</span>}
+      description={
+        <span className="opacity-60">
+          {`Let a sleep under ${seconds} s run without asking. A sleep in a loop, or repeated in one command, always asks, and waits with no bound never skip.`}
+        </span>
+      }
+    >
+      <span className="rounded-md border border-content/10 bg-content/5 px-2 py-1 text-[12px] text-content opacity-40">
+        {seconds} s
+      </span>
+    </Row>
   );
 }
 

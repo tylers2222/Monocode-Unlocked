@@ -5,6 +5,7 @@ import {
   causeLine,
   lastActivityText,
   stallChipLabel,
+  statusWord,
   toldLine,
   type StallMarkerView,
 } from "../model/alarmViews";
@@ -53,29 +54,35 @@ function StallHover({
   const tooltipId = useId();
   const [open, setOpen] = useState(false);
   return (
-    <span
-      ref={anchor}
-      role="status"
-      aria-label={stallChipLabel(marker)}
-      aria-describedby={open ? tooltipId : undefined}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      className="inline-flex min-w-0"
-    >
-      {children}
-      {open ? (
-        <Popover
-          anchor={anchor}
-          side="right"
-          width={300}
-          role="tooltip"
-          id={tooltipId}
-          className="pointer-events-none px-3 py-2.5"
-        >
-          <StallDetails marker={marker} />
-        </Popover>
-      ) : null}
-    </span>
+    <>
+      <span
+        ref={anchor}
+        role="img"
+        aria-label={stallChipLabel(marker)}
+        aria-describedby={open ? tooltipId : undefined}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        className="inline-flex min-w-0"
+      >
+        {children}
+        {open ? (
+          <Popover
+            anchor={anchor}
+            side="right"
+            width={300}
+            role="tooltip"
+            id={tooltipId}
+            className="pointer-events-none px-3 py-2.5"
+          >
+            <StallDetails marker={marker} />
+          </Popover>
+        ) : null}
+      </span>
+      {/* Speaks when the stall starts or its cause changes, not at each minute. */}
+      <span role="status" className="sr-only">
+        {statusWord(marker.cause)}
+      </span>
+    </>
   );
 }
 
@@ -88,7 +95,7 @@ export function StallDetails({ marker }: { marker: StallMarkerView }) {
       "Last activity",
       marker.lastActivity ? lastActivityText(marker.lastActivity) : "none",
     ],
-    ["Told", toldLine(marker.sends)],
+    ["Told", toldLine(marker)],
   ];
   return (
     <div className="flex flex-col gap-1 text-[12px] leading-[18px] text-content/70">

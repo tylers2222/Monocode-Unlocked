@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSessionTitle } from "../../features/sessions/model/session";
 import { formatReminderTime } from "../../features/sessions/model/sessionReminders";
 import { Sidebar } from "./Sidebar";
+import { hoverStallMarker } from "../../features/alarms/ui/stallHoverProbe";
 import { saveProjectRailOrder } from "../../features/projects/model/recents";
 import {
   loadSessionFolders,
@@ -2596,32 +2597,59 @@ describe("sidebar stall alarms", () => {
     expect(menuItem("Stall alarm")).toBeUndefined();
   });
 
-  it("swaps the row's status words for the stall marker", () => {
-    // Defect: a stalled session still reads Working or its time, so nobody notices.
+  it("swaps the row's status words for the stall marker, whose card opens on hover", async () => {
+    // Defect: a stalled session still reads Working or its time, or its marker hides before the pointer reaches it.
+    props.onArchiveSession = vi.fn();
     props.sessionStalls = new Map([["session-1", stall]]);
     act(() => render());
     expect(
       card().querySelector('[aria-label="Stalled 17m"]')?.textContent,
     ).toBe("Stalled 17m");
     expect(card().textContent).not.toContain("Working...");
+    expect(await hoverStallMarker(card(), "Stalled 17m")).toEqual({
+      card: expect.stringContaining(
+        "Original conversation is stalled since 14:05",
+      ),
+    });
   });
 
-  it("counts the stalled sessions a lead started on its row", () => {
-    // Defect: a lead whose workers stalled reads as fine while its rail is folded.
+  function stalledLead() {
     props.inset = true;
     props.busySessionIds = new Set();
+    props.onArchiveSession = vi.fn();
     props.sessions = [
       props.sessions[0],
       { ...props.sessions[0], id: "app-session-1-builder" },
       { ...props.sessions[0], id: "app-session-1-reviewer" },
     ];
     props.sessionStalls = new Map([["app-session-1-builder", stall]]);
+  }
+
+  it("counts the stalled sessions a lead started, and their markers open on hover", async () => {
+    // Defect: a lead whose workers stalled reads as fine, or the dense row hides the marker on hover.
+    stalledLead();
+    act(() => render());
+    expect(card().textContent).toContain("1 stalled");
+    const builder = container.querySelector<HTMLElement>(
+      '[data-session-card="app-session-1-builder"]',
+    )!;
+    expect(builder.textContent).toContain("17m");
+    expect(await hoverStallMarker(builder, "Stalled 17m")).toEqual({
+      card: expect.stringContaining(
+        "Original conversation is stalled since 14:05",
+      ),
+    });
+  });
+
+  it("keeps a lead's own Needs approval beside its workers' stall count", () => {
+    // Defect: "1 stalled" hides that the lead itself waits on Tyler's approval.
+    stalledLead();
+    props.approvalSessionIds = new Set(["session-1"]);
     act(() => render());
     expect(card().textContent).toContain("1 stalled");
     expect(
-      container.querySelector('[data-session-card="app-session-1-builder"]')
-        ?.textContent,
-    ).toContain("17m");
+      card().querySelector('[aria-label="Needs approval"]'),
+    ).not.toBeNull();
   });
 
   it("sets the session's stall time from Stall alarm in its menu", () => {

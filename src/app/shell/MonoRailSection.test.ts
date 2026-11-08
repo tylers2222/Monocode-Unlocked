@@ -9,6 +9,7 @@ import {
   saveMonoGiga,
 } from "../../features/monos/model/mono";
 import { loadMonosEnabled } from "../../features/settings/model/settings";
+import { hoverStallMarker } from "../../features/alarms/ui/stallHoverProbe";
 import { MonoRailSection } from "./MonoRailSection";
 
 let root: Root;
@@ -129,11 +130,11 @@ it("shows no Giga Monos section while there are none", () => {
   ).not.toBeNull();
 });
 
-it("marks a stalled mono with its minutes only when it has an episode", () => {
-  // Defect: the rail marker shows before row U2 passes data, or hides a stalled Mono.
+it("marks a stalled mono with its minutes only when it has an episode", async () => {
+  // Defect: the rail marker shows before row U2 passes data, hides a stalled Mono, or hides on hover so its card never opens.
   const mono = createMono();
   render();
-  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Stalled 22m"]')).toBeNull();
 
   render({
     stalls: new Map([
@@ -155,6 +156,14 @@ it("marks a stalled mono with its minutes only when it has an episode", () => {
       ],
     ]),
   });
-  expect(container.querySelector('[role="status"]')?.textContent).toBe("22m");
-  expect(container.querySelector('[aria-label*="Stalled 22m"]')).not.toBeNull();
+  expect(
+    container.querySelector('[role="img"][aria-label="Stalled 22m"]')
+      ?.textContent,
+  ).toBe("22m");
+  expect(
+    container.querySelector('button[aria-label*="Stalled 22m"]'),
+  ).not.toBeNull();
+  expect(await hoverStallMarker(container, "Stalled 22m")).toEqual({
+    card: expect.stringContaining("Mono Reviewer is stalled since 13:58"),
+  });
 });

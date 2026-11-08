@@ -83,6 +83,8 @@ import {
 } from "../../monos/model/monoMessages";
 import { SentDecision } from "../../approvals/ui/BoardDecisionLine";
 import { SentNotice } from "./SentNotice";
+import { ApprovalButton } from "../../../shared/ui/ApprovalButton";
+import { monoAlarmId } from "../../alarms/model/alarmViews";
 import {
   DeliveredAlarm,
   ToolSleepHold,
@@ -2431,7 +2433,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onEditLastTurn?: () => void;
   editing?: boolean;
 }) {
-  const alarm = useDeliveredAlarm(block.role === "user" ? block.text : "");
+  const alarm = useDeliveredAlarm(
+    block.role === "user" ? monoAlarmId(block) : undefined,
+  );
   if (alarm) {
     return (
       <div className={`pt-1.5 pb-5 ${embedded ? "" : "px-4"}`}>
@@ -4832,6 +4836,7 @@ function MonoCodeCallRow({
         </pre>
       ) : null}
       <ApprovalControls block={block} onApproval={onApproval} />
+      <ToolSleepHold callId={block.tool?.callId} />
     </div>
   );
 }
@@ -5209,20 +5214,18 @@ function ApprovalControls({
   if (!approval || approval.decided || !onApproval) return null;
   return (
     <div className="mt-1.5 flex gap-2">
-      <button
-        type="button"
-        className="rounded-md bg-content px-2.5 py-0.5 text-[11px] hover:bg-content/80     text-background-base"
+      <ApprovalButton
+        primary
         onClick={() => onApproval(approval.requestId, "allow")}
       >
         Allow
-      </button>
-      <button
-        type="button"
-        className="rounded-md bg-content/10 px-2.5 py-0.5 text-[11px] text-content/70 hover:bg-content/20"
+      </ApprovalButton>
+      <ApprovalButton
+        primary={false}
         onClick={() => onApproval(approval.requestId, "deny")}
       >
         Deny
-      </button>
+      </ApprovalButton>
     </div>
   );
 }

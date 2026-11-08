@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StallMarkerView } from "../model/alarmViews";
 import { StallChip, StallDetails, StallRailMarker } from "./StallMarker";
+import { hoverStallMarker } from "./stallHoverProbe";
 
 /** Frame 1: PR S1 builder, stalled 17 min. */
 const STALLED: StallMarkerView = {
@@ -25,6 +26,7 @@ const STALLED: StallMarkerView = {
 
 const DIALOG: StallMarkerView = {
   ...STALLED,
+  id: "al_8R3",
   cause: "dialog",
   stalled: { name: "PR S1 reviewer", actor: "session:7c21", role: "worker" },
   minutes: 4,
@@ -47,10 +49,10 @@ describe("stall markers, frame 1", () => {
     // Defect: a dialog wait reads as a plain stall, or the minutes are missing.
     expect(
       text(renderToStaticMarkup(createElement(StallChip, { marker: STALLED }))),
-    ).toBe("Stalled 17m");
+    ).toBe("Stalled 17mStalled");
     expect(
       text(renderToStaticMarkup(createElement(StallChip, { marker: DIALOG }))),
-    ).toBe("Waiting on dialog 4m");
+    ).toBe("Waiting on dialog 4mWaiting on dialog");
   });
 
   it("shows only the minutes on the Mono rail, named in full for screen readers", () => {
@@ -58,7 +60,7 @@ describe("stall markers, frame 1", () => {
     const markup = renderToStaticMarkup(
       createElement(StallRailMarker, { marker: { ...STALLED, minutes: 22 } }),
     );
-    expect(text(markup)).toBe("22m");
+    expect(text(markup)).toBe("22mStalled");
     expect(markup).toContain('aria-label="Stalled 22m"');
   });
 
@@ -80,6 +82,22 @@ describe("stall markers, frame 1", () => {
         renderToStaticMarkup(createElement(StallDetails, { marker: DIALOG })),
       ),
     ).toContain("CausePermission dialog open 4 min");
+  });
+
+  it("says who acted once someone did, not no act yet", async () => {
+    // Defect: the hover still says "no act yet" after the lead nudged.
+    expect(
+      text(
+        renderToStaticMarkup(
+          createElement(StallDetails, {
+            marker: {
+              ...STALLED,
+              acted: { how: "nudge", by: "PR-S1", at: "14:21" },
+            },
+          }),
+        ),
+      ),
+    ).toContain("ToldPR-S1 at 14:20 · nudged by PR-S1 at 14:21");
   });
 });
 
@@ -105,18 +123,13 @@ describe("stall marker hover", () => {
     await act(async () =>
       root.render(createElement(StallChip, { marker: STALLED })),
     );
-    const chip = container.querySelector<HTMLElement>('[role="status"]')!;
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(await hoverStallMarker(container, "Stalled 17m")).toEqual({
+      card: expect.stringContaining("PR S1 builder is stalled since 14:05"),
+    });
 
     await act(async () =>
-      chip.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })),
-    );
-    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(
-      "PR S1 builder is stalled since 14:05",
-    );
-
-    await act(async () =>
-      chip.dispatchEvent(
+      container.querySelector('[aria-label="Stalled 17m"]')!.dispatchEvent(
         new MouseEvent("mouseout", {
           bubbles: true,
           relatedTarget: document.body,
@@ -124,5 +137,29 @@ describe("stall marker hover", () => {
       ),
     );
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  it("speaks when the stall starts or changes cause, not at every minute", async () => {
+    // Defect: a live region holding the minutes re-announces every stalled row each minute.
+    const spoken = () =>
+      Array.from(
+        container.querySelectorAll('[role="status"], [aria-live]'),
+        (node) => node.textContent,
+      );
+    await act(async () =>
+      root.render(createElement(StallRailMarker, { marker: STALLED })),
+    );
+    expect(spoken()).toEqual(["Stalled"]);
+    await act(async () =>
+      root.render(
+        createElement(StallRailMarker, { marker: { ...STALLED, minutes: 18 } }),
+      ),
+    );
+    expect(container.textContent).toContain("18m");
+    expect(spoken()).toEqual(["Stalled"]);
+    await act(async () =>
+      root.render(createElement(StallRailMarker, { marker: DIALOG })),
+    );
+    expect(spoken()).toEqual(["Waiting on dialog"]);
   });
 });

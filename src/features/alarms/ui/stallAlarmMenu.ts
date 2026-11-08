@@ -1,6 +1,6 @@
 import type { ExplorerMenuItem } from "../../files/ui/ExplorerMenu";
 import {
-  STALL_MINUTE_PRESETS,
+  stallMinuteChoices,
   stallMinutesLabel,
   type StallMinutesView,
 } from "../model/alarmViews";
@@ -22,14 +22,12 @@ export function stallAlarmMenuItem(view: StallMinutesView): ExplorerMenuItem {
         label: `Default (${stallMinutesLabel(view.defaultMinutes)})`,
         checked: view.minutes == null,
       },
-      // A lead's alarms.set can pick a value between the presets.
-      ...[...new Set([...STALL_MINUTE_PRESETS, view.minutes ?? 0])]
+      ...stallMinuteChoices(view.minutes)
+        // Default already names the default, unless it was set on purpose.
         .filter(
           (minutes) =>
-            minutes > 0 &&
-            (minutes !== view.defaultMinutes || minutes === view.minutes),
+            minutes !== view.defaultMinutes || minutes === view.minutes,
         )
-        .sort((a, b) => a - b)
         .map((minutes) => ({
           kind: "item" as const,
           id: `${PICK}${minutes}`,
@@ -48,5 +46,7 @@ export function stallAlarmMenuItem(view: StallMinutesView): ExplorerMenuItem {
 export function stallAlarmPick(id: string): number | null | undefined {
   if (!id.startsWith(PICK)) return undefined;
   const value = id.slice(PICK.length);
-  return value === "default" ? null : Number(value);
+  if (value === "default") return null;
+  const minutes = Number(value);
+  return Number.isInteger(minutes) && minutes > 0 ? minutes : undefined;
 }

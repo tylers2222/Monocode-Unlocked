@@ -1,34 +1,37 @@
 import { useState, type ReactNode } from "react";
+import { ApprovalButton } from "../../../shared/ui/ApprovalButton";
 import { Bell, Check, ChevronDown, Clock } from "../../../shared/ui/icons";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import {
   actedLine,
   agentLabel,
+  alarmTarget,
   countdownText,
   dialogLine,
   roleWord,
   stalledSpan,
   statusWord,
-  type AlarmActKind,
+  type AlarmActed,
+  type AlarmActEvent,
   type AlarmAgent,
   type AlarmCardView,
+  type AlarmDialog,
   type AlarmEscalation,
 } from "../model/alarmViews";
-import {
-  AlarmCardFrame,
-  AlarmChip,
-  AlarmFacts,
-  ApprovalButton,
-} from "./alarmParts";
+import { AlarmCardFrame, AlarmChip, AlarmFacts } from "./alarmParts";
 
 export type AlarmCardActions = {
-  /** `alarms.<act>`; `target` is who it lands on (the lead at level 2). */
-  onAct?: (act: Exclude<AlarmActKind, "answer">, target: AlarmAgent) => void;
-  /** One of the dialog's own options (`alarms.answer`). */
-  onAnswer?: (option: string) => void;
+  /** Every act, with the alarm id it is about (design section 7). */
+  onAct?: (event: AlarmActEvent) => void;
   /** The landing's Open button: the lead whose turn it was. */
   onOpenLead?: (lead: AlarmAgent) => void;
 };
+
+/** The acts that open a row under the card before they send. */
+type OpenAct = "answer" | "steer" | "dismiss";
+
+type CardActBody<E = Extract<AlarmActEvent, { kind: "alarm" }>> =
+  E extends unknown ? Omit<E, "kind" | "alarmId"> : never;
 
 /**
  * A delivered `<mono_alarm>` (frame 2), or Tyler's landing above the stalled
@@ -37,12 +40,15 @@ export type AlarmCardActions = {
 export function AlarmCard({
   view,
   onAct,
-  onAnswer,
   onOpenLead,
 }: AlarmCardActions & { view: AlarmCardView }) {
-  const [answering, setAnswering] = useState(false);
-  // Tyler sits above every level, so his acts land on the stalled agent.
-  const escalation = view.audience === "tyler" ? undefined : view.escalation;
+  const [open, setOpen] = useState<OpenAct | null>(null);
+  const escalation =
+    view.audience === "provisioner" ? view.escalation : undefined;
+  const send = (body: CardActBody) => {
+    setOpen(null);
+    onAct?.({ ...body, kind: "alarm", alarmId: view.id });
+  };
   return (
     <div className="flex flex-col gap-1.5" data-alarm={view.id}>
       <AlarmCardFrame label={`Alarm ${view.id}`}>
@@ -51,53 +57,38 @@ export function AlarmCard({
         <AlarmFacts labelWidth="w-[92px]" rows={alarmFacts(view, escalation)} />
         <AlarmActs
           view={view}
-          escalation={escalation}
-          answering={answering}
-          onToggleAnswer={() => setAnswering((open) => !open)}
-          onAct={onAct}
+          open={open}
+          onToggle={(act) =>
+            setOpen((current) => (current === act ? null : act))
+          }
+          onSend={send}
           onOpenLead={onOpenLead}
         />
-        {answering && view.dialog ? (
-          <div className="flex items-center gap-2 pt-1.5 pl-0.5 text-[12px] text-content/55">
-            <span>Answer for {view.stalled.name}:</span>
-            {view.dialog.options.map((option, index) => (
-              <ApprovalButton
-                key={option}
-                primary={index === 0}
-                onClick={() => onAnswer?.(option)}
-              >
-                {option}
-              </ApprovalButton>
-            ))}
-          </div>
-        ) : null}
+        <OpenActRow view={view} open={open} onSend={send} />
       </AlarmCardFrame>
-      {view.acted ? <ActedLine view={view} /> : null}
+      {view.acted ? (
+        <ActedLine acted={view.acted} target={alarmTarget(view)} />
+      ) : null}
     </div>
   );
 }
 
 function AlarmHeader({ view }: { view: AlarmCardView }) {
-  const where =
-    view.audience === "tyler"
-      ? " · to you"
-      : view.level < 2
-        ? ` · level ${view.level}`
-        : "";
+  const tyler = view.audience === "tyler";
+  const escalated = tyler ? view.level >= 2 : !!view.escalation;
+  const where = tyler ? " · to you" : escalated ? "" : " · level 1";
   return (
     <div className="flex items-center gap-1.5 text-[11px] text-content/45">
       <Bell className="size-[13px] shrink-0 text-amber-400" />
       <span>Alarm from the app{where}</span>
-      {view.level >= 2 ? (
-        <AlarmChip tone="red">level {view.level}</AlarmChip>
-      ) : null}
+      {escalated ? <AlarmChip tone="red">level {view.level}</AlarmChip> : null}
       {/* Someone acted, so it goes nowhere; the acted line says so. */}
       {view.acted ? null : (
         <span className="ml-auto flex items-center gap-1 tabular-nums">
-          {view.next.kind === "last" ? null : (
+          {tyler ? null : (
             <Clock className="size-[11px] shrink-0" strokeWidth={2} />
           )}
-          {countdownText(view.next)}
+          {countdownText(view)}
         </span>
       )}
     </div>
@@ -129,10 +120,23 @@ function AlarmSentence({
   );
 }
 
+type Fact = { label: string; value: ReactNode };
+
+/** Who was told; no row at all when nobody was. */
+function toldFact(
+  label: string,
+  sends: AlarmCardView["sends"],
+  format: (send: AlarmCardView["sends"][number]) => string,
+): Fact[] {
+  return sends.length > 0
+    ? [{ label, value: sends.map(format).join(" · ") }]
+    : [];
+}
+
 function alarmFacts(
   view: AlarmCardView,
   escalation: AlarmEscalation | undefined,
-): { label: string; value: ReactNode }[] {
+): Fact[] {
   const openWork = {
     label: "Open work",
     value: view.openWork.join("; ") || "none",
@@ -144,14 +148,11 @@ function alarmFacts(
         value: `${agentLabel(view.stalled)}, stalled ${stalledSpan(view)}`,
       },
       openWork,
-      {
-        label: "Told",
-        value: view.sends
-          .map(
-            (send) => `${send.recipient} at ${send.at} (level ${send.level})`,
-          )
-          .join(" · "),
-      },
+      ...toldFact(
+        "Told",
+        view.sends,
+        (send) => `${send.recipient} at ${send.at} (level ${send.level})`,
+      ),
     ];
   const activity = view.lastActivity;
   return [
@@ -168,64 +169,70 @@ function alarmFacts(
         "none"
       ),
     },
-    view.audience === "tyler"
-      ? {
-          label: "Told, no act",
-          value: view.sends
-            .map((send) => `${send.recipient} ${send.at}`)
-            .join(" · "),
-        }
-      : { label: "Dialog", value: dialogLine(view.dialog) },
+    ...(view.audience === "tyler"
+      ? toldFact(
+          view.acted ? "Told" : "Told, no act",
+          view.sends,
+          (send) => `${send.recipient} ${send.at}`,
+        )
+      : [{ label: "Dialog", value: dialogLine(view.dialog) }]),
   ];
 }
 
 function AlarmActs({
   view,
-  escalation,
-  answering,
-  onToggleAnswer,
-  onAct,
+  open,
+  onToggle,
+  onSend,
   onOpenLead,
-}: Pick<AlarmCardActions, "onAct" | "onOpenLead"> & {
+}: Pick<AlarmCardActions, "onOpenLead"> & {
   view: AlarmCardView;
-  escalation?: AlarmEscalation;
-  answering: boolean;
-  onToggleAnswer: () => void;
+  open: OpenAct | null;
+  onToggle: (act: OpenAct) => void;
+  onSend: (body: CardActBody) => void;
 }) {
-  const target = escalation?.target ?? view.stalled;
-  const named = escalation ? ` ${escalation.target.name}` : "";
+  const target = alarmTarget(view);
+  const named = target === view.stalled ? "" : ` ${target.name}`;
   // The landing is the read, so it drops Read and offers the lead instead.
-  const landing = view.audience === "tyler";
+  const lead = view.audience === "tyler" ? view.lead : undefined;
   return (
     <div className="mt-1 flex items-center gap-1.5">
-      {landing ? null : (
-        <SecondaryButton onClick={() => onAct?.("read", view.stalled)}>
+      {view.audience === "tyler" ? null : (
+        <SecondaryButton
+          onClick={() => onSend({ act: "read", target: view.stalled })}
+        >
           Read
         </SecondaryButton>
       )}
       <SecondaryButton
         disabled={!view.dialog}
-        aria-expanded={view.dialog ? answering : undefined}
-        onClick={onToggleAnswer}
+        aria-expanded={view.dialog ? open === "answer" : undefined}
+        onClick={() => onToggle("answer")}
       >
         Answer
         {view.dialog ? (
           <ChevronDown className="size-[11px]" strokeWidth={2} />
         ) : null}
       </SecondaryButton>
-      <SecondaryButton onClick={() => onAct?.("steer", target)}>
+      <SecondaryButton
+        aria-expanded={open === "steer"}
+        onClick={() => onToggle("steer")}
+      >
         Steer{named}
       </SecondaryButton>
-      <SecondaryButton onClick={() => onAct?.("nudge", target)}>
+      <SecondaryButton onClick={() => onSend({ act: "nudge", target })}>
         Nudge{named}
       </SecondaryButton>
-      <SecondaryButton onClick={() => onAct?.("dismiss", target)}>
+      <SecondaryButton
+        aria-expanded={open === "dismiss"}
+        onClick={() => onToggle("dismiss")}
+      >
         Dismiss
       </SecondaryButton>
-      {landing && view.lead ? (
+      {lead ? (
         <span className="ml-auto">
-          <SecondaryButton onClick={() => onOpenLead?.(view.lead!)}>
-            Open {view.lead.name}
+          <SecondaryButton onClick={() => onOpenLead?.(lead)}>
+            Open {lead.name}
           </SecondaryButton>
         </span>
       ) : null}
@@ -233,15 +240,141 @@ function AlarmActs({
   );
 }
 
-function ActedLine({ view }: { view: AlarmCardView }) {
-  const acted = actedLine(view.acted!, view.stalled);
+/** The row an open act shows under the card: the dialog's answers, or a one-line box. */
+function OpenActRow({
+  view,
+  open,
+  onSend,
+}: {
+  view: AlarmCardView;
+  open: OpenAct | null;
+  onSend: (body: CardActBody) => void;
+}) {
+  const target = alarmTarget(view);
+  if (open === "answer" && view.dialog)
+    return (
+      <AnswerRow
+        agent={view.stalled}
+        dialog={view.dialog}
+        onAnswer={(answer) =>
+          onSend({ act: "answer", target: view.stalled, answer })
+        }
+      />
+    );
+  if (open === "steer")
+    return (
+      <TextActRow
+        label={`Steer ${target.name}:`}
+        placeholder="One line, sent into its turn"
+        onSubmit={(text) => onSend({ act: "steer", target, text })}
+      />
+    );
+  if (open === "dismiss")
+    return (
+      <TextActRow
+        label="Reason to dismiss:"
+        placeholder="Why it needs no act"
+        onSubmit={(text) => onSend({ act: "dismiss", target, text })}
+      />
+    );
+  return null;
+}
+
+function AnswerRow({
+  agent,
+  dialog,
+  onAnswer,
+}: {
+  agent: AlarmAgent;
+  dialog: AlarmDialog;
+  onAnswer: (answer: Extract<CardActBody, { act: "answer" }>["answer"]) => void;
+}) {
+  const label = `Answer for ${agent.name}:`;
+  if (dialog.options.length === 0)
+    return (
+      <TextActRow
+        label={label}
+        placeholder="Type your answer"
+        onSubmit={(text) => onAnswer({ kind: "text", text })}
+      />
+    );
+  return (
+    <ActRow label={label}>
+      {dialog.options.map((option, index) => (
+        <ApprovalButton
+          key={option}
+          primary={index === 0}
+          onClick={() => onAnswer({ kind: "option", option })}
+        >
+          {option}
+        </ApprovalButton>
+      ))}
+    </ActRow>
+  );
+}
+
+function ActRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 pt-1.5 pl-0.5 text-[12px] text-content/55">
+      <span className="shrink-0">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function TextActRow({
+  label,
+  placeholder,
+  onSubmit,
+}: {
+  label: string;
+  placeholder: string;
+  onSubmit: (text: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const value = text.trim();
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (value) onSubmit(value);
+      }}
+    >
+      <ActRow label={label}>
+        <input
+          value={text}
+          aria-label={label.replace(/:$/, "")}
+          placeholder={placeholder}
+          onChange={(event) => setText(event.target.value)}
+          className="min-w-0 flex-1 rounded-md border border-content/15 bg-transparent px-2 py-0.5 text-[12px] text-content outline-none placeholder:text-content/35 focus:border-content/30"
+        />
+        <ApprovalButton
+          primary
+          disabled={!value}
+          onClick={() => onSubmit(value)}
+        >
+          Send
+        </ApprovalButton>
+      </ActRow>
+    </form>
+  );
+}
+
+function ActedLine({
+  acted,
+  target,
+}: {
+  acted: AlarmActed;
+  target: AlarmAgent;
+}) {
+  const line = actedLine(acted, target);
   return (
     <div className="flex items-center gap-1.5 text-[11px] text-content/50">
       <AlarmChip tone="gray">
         <Check className="size-2.5" strokeWidth={2.2} />
-        {acted.chip}
+        {line.chip}
       </AlarmChip>
-      <span>{acted.text}</span>
+      <span>{line.text}</span>
     </div>
   );
 }

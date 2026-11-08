@@ -1612,6 +1612,17 @@ describe("Settings > Alarms", () => {
     ]);
   });
 
+  it("shows a stall time set between the presets", async () => {
+    // Defect: 20 min (alarms.set) shows nothing selected, and cannot be picked back once changed.
+    await render("alarms", {
+      alarmSettings: { ...alarmSettings, stallMinutes: 20 },
+    });
+    expect(
+      container.querySelector('button[aria-label="Stall after: 20 min"]')
+        ?.textContent,
+    ).toContain("20 min");
+  });
+
   it("flips a switch on the page without saving it", async () => {
     // Defect: the page writes a setting before alarm_settings exists to hold it.
     await render("alarms", { alarmSettings });

@@ -1951,7 +1951,7 @@ export function Composer({
       {children}
       {alarm ? (
         <div className="px-1.5 pb-1.5">
-          <AlarmCard {...alarm} />
+          <AlarmCard key={alarm.view.id} {...alarm} />
         </div>
       ) : null}
       {usageLimit ? (

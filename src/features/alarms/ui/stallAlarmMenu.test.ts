@@ -39,9 +39,10 @@ describe("Stall alarm session menu, frame 5", () => {
   });
 
   it("reads a pick back as minutes, Default as null, anything else as not ours", () => {
-    // Defect: picking Default stores 0 minutes, or another menu's pick sets the stall time.
+    // Defect: picking Default stores 0 minutes, another menu's pick sets the stall time, or a bad id sets NaN.
     expect(stallAlarmPick("stall-alarm:60")).toBe(60);
     expect(stallAlarmPick("stall-alarm:default")).toBeNull();
     expect(stallAlarmPick("reminder:1h")).toBeUndefined();
+    expect(stallAlarmPick("stall-alarm:soon")).toBeUndefined();
   });
 });

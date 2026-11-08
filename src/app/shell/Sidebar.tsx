@@ -5515,6 +5515,13 @@ export const SessionCard = memo(function SessionCard({
                       <Zap className="size-3" strokeWidth={1.75} />
                     </span>
                   ) : null}
+                  {/* Stall marks stay through hover, so their card can open. */}
+                  {startedStalled > 0 ? (
+                    <span className="text-[11px] tabular-nums text-amber-400">
+                      {startedStalled} stalled
+                    </span>
+                  ) : null}
+                  {stall ? <StallRailMarker marker={stall} /> : null}
                   {onArchive ? (
                     <button
                       type="button"
@@ -5543,13 +5550,7 @@ export const SessionCard = memo(function SessionCard({
                         : ""
                     }`}
                   >
-                    {stall ? (
-                      <StallRailMarker marker={stall} />
-                    ) : startedStalled > 0 ? (
-                      <span className="text-amber-400">
-                        {startedStalled} stalled
-                      </span>
-                    ) : needsApproval ? (
+                    {stall ? null : needsApproval ? (
                       <CircleAlert
                         role="img"
                         aria-label={
@@ -5565,7 +5566,7 @@ export const SessionCard = memo(function SessionCard({
                         className="size-3.5"
                         strokeWidth={1.75}
                       />
-                    ) : (
+                    ) : startedStalled > 0 ? null : (
                       (statusLabel ?? time)
                     )}
                   </span>

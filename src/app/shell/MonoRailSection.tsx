@@ -378,11 +378,8 @@ function MonoRowMarks({
 }) {
   return (
     <>
-      {stall ? (
-        <span className="group-hover:hidden group-has-[button:focus-visible]:hidden">
-          <StallRailMarker marker={stall} />
-        </span>
-      ) : null}
+      {/* Stays through hover, beside the menu button, so its card can open. */}
+      {stall ? <StallRailMarker marker={stall} /> : null}
       {unseen ? (
         <span
           aria-hidden

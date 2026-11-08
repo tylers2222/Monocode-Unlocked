@@ -61,28 +61,3 @@ export function AlarmFacts({
     </dl>
   );
 }
-
-/** The transcript's Allow / Deny approval buttons. */
-export function ApprovalButton({
-  primary,
-  children,
-  onClick,
-}: {
-  primary: boolean;
-  children: ReactNode;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={
-        primary
-          ? "rounded-md bg-content px-2.5 py-0.5 text-[11px] text-background-base hover:bg-content/80"
-          : "rounded-md bg-content/10 px-2.5 py-0.5 text-[11px] text-content/70 hover:bg-content/20"
-      }
-    >
-      {children}
-    </button>
-  );
-}

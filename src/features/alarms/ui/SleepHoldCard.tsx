@@ -1,16 +1,15 @@
+import { ApprovalButton } from "../../../shared/ui/ApprovalButton";
 import { Check, Hourglass } from "../../../shared/ui/icons";
 import {
   agentLabel,
   holdClock,
   holdFraction,
+  holdWindowText,
+  type AlarmActEvent,
+  type SleepHoldDecision,
   type SleepHoldView,
 } from "../model/alarmViews";
-import {
-  AlarmCardFrame,
-  AlarmChip,
-  AlarmFacts,
-  ApprovalButton,
-} from "./alarmParts";
+import { AlarmCardFrame, AlarmChip, AlarmFacts } from "./alarmParts";
 
 /**
  * Frame 3: a held foreground wait under its tool row, waiting for Tyler's OK,
@@ -18,16 +17,28 @@ import {
  */
 export function SleepHoldCard({
   view,
-  onAllow,
-  onDeny,
+  onAct,
 }: {
   view: SleepHoldView;
-  /** `holds.allow`. */
-  onAllow?: (holdId: string) => void;
-  /** `holds.deny`. */
-  onDeny?: (holdId: string) => void;
+  /** `holds.allow` / `holds.deny`, with the hold they answer. */
+  onAct?: (event: AlarmActEvent) => void;
 }) {
-  if (view.decision) return <SleepHoldResult view={view} />;
+  if (view.decision)
+    return (
+      <SleepHoldResult
+        id={view.id}
+        decision={view.decision}
+        answerWindow={holdWindowText(view.windowMs)}
+      />
+    );
+  const answer = (act: "allow" | "deny") =>
+    onAct?.({
+      kind: "hold",
+      holdId: view.id,
+      toolUseId: view.callId,
+      act,
+      target: view.agent,
+    });
   return (
     <div className="mt-1 mb-0.5 ml-5" data-sleep-hold={view.id}>
       <AlarmCardFrame label={`Sleep hold ${view.id}`}>
@@ -38,19 +49,7 @@ export function SleepHoldCard({
             {holdClock(view.remainingMs)}
           </span>
         </div>
-        <div
-          role="progressbar"
-          aria-label="Time left to answer"
-          aria-valuemin={0}
-          aria-valuemax={view.windowMs}
-          aria-valuenow={view.remainingMs}
-          className="h-0.5 overflow-hidden rounded-xs bg-content/8"
-        >
-          <div
-            className="h-full bg-amber-400"
-            style={{ width: `${holdFraction(view) * 100}%` }}
-          />
-        </div>
+        <HoldCountdownBar view={view} />
         <p className="text-[13px] leading-[19px] text-content/85">
           {agentLabel(view.agent)} wants to wait in the foreground.
         </p>
@@ -73,14 +72,14 @@ export function SleepHoldCard({
           ]}
         />
         <div className="mt-0.5 flex items-center gap-2">
-          <ApprovalButton primary onClick={() => onAllow?.(view.id)}>
+          <ApprovalButton primary onClick={() => answer("allow")}>
             Allow
           </ApprovalButton>
-          <ApprovalButton primary={false} onClick={() => onDeny?.(view.id)}>
+          <ApprovalButton primary={false} onClick={() => answer("deny")}>
             Deny
           </ApprovalButton>
           <span className="text-[11px] text-content/45">
-            No answer in 2 min = refused.
+            No answer in {holdWindowText(view.windowMs)} = refused.
           </span>
         </div>
       </AlarmCardFrame>
@@ -88,8 +87,34 @@ export function SleepHoldCard({
   );
 }
 
-function SleepHoldResult({ view }: { view: SleepHoldView }) {
-  const decision = view.decision!;
+/** Frame 3's 2 px amber bar: the share of the answer window left. */
+function HoldCountdownBar({ view }: { view: SleepHoldView }) {
+  return (
+    <div
+      role="progressbar"
+      aria-label="Time left to answer"
+      aria-valuemin={0}
+      aria-valuemax={view.windowMs}
+      aria-valuenow={view.remainingMs}
+      className="h-0.5 overflow-hidden rounded-xs bg-content/8"
+    >
+      <div
+        className="h-full bg-amber-400"
+        style={{ width: `${holdFraction(view) * 100}%` }}
+      />
+    </div>
+  );
+}
+
+function SleepHoldResult({
+  id,
+  decision,
+  answerWindow,
+}: {
+  id: string;
+  decision: SleepHoldDecision;
+  answerWindow: string;
+}) {
   const allowed = decision.kind === "allow";
   const chip =
     decision.kind === "allow"
@@ -99,7 +124,7 @@ function SleepHoldResult({ view }: { view: SleepHoldView }) {
         : "Refused";
   const text =
     decision.kind === "timeout"
-      ? "no answer in 2 min · the agent was told to run it in the background"
+      ? `no answer in ${answerWindow} · the agent was told to run it in the background`
       : [
           `by ${decision.by} at ${decision.at}`,
           decision.via === "notification" ? "from the notification" : null,
@@ -110,7 +135,7 @@ function SleepHoldResult({ view }: { view: SleepHoldView }) {
   return (
     <div
       className="flex items-center gap-1.5 py-0.5 pl-5 text-[11px] text-content/50"
-      data-sleep-hold={view.id}
+      data-sleep-hold={id}
     >
       <AlarmChip tone={allowed ? "gray" : "red"}>
         {allowed ? <Check className="size-2.5" strokeWidth={2.2} /> : null}

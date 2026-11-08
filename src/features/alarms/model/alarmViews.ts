@@ -47,39 +47,6 @@ export type AlarmSend = {
   level: number;
 };
 
-/** The open `alarm_episodes` row for one agent. */
-export type AlarmEpisodeView = {
-  /** `al_7Q2`. */
-  id: string;
-  cause: AlarmCause;
-  stalled: AlarmAgent;
-  /** `stalled_since_wall_ms` as a wall clock, "14:05". */
-  stalledSince: string;
-  /** Awake minutes since `stalled_since`. */
-  minutes: number;
-  openWork: string[];
-  lastActivity?: AlarmLastActivity;
-  dialog?: AlarmDialog;
-  sends: AlarmSend[];
-};
-
-/** A sidebar row's marker reads the same episode. */
-export type StallMarkerView = AlarmEpisodeView;
-
-/** When the card goes up a level (`next_escalate_active_ms`). */
-export type AlarmNext =
-  | { kind: "provisioner"; name: string; minutes: number }
-  | { kind: "tyler"; minutes: number }
-  | { kind: "last" };
-
-/** Level 2 and up: the recipient one level down that did not act. */
-export type AlarmEscalation = {
-  target: AlarmAgent;
-  /** What it did not act on: "its worker's stall". */
-  missed: string;
-  minutes: number;
-};
-
 export type AlarmActKind = "read" | "answer" | "steer" | "nudge" | "dismiss";
 
 /** `acted_by` / `acted_how` once someone acted; escalation stopped. */
@@ -90,16 +57,104 @@ export type AlarmActed = {
   at: string;
 };
 
-export type AlarmCardView = AlarmEpisodeView & {
-  level: number;
-  /** A provisioner's chat, or Tyler's landing in the stalled session. */
-  audience: "provisioner" | "tyler";
-  next: AlarmNext;
-  escalation?: AlarmEscalation;
+/** The open `alarm_episodes` row for one agent. Only a dialog wait has a dialog. */
+export type AlarmEpisodeView = {
+  /** `al_7Q2`. */
+  id: string;
+  stalled: AlarmAgent;
+  /** `stalled_since_wall_ms` as a wall clock, "14:05". */
+  stalledSince: string;
+  /** Awake minutes since `stalled_since`. */
+  minutes: number;
+  openWork: string[];
+  lastActivity?: AlarmLastActivity;
+  sends: AlarmSend[];
+  /** The episode stays open after an act until the agent moves. */
   acted?: AlarmActed;
-  /** The lead whose turn it was, for the landing's Open button. */
+} & (
+  | { cause: Exclude<AlarmCause, "dialog">; dialog?: undefined }
+  | { cause: "dialog"; dialog: AlarmDialog }
+);
+
+/** A sidebar row's marker reads the same episode. */
+export type StallMarkerView = AlarmEpisodeView;
+
+/**
+ * When a provisioner's card goes up a level (`next_escalate_active_ms`).
+ * Tyler is always the last level, so a provisioner's card always has a next.
+ */
+export type AlarmNext =
+  | { kind: "provisioner"; name: string; minutes: number }
+  | { kind: "tyler"; minutes: number };
+
+/** Level 2 and up: the recipient one level down that did not act. */
+export type AlarmEscalation = {
+  target: AlarmAgent;
+  /** What it did not act on: "its worker's stall". */
+  missed: string;
+  minutes: number;
+};
+
+/** Frame 2: a delivered `<mono_alarm>` in a provisioner's chat. */
+export type ProvisionerAlarmView = AlarmEpisodeView & {
+  audience: "provisioner";
+  next: AlarmNext;
+} & (
+    | { level: 1; escalation?: undefined }
+    | {
+        /** 2 and up. */
+        level: number;
+        escalation: AlarmEscalation;
+      }
+  );
+
+/** Frame 4: Tyler's landing in the stalled session; the last level. */
+export type TylerLandingView = AlarmEpisodeView & {
+  audience: "tyler";
+  level: number;
+  /** The lead whose turn it was, for the Open button. */
   lead?: AlarmAgent;
 };
+
+export type AlarmCardView = ProvisionerAlarmView | TylerLandingView;
+
+/** Who an act lands on: the stalled agent, or at level 2 the lead that did not act. */
+export function alarmTarget(view: AlarmCardView): AlarmAgent {
+  return view.audience === "provisioner" && view.escalation
+    ? view.escalation.target
+    : view.stalled;
+}
+
+/** What one click on an alarm or a hold card asks the app to do (design section 7). */
+export type AlarmActEvent =
+  | (AlarmActOn & { act: "read" | "nudge" })
+  | (AlarmActOn & {
+      act: "steer";
+      /** The one-line Steer box. */
+      text: string;
+    })
+  | (AlarmActOn & {
+      act: "dismiss";
+      /** The reason Dismiss asks for. */
+      text: string;
+    })
+  | (AlarmActOn & {
+      act: "answer";
+      /** One of the dialog's own options, or the text box of a question without any. */
+      answer:
+        { kind: "option"; option: string } | { kind: "text"; text: string };
+    })
+  | {
+      kind: "hold";
+      /** `sh_K1`. */
+      holdId: string;
+      /** `sleep_holds.tool_use_id`, unique per hold. */
+      toolUseId: string;
+      act: "allow" | "deny";
+      target: AlarmAgent;
+    };
+
+type AlarmActOn = { kind: "alarm"; alarmId: string; target: AlarmAgent };
 
 /** `sleep_holds.decision` once it has one. */
 export type SleepHoldDecision =
@@ -158,6 +213,13 @@ export type StallMinutesView = {
 /** 5 to 240 minutes (design section 3). */
 export const STALL_MINUTE_PRESETS = [5, 15, 30, 60, 120, 240] as const;
 
+/** The presets, plus a value set between them (a lead's `alarms.set`), in order. */
+export function stallMinuteChoices(current?: number | null): number[] {
+  const choices: number[] = [...STALL_MINUTE_PRESETS];
+  if (current != null && !choices.includes(current)) choices.push(current);
+  return choices.sort((a, b) => a - b);
+}
+
 export function stallMinutesLabel(minutes: number): string {
   if (minutes < 60 || minutes % 60 !== 0) return `${minutes} min`;
   const hours = minutes / 60;
@@ -215,7 +277,7 @@ export function causeLine(marker: StallMarkerView): string {
     case "idle_open_work":
       return `No turn for ${marker.minutes} min, open work`;
     case "dialog":
-      return `${DIALOG_WORD[marker.dialog?.kind ?? "permission"]} dialog open ${marker.minutes} min`;
+      return `${DIALOG_WORD[marker.dialog.kind]} dialog open ${marker.minutes} min`;
     case "hung":
       return `No progress for ${marker.minutes} min in a running turn`;
     case "wake_missed":
@@ -236,15 +298,13 @@ export function lastActivityText(activity: AlarmLastActivity): string {
   return `${activity.at} ${activity.tool} ${activity.command} (${activity.state})`;
 }
 
-export function countdownText(next: AlarmNext): string {
-  switch (next.kind) {
-    case "provisioner":
-      return `Goes to ${next.name} in ${next.minutes} min`;
-    case "tyler":
-      return `Notifies Tyler in ${next.minutes} min`;
-    case "last":
-      return "Last level · it does not escalate further";
-  }
+export function countdownText(view: AlarmCardView): string {
+  if (view.audience === "tyler")
+    return "Last level · it does not escalate further";
+  const next = view.next;
+  return next.kind === "provisioner"
+    ? `Goes to ${next.name} in ${next.minutes} min`
+    : `Notifies Tyler in ${next.minutes} min`;
 }
 
 const ACTED_WORD: Record<AlarmActKind, { chip: string; verb: string }> = {
@@ -267,16 +327,27 @@ export function actedLine(
   };
 }
 
-/** The sidebar hover card's Told row. */
-export function toldLine(sends: AlarmSend[]): string {
-  if (sends.length === 0) return "No one yet";
-  return `${sends.map((send) => `${send.recipient} at ${send.at}`).join(" · ")} · no act yet`;
+/** The sidebar hover card's Told row: who was told, then the act or "no act yet". */
+export function toldLine(episode: AlarmEpisodeView): string {
+  const told = episode.sends.map((send) => `${send.recipient} at ${send.at}`);
+  const acted = episode.acted;
+  if (acted)
+    told.push(
+      `${ACTED_WORD[acted.how].chip.toLowerCase()} by ${acted.by} at ${acted.at}`,
+    );
+  else if (told.length > 0) told.push("no act yet");
+  return told.length > 0 ? told.join(" · ") : "No one yet";
 }
 
 /** "1:42" for the hold card's countdown. */
 export function holdClock(remainingMs: number): string {
   const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** "2 min": how long a hold waits for an answer. */
+export function holdWindowText(windowMs: number): string {
+  return `${Math.round(windowMs / 60_000)} min`;
 }
 
 /** The countdown bar's width, 0 to 1. */
@@ -286,8 +357,19 @@ export function holdFraction(view: SleepHoldView): number {
 }
 
 const MONO_ALARM = /^\s*<mono_alarm\b[^>]*\balarm="([^"]+)"/;
+/** S2's outbox key, which a claimed reminder carries as its request id. */
+const ALARM_REQUEST = /^alarm:([^:]+):\d+$/;
 
-/** The episode id a delivered `<mono_alarm>` message is about. */
-export function monoAlarmId(text: string): string | undefined {
-  return MONO_ALARM.exec(text)?.[1];
+/**
+ * The episode id of a `<mono_alarm>` the app delivered. Like the U10 notices,
+ * the request id must be the app's own outbox key for that episode, so a
+ * quoted or pasted tag stays a plain message.
+ */
+export function monoAlarmId(item: {
+  appRequestId?: string;
+  text: string;
+}): string | undefined {
+  const delivered = ALARM_REQUEST.exec(item.appRequestId ?? "")?.[1];
+  const tagged = MONO_ALARM.exec(item.text)?.[1];
+  return delivered && delivered === tagged ? delivered : undefined;
 }
