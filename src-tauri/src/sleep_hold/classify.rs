@@ -35,9 +35,12 @@ pub struct Wait {
 
 impl Wait {
     /// Alarms design 12: only a single wait of known length under `below`
-    /// runs without asking.
+    /// runs without asking. An interpreter wait never does: the classifier
+    /// cannot see every loop another language can write around its sleep.
     pub fn is_short(&self, below: Duration) -> bool {
-        !self.repeats && self.seconds.is_some_and(|seconds| seconds < below)
+        self.kind != WaitKind::Interpreter
+            && !self.repeats
+            && self.seconds.is_some_and(|seconds| seconds < below)
     }
 }
 
@@ -1348,18 +1351,20 @@ fn is_cluster_ending(arg: &str, flag: char) -> bool {
 
 fn code_wait(lang: Lang, code: &str) -> Option<Wait> {
     let calls: Vec<&str> = match lang {
-        Lang::Python => called(code, "sleep", |next| next == '('),
+        Lang::Python => called(lang, code, "sleep", |next| next == '('),
         Lang::Js => {
             let timers = ["setTimeout", "setInterval"]
                 .iter()
                 .any(|timer| code.contains(timer));
-            let sleeps = !called(code, "sleep", |next| next == '(').is_empty();
+            let sleeps = !called(lang, code, "sleep", |next| next == '(').is_empty();
             return (timers || sleeps).then_some(wait(WaitKind::Interpreter, None));
         }
-        Lang::Perl | Lang::Ruby => called(code, "sleep", |next| {
+        Lang::Perl | Lang::Ruby => called(lang, code, "sleep", |next| {
             next.is_ascii_digit() || matches!(next, '(' | '$' | ';')
         }),
-        Lang::AppleScript => called(code, "delay", |next| next.is_ascii_digit() || next == '('),
+        Lang::AppleScript => called(lang, code, "delay", |next| {
+            next.is_ascii_digit() || next == '('
+        }),
     };
     if calls.is_empty() {
         return None;
@@ -1376,7 +1381,7 @@ fn code_wait(lang: Lang, code: &str) -> Option<Wait> {
 
 /// The text after each standalone `name` whose next non-space character
 /// passes `next`. `time.sleep(` counts; `sleepy(` and `"sleep"` do not.
-fn called<'a>(code: &'a str, name: &str, next: impl Fn(char) -> bool) -> Vec<&'a str> {
+fn called<'a>(lang: Lang, code: &'a str, name: &str, next: impl Fn(char) -> bool) -> Vec<&'a str> {
     code.match_indices(name)
         .filter(|(at, _)| {
             let before = &code[..*at];
@@ -1384,8 +1389,10 @@ fn called<'a>(code: &'a str, name: &str, next: impl Fn(char) -> bool) -> Vec<&'a
                 .chars()
                 .next_back()
                 .is_some_and(|c| c.is_alphanumeric() || c == '_');
-            // `:sleep` is a Ruby symbol; `Time::HiRes::sleep` is a call.
-            let symbol = before.ends_with(':') && !before.ends_with("::");
+            // In Ruby `:sleep` is a symbol; elsewhere (`while True:sleep(1)`)
+            // and in `Time::HiRes::sleep` it is a call.
+            let symbol =
+                matches!(lang, Lang::Ruby) && before.ends_with(':') && !before.ends_with("::");
             !in_word && !symbol
         })
         .map(|(at, _)| code[at + name.len()..].trim_start())
@@ -1537,6 +1544,18 @@ mod tests {
             Some(3),
         ),
         ("poetry run sleep 3", Sleep, Some(3)),
+        (
+            "python3 -c 'from time import sleep\nwhile True:sleep(1)'",
+            Interpreter,
+            None,
+        ),
+        ("python3 -c 'f=lambda:sleep(300)'", Interpreter, Some(300)),
+        ("python3 -c 'if x:sleep(300)'", Interpreter, Some(300)),
+        (
+            "ruby -e 'Kernel.send(:sleep, 3); sleep 3'",
+            Interpreter,
+            Some(3),
+        ),
         ("cat <<EOF > f\r\nhi\r\nEOF\r\nsleep 6\r\n", Sleep, Some(6)),
     ];
 
@@ -1827,6 +1846,23 @@ mod tests {
             "python3 -c 'import time; time.sleep(1); time.sleep(1)'"
         ));
         assert_eq!(classify("sleep 5 &", false), None);
+    }
+
+    #[test]
+    fn an_interpreter_wait_is_never_short() {
+        // Defect: a loop the classifier cannot see in another language
+        // (`until`, `upto`, `map(range)`) reads as one short sleep and runs
+        // unasked for minutes or without end.
+        let below = Duration::from_secs(10);
+        let short = |command| classify(command, false).unwrap().is_short(below);
+        assert!(!short("perl -e 'sleep 1 until -e \"done\"'"));
+        assert!(!short("ruby -e '3.times{sleep 1}'"));
+        assert!(!short("ruby -e '1.upto(100) { sleep 1 }'"));
+        assert!(!short("python -c 'import time; time.sleep(1)'"));
+        assert!(!short(
+            "python3 -c 'import time; list(map(lambda _: time.sleep(1), range(100)))'"
+        ));
+        assert!(!short("osascript -e 'delay 1'"));
     }
 
     #[test]
