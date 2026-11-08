@@ -321,6 +321,7 @@ pub fn run() {
             active_clock::init(app.handle())?;
             alarms::init(app.handle());
             ci_watch::init(app.handle());
+            sleep_hold::service::init(app.handle());
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]

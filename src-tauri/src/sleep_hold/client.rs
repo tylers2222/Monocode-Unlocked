@@ -67,13 +67,13 @@ pub trait Transport {
 
 /// The app's loopback endpoint, one JSON line each way per call, as
 /// control_cli.rs frames it, in the `hold` namespace.
-struct Tcp {
+pub(crate) struct Tcp {
     address: SocketAddr,
     token: String,
 }
 
 impl Tcp {
-    fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
+    pub(crate) fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
         let var = |key: &str| var(key).filter(|value| !value.is_empty());
         let (Some(endpoint), Some(token)) =
             (var("MONOCODE_APP_ENDPOINT"), var("MONOCODE_APP_TOKEN"))
@@ -119,7 +119,7 @@ impl Transport for Tcp {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Outcome {
+pub(crate) enum Outcome {
     /// Not a wait, or allowed: the harness's normal flow continues.
     Run,
     Refused {
@@ -129,7 +129,7 @@ enum Outcome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Cause {
+pub(crate) enum Cause {
     Denied(Option<String>),
     NoAnswer,
     Failed(String),
@@ -187,7 +187,7 @@ fn failed(command: Option<String>, error: &str) -> Outcome {
     }
 }
 
-fn hold<T: Transport>(
+pub(crate) fn hold<T: Transport>(
     harness: Harness,
     stdin: &str,
     var: &dyn Fn(&str) -> Option<String>,

@@ -3,9 +3,9 @@
 //! count, so `echo "sleep 5"` or a heredoc body never holds.
 use std::time::Duration;
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitKind {
     Sleep,

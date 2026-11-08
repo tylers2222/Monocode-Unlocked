@@ -4,13 +4,15 @@
 //! and the `hold` namespace messages it exchanges with the app.
 pub mod classify;
 pub mod client;
+pub(crate) mod service;
+pub(crate) mod store;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use classify::{classify, Wait, WaitKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Harness {
     Claude,
@@ -58,7 +60,7 @@ pub struct HoldWait<'a> {
 }
 
 /// `hold.wait` answer: `{"ok":true,"status":"pending"}` and so on.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum HoldWaitReply {
     Pending,

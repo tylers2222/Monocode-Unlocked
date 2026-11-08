@@ -89,6 +89,10 @@ COPY = {
     "alarm_acts": (("episode_id", "seq"), ("at_active_ms",)),
     "agent_alarm_settings": (("actor",), ()),
     "alarm_repeat_limit": (("actor", "cause"), ("sent_active_ms",)),
+    # Sleep holds are the hold log; an open one times out on Space 1's clock.
+    "sleep_holds": (("id",), (
+        "requested_active_ms", "deadline_active_ms", "decided_active_ms",
+    )),
     "mono_session_ends": (("session_id",), ()),
     "mono_completion_deliveries": (("group_id",), ()),
     "notes": (("id",), ()),

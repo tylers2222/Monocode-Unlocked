@@ -84,6 +84,24 @@ impl SessionStore {
         })
     }
 
+    /// A second connection to the file `path`, as another thread's: no
+    /// migrate and no startup, and it waits out the other's write lock.
+    #[cfg(test)]
+    pub(crate) fn open_second(path: PathBuf) -> Result<Self, String> {
+        let key = crate::db_key::key_for(&path)?;
+        let conn = crate::db_key::connect(&path, key.as_ref())?;
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            read_conn: Mutex::new(None),
+            run_id: uuid::Uuid::new_v4().simple().to_string(),
+            restorer: OnceLock::new(),
+            window_spaces: Mutex::default(),
+            alarms: crate::alarms::Live::default(),
+        })
+    }
+
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
@@ -1306,6 +1324,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::alarms::ensure_tables(conn)?;
     // The outbox read joins the watches' wake text too.
     crate::ci_watch::ensure_tables(conn)?;
+    crate::sleep_hold::store::ensure_tables(conn)?;
     Ok(())
 }
 

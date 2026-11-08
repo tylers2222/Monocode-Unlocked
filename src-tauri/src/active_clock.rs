@@ -186,6 +186,10 @@ impl<C: Clock> ActiveClock<C> {
         let active = self.active_ms();
         alarms.live.set_now(active);
         let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
+        // A hold fault must not stop the reminders or the clock either.
+        if let Err(error) = crate::sleep_hold::service::sweep(conn, (active, now.wall_ms)) {
+            eprintln!("Could not time out the sleep holds: {error}");
+        }
         let slice = active / crate::alarms::PASS_MS;
         if self.alarm_slice != Some(slice) {
             self.alarm_slice = Some(slice);
