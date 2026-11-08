@@ -28,19 +28,18 @@ pub struct Wait {
     /// unbounded or unknown, and never counts as short.
     #[serde(serialize_with = "as_seconds")]
     pub seconds: Option<Duration>,
-    /// It waits more than once: a loop, or two waits in one command.
+    /// Exactly one `sleep N`, alone or under wrappers that pass it through
+    /// unchanged. Only such a wait is known to end in its seconds.
     #[serde(skip)]
-    pub repeats: bool,
+    pub plain: bool,
 }
 
 impl Wait {
-    /// Alarms design 12: only a single wait of known length under `below`
-    /// runs without asking. An interpreter wait never does: the classifier
-    /// cannot see every loop another language can write around its sleep.
+    /// Alarms design 12: only one plain sleep of literal length under
+    /// `below` runs without asking. Every other wait asks: a loop, a second
+    /// wait, or another language can outlast the number the classifier read.
     pub fn is_short(&self, below: Duration) -> bool {
-        self.kind != WaitKind::Interpreter
-            && !self.repeats
-            && self.seconds.is_some_and(|seconds| seconds < below)
+        self.plain && self.seconds.is_some_and(|seconds| seconds < below)
     }
 }
 
@@ -87,7 +86,7 @@ const fn wait(kind: WaitKind, seconds: Option<Duration>) -> Wait {
     Wait {
         kind,
         seconds,
-        repeats: false,
+        plain: false,
     }
 }
 
@@ -101,7 +100,7 @@ fn then(first: Option<Wait>, next: Option<Wait>) -> Option<Wait> {
                 .seconds
                 .zip(next.seconds)
                 .map(|(a, b)| a.saturating_add(b)),
-            repeats: true,
+            plain: false,
         }),
         (first, next) => first.or(next),
     }
@@ -798,7 +797,7 @@ fn cmd_wait(cmd: &Cmd, depth: u8) -> Option<Wait> {
             seconds: iterations
                 .zip(inner.seconds)
                 .map(|(n, each)| each.saturating_mul(n)),
-            repeats: true,
+            plain: false,
         }),
         Cmd::Skip => None,
     }
@@ -821,8 +820,9 @@ fn words_wait(words: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
         "wait" => Some(wait(WaitKind::WaitBuiltin, None)),
         "gh" => gh_wait(args),
         "timeout" | "gtimeout" => timeout_wait(args, stdin, depth),
-        "kubectl" => kubectl_wait(args),
-        "docker" | "podman" => docker_wait(args),
+        "kubectl" => kubectl_wait(args, stdin, depth),
+        "docker" | "podman" => docker_wait(args, stdin, depth),
+        "ssh" => ssh_wait(args, depth),
         "wait-on" | "wait-for-it" | "wait-for-it.sh" | "wait-for" => {
             Some(wait(WaitKind::ClusterWait, None))
         }
@@ -876,6 +876,20 @@ const DOCKER_VALUED: &[&str] = &[
     "--tail",
     "--since",
     "--until",
+];
+const DOCKER_EXEC_VALUED: &[&str] = &[
+    "-e",
+    "--env",
+    "--env-file",
+    "-u",
+    "--user",
+    "-w",
+    "--workdir",
+    "--detach-keys",
+];
+const SSH_VALUED: &[&str] = &[
+    "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-P",
+    "-p", "-Q", "-R", "-S", "-W", "-w",
 ];
 const KUBECTL_VALUED: &[&str] = &[
     "-n",
@@ -1143,6 +1157,12 @@ fn skip_flags<'a>(mut words: &'a [&'a str], valued: &[&str]) -> &'a [&'a str] {
     words
 }
 
+/// The leading flags, and the words after them.
+fn split_flags<'a>(words: &'a [&'a str], valued: &[&str]) -> (&'a [&'a str], &'a [&'a str]) {
+    let rest = skip_flags(words, valued);
+    (&words[..words.len() - rest.len()], rest)
+}
+
 /// The arguments that are not flags or flag values.
 fn positionals<'a>(args: &[&'a str], valued: &[&str]) -> Vec<&'a str> {
     let mut found = Vec::new();
@@ -1208,7 +1228,10 @@ fn sleep_wait(args: &[&str]) -> Option<Wait> {
     let seconds = args.iter().try_fold(Duration::ZERO, |sum, arg| {
         Some(sum.saturating_add(parse_duration(arg)?))
     });
-    Some(wait(WaitKind::Sleep, seconds))
+    Some(Wait {
+        plain: true,
+        ..wait(WaitKind::Sleep, seconds)
+    })
 }
 
 fn gh_wait(args: &[&str]) -> Option<Wait> {
@@ -1221,42 +1244,67 @@ fn gh_wait(args: &[&str]) -> Option<Wait> {
 }
 
 /// `timeout N <cmd>` holds only when `<cmd>` waits; then it waits at most N.
+/// Only a plain sleep's own length is trusted under N; any other inner wait
+/// may outlast the number read from it, so it counts as N.
 fn timeout_wait(args: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
     let rest = skip_flags(args, &["-s", "--signal", "-k", "--kill-after"]);
     let (&limit, command) = rest.split_first()?;
     let inner = words_wait(command, stdin, depth + 1)?;
-    let seconds = match (
-        parse_duration(limit).filter(|n| !n.is_zero()),
-        inner.seconds,
-    ) {
-        (Some(limit), Some(inner)) => Some(limit.min(inner)),
-        (limit, inner) => limit.or(inner),
+    let limit = parse_duration(limit).filter(|n| !n.is_zero());
+    let seconds = match (limit, inner.seconds) {
+        (Some(limit), Some(inner_seconds)) if inner.plain => Some(limit.min(inner_seconds)),
+        (None, inner_seconds) if inner.plain => inner_seconds,
+        (limit, _) => limit,
     };
     Some(Wait {
         kind: WaitKind::Timeout,
         seconds,
-        repeats: inner.repeats,
+        plain: inner.plain,
     })
 }
 
-fn kubectl_wait(args: &[&str]) -> Option<Wait> {
-    let waits = match positionals(args, KUBECTL_VALUED).as_slice() {
-        ["wait", ..] => true,
-        ["rollout", "status", ..] => !args
-            .iter()
-            .any(|arg| matches!(*arg, "--watch=false" | "-w=false")),
-        _ => false,
+fn kubectl_wait(args: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
+    let watch_off = args
+        .iter()
+        .any(|arg| matches!(*arg, "--watch=false" | "-w=false"));
+    let cluster_wait = || {
+        let seconds = flag_value(args, "--timeout").and_then(parse_duration);
+        Some(wait(WaitKind::ClusterWait, seconds))
     };
-    let seconds = flag_value(args, "--timeout").and_then(parse_duration);
-    waits.then_some(wait(WaitKind::ClusterWait, seconds))
+    match positionals(args, KUBECTL_VALUED).as_slice() {
+        ["exec", ..] => {
+            let end = args.iter().position(|arg| *arg == "--")?;
+            words_wait(&args[end + 1..], stdin, depth + 1)
+        }
+        ["wait", ..] => cluster_wait(),
+        ["rollout", "status", ..] if !watch_off => cluster_wait(),
+        _ => None,
+    }
 }
 
-fn docker_wait(args: &[&str]) -> Option<Wait> {
+fn docker_wait(args: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
+    if let Some(rest) = after_path(args, &["exec"], DOCKER_VALUED) {
+        let (flags, target) = split_flags(rest, DOCKER_EXEC_VALUED);
+        if has_flag(flags, "-d", DOCKER_EXEC_VALUED) || long_flag(flags, "--detach") {
+            return None;
+        }
+        return words_wait(target.get(1..)?, stdin, depth + 1);
+    }
     matches!(
         positionals(args, DOCKER_VALUED).as_slice(),
         ["wait", ..] | ["compose", "wait", ..]
     )
     .then_some(wait(WaitKind::ClusterWait, None))
+}
+
+/// `ssh host <cmd>` runs `<cmd>` on the host in the foreground, unless `-f`
+/// sends ssh to the background.
+fn ssh_wait(args: &[&str], depth: u8) -> Option<Wait> {
+    let (flags, target) = split_flags(args, SSH_VALUED);
+    if has_flag(flags, "-f", SSH_VALUED) {
+        return None;
+    }
+    text_wait(&target.get(1..)?.join(" "), depth + 1)
 }
 
 /// `bash -c '...'` runs its first operand; `bash` with no operand runs its
@@ -1557,6 +1605,37 @@ mod tests {
             Some(3),
         ),
         ("cat <<EOF > f\r\nhi\r\nEOF\r\nsleep 6\r\n", Sleep, Some(6)),
+        (
+            "timeout 600 python3 -c 'import time; time.sleep(5*60)'",
+            Timeout,
+            Some(600),
+        ),
+        (
+            "timeout 60 perl -e 'sleep 1 until -e \"done\"'",
+            Timeout,
+            Some(60),
+        ),
+        ("timeout 9 sleep 100", Timeout, Some(9)),
+        ("docker exec ctr sleep 600", Sleep, Some(600)),
+        (
+            "docker exec -it -u root -w /app ctr sleep 6",
+            Sleep,
+            Some(6),
+        ),
+        ("podman --remote exec ctr sleep 6", Sleep, Some(6)),
+        (
+            "kubectl exec -n prod pod/x -- gh run watch 1",
+            GhWatch,
+            None,
+        ),
+        ("kubectl exec -it pod/x -c app -- sleep 6", Sleep, Some(6)),
+        ("ssh host sleep 600", Sleep, Some(600)),
+        (
+            "ssh -p 22 -o BatchMode=yes me@host 'sleep 6'",
+            Sleep,
+            Some(6),
+        ),
+        ("kubectl exec pod/x -- sleep -- 3", Sleep, Some(3)),
     ];
 
     /// Design 10 "False-positive guards", plus commands that look close.
@@ -1598,6 +1677,13 @@ mod tests {
         "kubectl get pods",
         "kubectl rollout status deploy/api --watch=false",
         "docker ps",
+        "docker exec ctr ls",
+        "docker exec -d ctr sleep 600",
+        "docker exec -dit ctr sleep 600",
+        "kubectl exec pod/x -- ls",
+        "ssh host ls",
+        "ssh -f host sleep 600",
+        "ssh host",
         "python3 -c 'print(1)'",
         "python3 script.py",
         "node -e 'console.log(1)'",
@@ -1849,20 +1935,71 @@ mod tests {
     }
 
     #[test]
-    fn an_interpreter_wait_is_never_short() {
-        // Defect: a loop the classifier cannot see in another language
-        // (`until`, `upto`, `map(range)`) reads as one short sleep and runs
-        // unasked for minutes or without end.
+    fn only_one_plain_sleep_under_the_line_is_short() {
+        // Defect: a wait the classifier reads as one short sleep, but that
+        // loops or runs longer (an interpreter poll, `5*60`, a poll inside
+        // `timeout 60`), runs unasked for up to its whole bound.
         let below = Duration::from_secs(10);
         let short = |command| classify(command, false).unwrap().is_short(below);
-        assert!(!short("perl -e 'sleep 1 until -e \"done\"'"));
-        assert!(!short("ruby -e '3.times{sleep 1}'"));
-        assert!(!short("ruby -e '1.upto(100) { sleep 1 }'"));
-        assert!(!short("python -c 'import time; time.sleep(1)'"));
-        assert!(!short(
-            "python3 -c 'import time; list(map(lambda _: time.sleep(1), range(100)))'"
-        ));
-        assert!(!short("osascript -e 'delay 1'"));
+        for command in [
+            "sleep 9.9",
+            "gsleep 3",
+            "timeout 5 sleep 3",
+            "timeout 30 sleep 2",
+            "env X=1 sleep 3",
+            "nice -n 5 sleep 3",
+            "nohup sleep 3",
+            "bash -c 'sleep 3'",
+            "sh -c 'sleep 3'",
+        ] {
+            assert!(short(command), "{command:?}");
+        }
+        for command in [
+            "sleep 10",
+            "timeout 60 perl -e 'sleep 1 until -e \"done\"'",
+            "timeout 600 python3 -c 'import time; time.sleep(5*60)'",
+            "timeout 120 python3 -c 'import time; list(map(lambda _: time.sleep(1), range(100)))'",
+            "timeout 60 bash -c 'perl -e \"sleep 1 until -e done\"'",
+            "gtimeout 30 ruby -e 'sleep 1 until File.exist?(\"x\")'",
+            "timeout 5 perl -e 'sleep 1'",
+            "timeout 5 gh run watch 1",
+            "timeout 5 bash -c 'sleep 1; sleep 1'",
+            "perl -e 'sleep 1 until -e \"done\"'",
+            "ruby -e '1.upto(100) { sleep 1 }'",
+            "python -c 'import time; time.sleep(1)'",
+            "osascript -e 'delay 1'",
+        ] {
+            assert!(!short(command), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn no_kind_but_a_plain_sleep_is_short() {
+        // Defect: a wait of another kind that states a short length (a
+        // one-pass loop, a 5 s cluster timeout, a bounded interpreter) skips
+        // the hold, though only a plain `sleep N` is known to end in N.
+        let deep = format!("{}sleep 1{}", "( ".repeat(40), " )".repeat(40));
+        let bounded_deep = format!("timeout 5 bash -c '{deep}'");
+        let rows = [
+            ("wait", WaitBuiltin),
+            ("for i in 1; do sleep 1; done", PollLoop),
+            ("gh run watch 1", GhWatch),
+            ("watch -n 1 ls", Watch),
+            ("tail -f app.log", Follow),
+            ("timeout 5 tail -f app.log", Timeout),
+            (
+                "kubectl wait --for=condition=ready pod/x --timeout=5s",
+                ClusterWait,
+            ),
+            ("python3 -c 'import time; time.sleep(1)'", Interpreter),
+            (bounded_deep.as_str(), Timeout),
+            (deep.as_str(), TooDeep),
+        ];
+        for (command, kind) in rows {
+            let wait = classify(command, false).unwrap();
+            assert_eq!(wait.kind, kind, "{command:?}");
+            assert!(!wait.is_short(Duration::MAX), "{command:?}");
+        }
     }
 
     #[test]
