@@ -50,6 +50,8 @@ pub(crate) struct Install {
 /// Where a spawn's harness finds what its hold depends on.
 pub(crate) struct Places<'a> {
     pub(crate) exe: &'a str,
+    /// The spawn's cwd.
+    pub(crate) workdir: &'a Path,
     /// `<app data>/omp/hold`: the omp extension and its timeout overlay,
     /// alone in their folder.
     pub(crate) omp: Result<&'a Path, String>,
@@ -113,6 +115,7 @@ pub(crate) fn for_spawn<R: Runtime>(
     };
     let places = Places {
         exe: &exe,
+        workdir: spawn.workdir,
         omp: omp.as_deref().map_err(String::clone),
         codex: overlays
             .as_deref()
@@ -182,7 +185,8 @@ pub(crate) fn install(
             claude(&command, &places.claude, &args).map(|(args, state)| Install::plain(args, state))
         }
         Harness::Codex => places.codex.clone().and_then(|(real, root)| {
-            let home = super::codex_home::overlay(real, root, &command, HOOK_TIMEOUT_S)?;
+            let home =
+                super::codex_home::overlay(real, root, places.workdir, &command, HOOK_TIMEOUT_S)?;
             Ok(Install {
                 env: vec![("CODEX_HOME", home.to_string_lossy().into_owned())],
                 codex_home: Some(home),
@@ -380,6 +384,7 @@ mod tests {
     fn places<'a>(exe: &'a str, omp: Result<&'a Path, String>, claude: &'a Path) -> Places<'a> {
         Places {
             exe,
+            workdir: claude,
             omp,
             codex: Err("no Codex home".into()),
             claude: ClaudeFiles {
@@ -401,7 +406,13 @@ mod tests {
 
     /// A Codex install on the home `real`, its overlay in `root`.
     fn codex_at(exe: &str, real: &Path, root: &Path, list: Vec<String>) -> Install {
+        codex_in(Path::new("/nonexistent"), exe, real, root, list)
+    }
+
+    /// `codex_at` for a session in `workdir`.
+    fn codex_in(workdir: &Path, exe: &str, real: &Path, root: &Path, list: Vec<String>) -> Install {
         let places = Places {
+            workdir,
             codex: Ok((real, root)),
             ..places(exe, Err("no omp folder".into()), Path::new("/nonexistent"))
         };
@@ -603,6 +614,57 @@ mod tests {
             };
             assert_eq!(install.state, want, "{config}");
             assert_eq!(install.codex_home.is_some(), !off, "{config}");
+        }
+    }
+
+    // Defect: a trusted project's .codex/config.toml (a worktree of a
+    // trusted repo too) turns Codex hooks off, so no hook runs, ours too,
+    // and the hold reads as installed (codex-cli 0.165.0).
+    #[test]
+    fn a_trusted_project_with_codex_hooks_off_leaves_the_hold_missing() {
+        for (trust, session, layer, off) in [
+            ("trusted", "proj", true, true),
+            ("untrusted", "proj", true, false),
+            ("trusted", "wt", true, true),
+            ("trusted", "proj", false, false),
+        ] {
+            let dir = folder();
+            let (proj, wt) = (dir.join("proj"), dir.join("wt"));
+            let gitdir = proj.join(".git/worktrees/wt");
+            std::fs::create_dir_all(&gitdir).unwrap();
+            std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+            std::fs::create_dir_all(&wt).unwrap();
+            std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+            let session = dir.join(session);
+            let file = session.join(".codex/config.toml");
+            if layer {
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(&file, "[features]\nhooks = false\n").unwrap();
+            }
+            let real = dir.join("codex");
+            std::fs::create_dir_all(&real).unwrap();
+            let user = format!(
+                "[projects.\"{}\"]\ntrust_level = \"{trust}\"\n",
+                proj.display()
+            );
+            std::fs::write(real.join("config.toml"), user).unwrap();
+
+            let install = codex_in(
+                &session,
+                EXE,
+                &real,
+                &dir.join("overlays"),
+                args(&["app-server"]),
+            );
+
+            let case = format!("{trust} {session:?} layer {layer}");
+            let want = if off {
+                HoldState::Missing(format!("codex hooks disabled in {}", file.display()))
+            } else {
+                HoldState::Installed
+            };
+            assert_eq!(install.state, want, "{case}");
+            assert_eq!(install.codex_home.is_some(), !off, "{case}");
         }
     }
 

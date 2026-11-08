@@ -15,11 +15,13 @@ use sha2::{Digest, Sha256};
 const CONFIG: &str = "config.toml";
 
 /// The overlay of the Codex home `real` in `root`, holding the `Bash`
-/// PreToolUse hook `command` (timeout `timeout_s`) as trusted. One overlay
-/// per home: a second spawn on it relinks and rewrites the same folder.
+/// PreToolUse hook `command` (timeout `timeout_s`) as trusted, for a session
+/// in `cwd`. One overlay per home: a second spawn on it relinks and rewrites
+/// the same folder.
 pub(crate) fn overlay(
     real: &Path,
     root: &Path,
+    cwd: &Path,
     command: &str,
     timeout_s: u64,
 ) -> Result<PathBuf, String> {
@@ -35,6 +37,9 @@ pub(crate) fn overlay(
             "codex hooks disabled in {}",
             real.join(CONFIG).display()
         ));
+    }
+    if let Some(reason) = super::codex_project::hooks_off_in(&config, cwd) {
+        return Err(reason);
     }
     let canonical = real.canonicalize().unwrap_or_else(|_| real.to_path_buf());
     let mut name = DefaultHasher::new();
@@ -57,7 +62,7 @@ pub(crate) fn overlay(
 
 /// Whether `config` turns Codex hooks off: `features.hooks`, else its
 /// legacy name `features.codex_hooks`, is `false` (codex-cli 0.165.0).
-fn hooks_off(config: &toml::Table) -> bool {
+pub(super) fn hooks_off(config: &toml::Table) -> bool {
     let Some(features) = config.get("features").and_then(toml::Value::as_table) else {
         return false;
     };
@@ -234,6 +239,7 @@ mod tests {
         let dir = overlay(
             &real,
             &base.join("overlays"),
+            &base,
             "'/x y/monocode' hold --harness codex",
             150,
         )
@@ -284,7 +290,7 @@ mod tests {
         );
         std::fs::write(real.join(CONFIG), &user).unwrap();
 
-        let dir = overlay(&real, &base.join("overlays"), "hold", 150).unwrap();
+        let dir = overlay(&real, &base.join("overlays"), &base, "hold", 150).unwrap();
 
         let state = config_of(&dir)["hooks"]["state"]
             .as_table()
@@ -336,7 +342,7 @@ mod tests {
             let real = base.join("codex");
             std::fs::create_dir_all(&real).unwrap();
             std::fs::write(real.join(CONFIG), features).unwrap();
-            let made = overlay(&real, &base.join("o"), "hold", 150);
+            let made = overlay(&real, &base.join("o"), &base, "hold", 150);
             let want = format!("codex hooks disabled in {}", real.join(CONFIG).display());
             assert_eq!(made.err(), off.then_some(want), "{features}");
         }
@@ -351,12 +357,12 @@ mod tests {
         std::fs::create_dir_all(&real).unwrap();
         std::fs::write(real.join("history.jsonl"), "").unwrap();
         let root = base.join("overlays");
-        let once = overlay(&real, &root, "hold", 150).unwrap();
+        let once = overlay(&real, &root, &base, "hold", 150).unwrap();
         let first = config_of(&once);
         std::fs::remove_file(real.join("history.jsonl")).unwrap();
         std::fs::write(once.join("models_cache.json"), "{}").unwrap();
 
-        let twice = overlay(&real, &root, "hold", 150).unwrap();
+        let twice = overlay(&real, &root, &base, "hold", 150).unwrap();
 
         assert_eq!(twice, once);
         assert_eq!(config_of(&twice), first);
@@ -382,7 +388,7 @@ mod tests {
             std::fs::create_dir_all(&real).unwrap();
             std::fs::write(real.join(CONFIG), user).unwrap();
             assert!(
-                overlay(&real, &base.join("o"), "hold", 150).is_err(),
+                overlay(&real, &base.join("o"), &base, "hold", 150).is_err(),
                 "{user}"
             );
         }

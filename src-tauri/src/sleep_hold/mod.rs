@@ -6,6 +6,7 @@ pub mod classify;
 mod claude_settings;
 pub mod client;
 mod codex_home;
+mod codex_project;
 pub(crate) mod install;
 pub(crate) mod service;
 pub(crate) mod store;
