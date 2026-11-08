@@ -560,8 +560,8 @@ Actions:
                   it no longer needs a decision. Codes: not_a_giga,
                   invalid_input, unknown_approval, not_your_approval,
                   approval_not_open.
-  alarms.list    {}  The stall alarms that wait on you: each open alarm whose
-                  current recipient you are, or a provisioner above it, with
+  alarms.list    {}  The stall alarms you may act on: each open alarm that
+                  reached you, or one below a provisioner you are, with
                   alarm, agent, cause, level, stalledMinutes and actsOn (the
                   agent your acts reach: the one just below you, so a Mono
                   acts on its lead, never on the worker). Every alarm act
@@ -574,19 +574,20 @@ Actions:
                   dialog, who was told at each level, the acts so far and
                   the agent's last 20 transcript blocks with tools. Codes for
                   every alarms.* call on an alarm: unknown_alarm,
-                  not_your_alarm, alarm_moved_up (it went on above you),
-                  alarm_closed, invalid_input.
+                  not_your_alarm, alarm_closed, invalid_input.
   alarms.answer  {"alarm":"al_...","allow":true}  Answer the agent's pending
                   dialog as the user would: allow or deny for a permission,
                   text or choice for a question. Only the agent's own
-                  provisioner answers. Codes: dialog_gone (answered or
-                  withdrawn), plan_dialog (use alarms.steer),
-                  answer_via_recipient.
+                  provisioner answers, and only the dialog the alarm named.
+                  Codes: dialog_gone (answered, withdrawn or another one
+                  now), plan_dialog (use alarms.steer), answer_via_recipient.
   alarms.steer   {"alarm":"al_...","text":"..."}  Steer the text into the
                   running turn of actsOn, or wake it with it when idle.
-  alarms.nudge   {"alarm":"al_..."}  Wake actsOn with its open work.
+  alarms.nudge   {"alarm":"al_..."}  Tell actsOn its open work: into its
+                  running turn, or as a wake when idle.
   alarms.dismiss {"alarm":"al_...","reason":"..."}  Record why no act is
-                  needed; the reason is logged.
+                  needed; the reason is logged. Only the alarm's current
+                  recipient or one above it dismisses (else alarm_moved_up).
   alarms.report  {"from":<wall ms>,"to":<wall ms>}  Mono or Giga only. Stall
                   minutes per Mono over the window, with episodes, acted and
                   maxLevel. Codes: mono_only, invalid_input.

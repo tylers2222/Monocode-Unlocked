@@ -1,13 +1,15 @@
-//! Design section 7: the `alarms.*` app actions. The caller must be the
-//! episode's current recipient or a provisioner above it, as the stored
-//! sends and the hierarchy rows say, never as the call says. Each caller
-//! acts one level down its chain: a Mono steers its lead, never the
+//! Design section 7: the `alarms.*` app actions. The caller must be on the
+//! episode's chain, as the stored sends and the hierarchy rows say, never
+//! as the call says. Acting rights accumulate (lead ruling): every
+//! recipient told so far, and every provisioner above, may act. Each
+//! caller acts one level down its chain: a Mono steers its lead, never the
 //! worker. Every act is a row of `alarm_acts` and stops escalation.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 
 use super::provisioner::Provisioner;
+use super::rights::{authorize, standing, target_of, Denied, How};
 use super::route::{self, EpisodeRow};
 use super::store::{Settings, STALL_MINUTES};
 use super::text;
@@ -26,7 +28,8 @@ pub(crate) enum Refusal {
     AlarmClosed,
     /// The caller is not on the episode's chain, or is the stalled agent.
     NotYourAlarm,
-    /// The caller was told at a lower level; the alarm went on to `current`.
+    /// Only the current recipient or one above dismisses; the alarm went
+    /// on to `current`.
     MovedUp {
         current: String,
     },
@@ -72,7 +75,7 @@ impl Refusal {
             Refusal::UnknownAlarm => "No alarm has this id. Run alarms.list for yours.".into(),
             Refusal::AlarmClosed => "This alarm is closed: the agent moved on, or the act had no effect and a new alarm opened. Run alarms.list.".into(),
             Refusal::NotYourAlarm => "This alarm is not yours: only its recipient or a provisioner above it may act on it. Run alarms.list for yours.".into(),
-            Refusal::MovedUp { current } => format!("This alarm went up to {current}, so it no longer waits on you. Act on your own alarms (alarms.list)."),
+            Refusal::MovedUp { current } => format!("This alarm went up to {current}, so only {current} or one above it may dismiss it. You may still read, nudge or steer."),
             Refusal::AnswerViaRecipient { target } => format!("Only the stalled agent's own provisioner answers its dialog. Steer {target} with alarms.steer, or nudge it with alarms.nudge."),
             Refusal::DialogGone => "The dialog is no longer pending: it was answered or withdrawn. Read the alarm again with alarms.read.".into(),
             Refusal::PlanDialog => "A plan waits for the agent's next turn, not for an answer. Tell it what to do with alarms.steer.".into(),
@@ -86,39 +89,6 @@ impl Refusal {
     pub(crate) fn response(&self) -> Value {
         let hint = self.hint();
         json!({"ok": false, "code": self.code(), "hint": hint, "error": hint, "retryable": false})
-    }
-}
-
-/// Where the caller stands on an episode's chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Standing {
-    NotOnChain,
-    /// Told at a level below the current one.
-    Below,
-    /// The current recipient or a provisioner above it, at this index.
-    At(usize),
-}
-
-/// `chain[0]` is the stalled agent, `chain[k]` the recipient of level k.
-pub(crate) fn standing(chain: &[Provisioner], level: usize, caller: &Actor) -> Standing {
-    let caller = Provisioner::Agent(caller.clone());
-    let mut found = Standing::NotOnChain;
-    for (index, link) in chain.iter().enumerate().skip(1) {
-        if *link == caller {
-            if index >= level {
-                return Standing::At(index);
-            }
-            found = Standing::Below;
-        }
-    }
-    found
-}
-
-/// The agent the caller at `index` acts on: the one just below it.
-fn target_of(chain: &[Provisioner], index: usize) -> Option<&Actor> {
-    match chain.get(index.checked_sub(1)?)? {
-        Provisioner::Agent(actor) => Some(actor),
-        Provisioner::Tyler => None,
     }
 }
 
@@ -200,11 +170,20 @@ impl<'a> Input<'a> {
     }
 }
 
-/// The episode a call names, its chain, and where the caller stands on it.
+/// The episode a call names, its chain, where the caller stands on it, and
+/// whom it acts on.
 struct OnChain {
     episode: EpisodeRow,
     chain: Vec<Provisioner>,
     index: usize,
+    target: Actor,
+}
+
+/// A call on one episode: the act this request already logged, or the
+/// episode to act on.
+enum Found {
+    Before(Value),
+    Open(Box<OnChain>),
 }
 
 fn on_chain(
@@ -212,25 +191,48 @@ fn on_chain(
     settings: &Settings,
     id: &str,
     caller: &Actor,
-) -> Result<OnChain, Refusal> {
+    how: How,
+    request_id: &str,
+) -> Result<Found, Refusal> {
     let episode = route::episode(conn, id)?.ok_or(Refusal::UnknownAlarm)?;
     let chain = route::chain(conn, &episode, settings.root_giga.as_deref())?;
-    let level = usize::try_from(episode.level).unwrap_or(usize::MAX);
-    match standing(&chain, level, caller) {
-        Standing::NotOnChain => Err(Refusal::NotYourAlarm),
-        Standing::Below => Err(Refusal::MovedUp {
-            current: match chain.get(level) {
-                Some(Provisioner::Agent(actor)) => route::who(conn, actor)?.label,
-                _ => "Tyler".into(),
-            },
-        }),
-        Standing::At(_) if !episode.open => Err(Refusal::AlarmClosed),
-        Standing::At(index) => Ok(OnChain {
-            episode,
-            chain,
-            index,
-        }),
+    let index = standing(&chain, caller).ok_or(Refusal::NotYourAlarm)?;
+    // A retry answers as the first call did, even once the act closed it.
+    if how != How::Read {
+        if let Some(before) = logged_before(conn, &episode.id, caller, request_id)? {
+            return Ok(Found::Before(before));
+        }
     }
+    if !episode.open {
+        return Err(Refusal::AlarmClosed);
+    }
+    let level = usize::try_from(episode.level).unwrap_or(usize::MAX);
+    let target = match authorize(&chain, level, index, how) {
+        Ok(target) => target.clone(),
+        Err(Denied::NotOnChain) => return Err(Refusal::NotYourAlarm),
+        Err(Denied::MovedUp) => {
+            return Err(Refusal::MovedUp {
+                current: match chain.get(level) {
+                    Some(Provisioner::Agent(actor)) => route::who(conn, actor)?.label,
+                    _ => "Tyler".into(),
+                },
+            })
+        }
+        Err(Denied::AnswerViaRecipient) => {
+            return Err(Refusal::AnswerViaRecipient {
+                target: target_of(&chain, index)
+                    .map(|target| route::who(conn, target))
+                    .transpose()?
+                    .map_or_else(|| "Tyler".into(), |who| who.label),
+            })
+        }
+    };
+    Ok(Found::Open(Box::new(OnChain {
+        episode,
+        chain,
+        index,
+        target,
+    })))
 }
 
 /// What an `alarms.*` call does next.
@@ -239,21 +241,36 @@ pub(crate) enum Outcome {
         result: Value,
         notices: Notices,
     },
-    /// `alarms.answer`: the window that owns the agent's session answers
-    /// its dialog with `forward`, then `answered` logs the act.
-    Answer(AnswerPlan),
+    /// A window does the act as `session`, then `forwarded` logs it.
+    Forward(Forward),
 }
 
+/// An act a window does: `alarms.answer` in the window that owns the
+/// agent's session, answered as the user answers; or a steer or nudge as
+/// the caller's own `sessions.send` with `whenBusy: "steer"`, which steers
+/// a running turn and starts one when the session is idle.
 #[derive(Debug, Clone)]
-pub(crate) struct AnswerPlan {
+pub(crate) struct Forward {
     pub episode: String,
     pub caller: Actor,
     pub target: Actor,
-    /// The agent's session, which the owning window answers in.
+    /// The session the window acts as, and in whose window.
     pub session: String,
-    pub forward: Value,
+    pub action: &'static str,
+    pub input: Value,
+    pub how: &'static str,
     pub detail: String,
     pub request_id: String,
+}
+
+fn done_or(
+    found: Found,
+    act: impl FnOnce(OnChain) -> Result<Outcome, Refusal>,
+) -> Result<Outcome, Refusal> {
+    match found {
+        Found::Before(result) => Ok(done(result)),
+        Found::Open(on_chain) => act(*on_chain),
+    }
 }
 
 fn done(result: Value) -> Outcome {
@@ -299,28 +316,58 @@ pub(crate) fn call(
         }
         "alarms.read" => {
             let input = Input::new(input, &["alarm"])?;
-            let found = on_chain(conn, &settings, &input.required("alarm", 64)?, &caller)?;
-            read(conn, &settings, &found, now).map(done)
+            let found = on_chain(
+                conn,
+                &settings,
+                &input.required("alarm", 64)?,
+                &caller,
+                How::Read,
+                request_id,
+            )?;
+            done_or(found, |found| read(conn, &settings, &found, now).map(done))
         }
         "alarms.answer" => {
             let input = Input::new(input, &["alarm", "allow", "deny", "text", "choice"])?;
-            let found = on_chain(conn, &settings, &input.required("alarm", 64)?, &caller)?;
-            answer(conn, &found, &caller, &input, request_id).map(Outcome::Answer)
+            let found = on_chain(
+                conn,
+                &settings,
+                &input.required("alarm", 64)?,
+                &caller,
+                How::Answer,
+                request_id,
+            )?;
+            done_or(found, |found| {
+                answer(conn, &found, &caller, &input, request_id).map(Outcome::Forward)
+            })
         }
         "alarms.steer" | "alarms.nudge" | "alarms.dismiss" => {
-            let fields: &[&str] = match action {
-                "alarms.steer" => &["alarm", "text"],
-                "alarms.dismiss" => &["alarm", "reason"],
-                _ => &["alarm"],
+            let (fields, how): (&[&str], How) = match action {
+                "alarms.steer" => (&["alarm", "text"], How::Steer),
+                "alarms.dismiss" => (&["alarm", "reason"], How::Dismiss),
+                _ => (&["alarm"], How::Nudge),
             };
             let input = Input::new(input, fields)?;
-            let found = on_chain(conn, &settings, &input.required("alarm", 64)?, &caller)?;
-            let act = match action {
-                "alarms.steer" => Act::Steer(input.required("text", 8000)?),
-                "alarms.dismiss" => Act::Dismiss(input.required("reason", 2000)?),
+            let act = match how {
+                How::Steer => Act::Steer(input.required("text", 8000)?),
+                How::Dismiss => Act::Dismiss(input.required("reason", 2000)?),
                 _ => Act::Nudge,
             };
-            act_on(conn, &settings, &found, &caller, act, request_id, now)
+            let found = on_chain(
+                conn,
+                &settings,
+                &input.required("alarm", 64)?,
+                &caller,
+                how,
+                request_id,
+            )?;
+            let by = Caller {
+                actor: &caller,
+                session: caller_session,
+                request_id,
+            };
+            done_or(found, |found| {
+                act_on(conn, &settings, &found, &by, act, now)
+            })
         }
         _ => Err(Refusal::InvalidInput(format!(
             "Unknown action {action}. Run app --help for the alarms.* actions."
@@ -337,8 +384,7 @@ fn list(
     let mut alarms = Vec::new();
     for episode in route::open_episodes(conn)? {
         let chain = route::chain(conn, &episode, settings.root_giga.as_deref())?;
-        let level = usize::try_from(episode.level).unwrap_or(usize::MAX);
-        let Standing::At(index) = standing(&chain, level, caller) else {
+        let Some(index) = standing(&chain, caller) else {
             continue;
         };
         alarms.push(json!({
@@ -512,18 +558,22 @@ fn read(
     }))
 }
 
-fn pending_dialog(conn: &Connection, actor: &Actor) -> rusqlite::Result<Option<String>> {
+/// The kind and request id of the dialog the agent waits on now.
+fn pending_dialog(
+    conn: &Connection,
+    actor: &Actor,
+) -> rusqlite::Result<Option<(String, Option<String>)>> {
     let Some(session) = route::session_of(conn, actor)? else {
         return Ok(None);
     };
-    Ok(conn
+    let row: Option<(Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT dialog_kind FROM agent_activity WHERE session_id = ?1",
+            "SELECT dialog_kind, dialog_request_id FROM agent_activity WHERE session_id = ?1",
             [session.as_str()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?
-        .flatten())
+        .optional()?;
+    Ok(row.and_then(|(kind, id)| Some((kind?, id))))
 }
 
 fn answer(
@@ -532,14 +582,8 @@ fn answer(
     caller: &Actor,
     input: &Input,
     request_id: &str,
-) -> Result<AnswerPlan, Refusal> {
+) -> Result<Forward, Refusal> {
     let agent = &found.episode.actor;
-    let target = target_of(&found.chain, found.index).ok_or(Refusal::NotYourAlarm)?;
-    if target != agent {
-        return Err(Refusal::AnswerViaRecipient {
-            target: route::who(conn, target)?.label,
-        });
-    }
     let (allow, deny) = (input.flag("allow")?, input.flag("deny")?);
     let (text, choice) = (input.text("text", 8000)?, input.text("choice", 500)?);
     let given = [allow, deny, text.is_some(), choice.is_some()]
@@ -551,9 +595,14 @@ fn answer(
             "Give exactly one of allow, deny, text or choice.".into(),
         ));
     }
-    let kind = pending_dialog(conn, agent)?.ok_or(Refusal::DialogGone)?;
+    let (kind, pending) = pending_dialog(conn, agent)?.ok_or(Refusal::DialogGone)?;
     let id = &found.episode.id;
-    let (forward, detail) = match kind.as_str() {
+    // The answer is for the dialog the alarm named, never a newer one.
+    let shown = route::dialog_shown(conn, id)?;
+    if shown.is_none() || pending != shown {
+        return Err(Refusal::DialogGone);
+    }
+    let (mut forward, detail) = match kind.as_str() {
         "plan" => return Err(Refusal::PlanDialog),
         "question" => match (text, choice) {
             (Some(text), _) => (json!({"alarm": id, "kind": "question", "text": text}), text),
@@ -580,13 +629,16 @@ fn answer(
             ))
         }
     };
+    forward["dialogRequestId"] = json!(shown);
     let session = route::session_of(conn, agent)?.ok_or(Refusal::DialogGone)?;
-    Ok(AnswerPlan {
+    Ok(Forward {
         episode: id.clone(),
         caller: caller.clone(),
         target: agent.clone(),
         session: session.as_str().to_string(),
-        forward,
+        action: "alarms.answer",
+        input: forward,
+        how: "answer",
         detail,
         request_id: request_id.to_string(),
     })
@@ -596,6 +648,20 @@ enum Act {
     Steer(String),
     Nudge,
     Dismiss(String),
+}
+
+/// Who makes an act call: the actor, the session it calls from, and the
+/// call's request id.
+struct Caller<'a> {
+    actor: &'a Actor,
+    session: &'a str,
+    request_id: &'a str,
+}
+
+/// The outbox key of act `seq`'s message on `episode`. `-` separated: the
+/// front end keeps a request id only if it matches `[A-Za-z0-9_-]+`.
+pub(crate) fn nudge_key(episode: &str, seq: i64) -> String {
+    format!("nudge-{episode}-{seq}")
 }
 
 /// A row an act writes: what it did, to whom, and the outbox prompt it
@@ -647,10 +713,7 @@ fn log(
         [&episode.id],
         |row| row.get(0),
     )?;
-    let key = act
-        .prompt
-        .as_ref()
-        .map(|_| format!("nudge:{}:{seq}", episode.id));
+    let key = act.prompt.as_ref().map(|_| nudge_key(&episode.id, seq));
     tx.execute(
         "INSERT INTO alarm_acts (episode_id, seq, level, actor, target, how, detail, outbox_key,
            request_id, at_active_ms, at_wall_ms)
@@ -715,13 +778,13 @@ fn act_on(
     conn: &Connection,
     settings: &Settings,
     found: &OnChain,
-    caller: &Actor,
+    by: &Caller,
     act: Act,
-    request_id: &str,
     (active, wall): (i64, i64),
 ) -> Result<Outcome, Refusal> {
     let episode = &found.episode;
-    let target = target_of(&found.chain, found.index).ok_or(Refusal::NotYourAlarm)?;
+    let (caller, request_id) = (by.actor, by.request_id);
+    let target = &found.target;
     let from = caller.to_string();
     let (how, detail, prompt) = match &act {
         Act::Steer(text) => (
@@ -739,6 +802,26 @@ fn act_on(
         }
         Act::Dismiss(reason) => ("dismiss", Some(reason.as_str()), None),
     };
+    // A session's running turn takes a steer only through its window
+    // (`sessions.send` with whenBusy steer); an idle one starts a turn. A
+    // Mono chat takes the outbox row, which steers its running turn.
+    if let (Actor::Session(session), Some(prompt)) = (target, &prompt) {
+        return Ok(Outcome::Forward(Forward {
+            episode: episode.id.clone(),
+            caller: caller.clone(),
+            target: target.clone(),
+            session: by.session.to_string(),
+            action: "sessions.send",
+            input: json!({
+                "sessionId": session.as_str(),
+                "prompt": prompt,
+                "whenBusy": "steer",
+            }),
+            how,
+            detail: detail.unwrap_or_default().to_string(),
+            request_id: request_id.to_string(),
+        }));
+    }
     let (result, notices) = logged_in_tx(
         conn,
         episode,
@@ -755,10 +838,10 @@ fn act_on(
     Ok(Outcome::Done { result, notices })
 }
 
-/// The agent's window answered its dialog for `plan`: the act is logged.
-pub(crate) fn answered(
+/// A window did `plan`'s act: it is logged.
+pub(crate) fn forwarded(
     conn: &Connection,
-    plan: &AnswerPlan,
+    plan: &Forward,
     now: (i64, i64),
 ) -> Result<Value, Refusal> {
     let episode = route::episode(conn, &plan.episode)?.ok_or(Refusal::UnknownAlarm)?;
@@ -768,8 +851,8 @@ pub(crate) fn answered(
         &Logged {
             caller: &plan.caller,
             target: &plan.target,
-            how: "answer",
-            detail: Some(&plan.detail),
+            how: plan.how,
+            detail: (!plan.detail.is_empty()).then_some(plan.detail.as_str()),
             prompt: None,
             request_id: &plan.request_id,
         },
@@ -780,8 +863,7 @@ pub(crate) fn answered(
 
 /// A plain `messages.send` or `sessions.send` from `caller_session` to
 /// `to` was accepted: it is an act (`message`) on each open episode where
-/// the caller stands at or above the current level and `to` is the one
-/// it acts on.
+/// the caller is on the chain and `to` is the one it acts on.
 pub(crate) fn message(
     conn: &Connection,
     caller_session: &str,
@@ -795,8 +877,7 @@ pub(crate) fn message(
     let settings = Settings::load(conn)?;
     for episode in route::open_episodes(conn)? {
         let chain = route::chain(conn, &episode, settings.root_giga.as_deref())?;
-        let level = usize::try_from(episode.level).unwrap_or(usize::MAX);
-        let Standing::At(index) = standing(&chain, level, &caller) else {
+        let Some(index) = standing(&chain, &caller) else {
             continue;
         };
         if target_of(&chain, index) != Some(&to) {
@@ -820,91 +901,6 @@ pub(crate) fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn session(id: &str) -> Actor {
-        Actor::Session(SessionId::parse(id).unwrap())
-    }
-
-    fn mono(id: &str) -> Actor {
-        Actor::Mono(MonoId::parse(id).unwrap())
-    }
-
-    // Defect: a caller below the current level, the stalled agent, or a
-    // stranger acts on an alarm; or the current recipient or one above it
-    // is refused; or a caller acts on anyone but the one just below it.
-    #[test]
-    fn only_the_current_recipient_or_one_above_acts_and_each_acts_one_level_down() {
-        let (worker, lead, pr_mono, giga, stranger) = (
-            session("worker"),
-            session("lead"),
-            mono("pr-mono"),
-            mono("general"),
-            mono("other"),
-        );
-        let chain = vec![
-            Provisioner::Agent(worker.clone()),
-            Provisioner::Agent(lead.clone()),
-            Provisioner::Agent(pr_mono.clone()),
-            Provisioner::Agent(giga.clone()),
-            Provisioner::Tyler,
-        ];
-        // Rows: caller; columns: episode level 1..=4 (4 is Tyler's).
-        let table: [(&Actor, [Standing; 4]); 5] = [
-            (&worker, [Standing::NotOnChain; 4]),
-            (
-                &lead,
-                [
-                    Standing::At(1),
-                    Standing::Below,
-                    Standing::Below,
-                    Standing::Below,
-                ],
-            ),
-            (
-                &pr_mono,
-                [
-                    Standing::At(2),
-                    Standing::At(2),
-                    Standing::Below,
-                    Standing::Below,
-                ],
-            ),
-            (
-                &giga,
-                [
-                    Standing::At(3),
-                    Standing::At(3),
-                    Standing::At(3),
-                    Standing::Below,
-                ],
-            ),
-            (&stranger, [Standing::NotOnChain; 4]),
-        ];
-        for (caller, row) in table {
-            for (level, expected) in (1..=4).zip(row) {
-                assert_eq!(
-                    standing(&chain, level, caller),
-                    expected,
-                    "{caller} at level {level}"
-                );
-            }
-        }
-        assert_eq!(
-            target_of(&chain, 1),
-            Some(&worker),
-            "the lead acts on its worker"
-        );
-        assert_eq!(
-            target_of(&chain, 2),
-            Some(&lead),
-            "the Mono acts on its lead"
-        );
-        assert_eq!(
-            target_of(&chain, 3),
-            Some(&pr_mono),
-            "the Giga acts on its Mono"
-        );
-    }
 
     // Defect: a refusal reaches the caller without a code and hint, or as
     // retryable.

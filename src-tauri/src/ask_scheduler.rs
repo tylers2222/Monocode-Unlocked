@@ -265,8 +265,8 @@ fn reminder_text(
 }
 
 /// An outbox row as a window reads it: who it goes to, and what its prompt
-/// names. Only a blocked row joins its question's seq and text (R15), and
-/// only an alarm or nudge row the text its open episode stored.
+/// names. Only a blocked row joins its question's seq and text (R15), an
+/// alarm row the text its open episode stored, and a nudge row its text.
 const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body,
        al.id, ap.text, o.claimed_by
      FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
@@ -274,11 +274,12 @@ const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, 
        AND e.kind = 'question' AND o.key = 'blocked:' || e.ask_id || ':' || e.seq
      LEFT JOIN mono_messages m ON m.id = e.message_id
      LEFT JOIN alarm_prompts ap ON o.stage IN ('alarm', 'nudge') AND ap.outbox_key = o.key
-     LEFT JOIN alarm_episodes al ON al.id = ap.episode_id AND al.closed_active_ms IS NULL";
+     LEFT JOIN alarm_episodes al ON al.id = ap.episode_id
+       AND (al.closed_active_ms IS NULL OR o.stage = 'nudge')";
 
 /// The key, recipient and prompt of a `ROW`; no prompt for a row with no
-/// ask, or at a stage this build does not send. An alarm or nudge row has
-/// one only while its episode is open.
+/// ask, or at a stage this build does not send. An alarm row has one only
+/// while its episode is open.
 fn row_text(row: &rusqlite::Row) -> rusqlite::Result<(String, String, Option<String>)> {
     let (ask_id, stage): (Option<String>, String) = (row.get(2)?, row.get(3)?);
     if matches!(stage.as_str(), "alarm" | "nudge") {

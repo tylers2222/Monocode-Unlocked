@@ -1,6 +1,6 @@
 //! Design sections 2, 5 and 6: who hears of an episode at each level and
-//! what they read. A level not acted on 15 active minutes after it was
-//! sent goes one provisioner up; every chain ends at Tyler's OS
+//! what they read. A level not acted on 15 active minutes after its row
+//! was written goes one provisioner up, taken or not (lead ruling a); every chain ends at Tyler's OS
 //! notification, which never escalates.
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -24,6 +24,10 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            text       TEXT NOT NULL
          );
          CREATE INDEX IF NOT EXISTS alarm_prompts_episode ON alarm_prompts (episode_id);
+         CREATE TABLE IF NOT EXISTS alarm_dialogs (
+           episode_id TEXT PRIMARY KEY REFERENCES alarm_episodes(id),
+           request_id TEXT NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS alarm_acts (
            episode_id   TEXT NOT NULL REFERENCES alarm_episodes(id),
            seq          INTEGER NOT NULL CHECK (seq >= 1),
@@ -400,7 +404,8 @@ fn level_text(
 }
 
 /// Writes level `level` of `episode` for `to` once: its send row and, for
-/// an agent, its outbox row and text, and names the recipient's chat. A
+/// an agent, its outbox row and text, and names the recipient's chat. The
+/// level's escalation clock starts now; Tyler's level never escalates. A
 /// level already written is left as it is.
 fn send(
     tx: &Connection,
@@ -409,7 +414,7 @@ fn send(
     level: i64,
     to: &Provisioner,
     text: &str,
-    active: i64,
+    (active, escalate_ms): (i64, i64),
 ) -> rusqlite::Result<()> {
     let key = match to {
         Provisioner::Agent(_) => Some(outbox_key(episode, level)),
@@ -433,6 +438,13 @@ fn send(
             params![key, episode, text],
         )?;
         crate::ask_scheduler::name_chat(tx, notices, &recipient)?;
+    }
+    if inserted {
+        let due = matches!(to, Provisioner::Agent(_)).then_some(active + escalate_ms);
+        tx.execute(
+            "UPDATE alarm_episodes SET level = ?2, next_escalate_active_ms = ?3 WHERE id = ?1",
+            params![episode, level, due],
+        )?;
     }
     Ok(())
 }
@@ -460,15 +472,44 @@ pub(crate) fn opened(
     chain.extend(climb(to.clone(), |actor| {
         provisioner_of(tx, actor, settings.root_giga.as_deref())
     })?);
+    if episode.cause == "dialog" {
+        if let Some(session) = session_of(tx, &episode.actor)? {
+            tx.execute(
+                "INSERT INTO alarm_dialogs (episode_id, request_id)
+                 SELECT ?1, dialog_request_id FROM agent_activity
+                  WHERE session_id = ?2 AND dialog_request_id IS NOT NULL
+                 ON CONFLICT (episode_id) DO NOTHING",
+                params![id, session.as_str()],
+            )?;
+        }
+    }
     let text = level_text(tx, &episode, &chain, 1, settings, (active, wall))?;
-    send(tx, notices, id, 1, &to, &text, active)
+    send(
+        tx,
+        notices,
+        id,
+        1,
+        &to,
+        &text,
+        (active, settings.escalate_minutes * MINUTE_MS),
+    )
 }
 
-/// The unsent outbox rows of episode `id` (its alarms, nudges and steers)
-/// go with it when it closes.
+/// The request id of the dialog episode `id` alarmed about.
+pub(crate) fn dialog_shown(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT request_id FROM alarm_dialogs WHERE episode_id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The unsent alarm rows of episode `id` go with it when it closes. A
+/// nudge or steer is its sender's message and is still delivered.
 pub(crate) fn drop_unsent(tx: &Connection, id: &str) -> rusqlite::Result<()> {
     tx.execute(
-        "DELETE FROM mono_outbox WHERE sent_at IS NULL
+        "DELETE FROM mono_outbox WHERE sent_at IS NULL AND stage = 'alarm'
            AND key IN (SELECT outbox_key FROM alarm_prompts WHERE episode_id = ?1)",
         [id],
     )?;
@@ -476,8 +517,8 @@ pub(crate) fn drop_unsent(tx: &Connection, id: &str) -> rusqlite::Result<()> {
 }
 
 /// The outbox row of a level was taken by its recipient's provider: the
-/// level is sent, and its escalation clock starts now.
-fn record_sent(tx: &Connection, settings: &Settings, active: i64) -> rusqlite::Result<()> {
+/// level is logged sent. Its escalation clock started when it was written.
+fn record_sent(tx: &Connection) -> rusqlite::Result<()> {
     let taken = tx
         .prepare(
             "SELECT s.episode_id, s.level, o.sent_at FROM alarm_sends s
@@ -498,28 +539,8 @@ fn record_sent(tx: &Connection, settings: &Settings, active: i64) -> rusqlite::R
             "UPDATE alarm_sends SET sent_wall_ms = ?3 WHERE episode_id = ?1 AND level = ?2",
             params![episode, level, sent_at],
         )?;
-        tx.execute(
-            "UPDATE alarm_episodes SET next_escalate_active_ms = ?3 WHERE id = ?1 AND level = ?2",
-            params![
-                episode,
-                level,
-                active + settings.escalate_minutes * MINUTE_MS
-            ],
-        )?;
     }
     Ok(())
-}
-
-fn level_sent(tx: &Connection, episode: &EpisodeRow) -> rusqlite::Result<bool> {
-    Ok(tx
-        .query_row(
-            "SELECT sent_wall_ms IS NOT NULL AND recipient <> 'tyler' FROM alarm_sends
-              WHERE episode_id = ?1 AND level = ?2",
-            params![episode.id, episode.level],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or(false))
 }
 
 fn escalate(
@@ -534,19 +555,26 @@ fn escalate(
         return Ok(());
     };
     let Some(to) = chain.get(level) else {
-        return Ok(());
+        return tx
+            .execute(
+                "UPDATE alarm_episodes SET next_escalate_active_ms = NULL WHERE id = ?1",
+                [&episode.id],
+            )
+            .map(drop);
     };
     let text = match to {
         Provisioner::Agent(_) => level_text(tx, episode, &chain, level, settings, at)?,
         Provisioner::Tyler => String::new(),
     };
-    send(tx, notices, &episode.id, episode.level + 1, to, &text, at.0)?;
-    tx.execute(
-        "UPDATE alarm_episodes SET level = ?2 + 1, next_escalate_active_ms = NULL
-          WHERE id = ?1 AND level = ?2",
-        params![episode.id, episode.level],
-    )?;
-    Ok(())
+    send(
+        tx,
+        notices,
+        &episode.id,
+        episode.level + 1,
+        to,
+        &text,
+        (at.0, settings.escalate_minutes * MINUTE_MS),
+    )
 }
 
 fn close_no_effect(tx: &Connection, id: &str, (active, wall): (i64, i64)) -> rusqlite::Result<()> {
@@ -559,9 +587,9 @@ fn close_no_effect(tx: &Connection, id: &str, (active, wall): (i64, i64)) -> rus
     drop_unsent(tx, id)
 }
 
-/// The routing half of a detector pass, in its transaction: a level whose
-/// row was taken starts its 15 minutes; one not acted on by then goes a
-/// level up; an act that left the agent stalled N minutes closes the
+/// The routing half of a detector pass, in its transaction: a level not
+/// acted on 15 minutes after its row was written goes a level up, taken or
+/// not; an act that left the agent stalled N minutes closes the
 /// episode `act_no_effect`, so the next pass opens a new one.
 pub(crate) fn run(
     tx: &Connection,
@@ -570,7 +598,7 @@ pub(crate) fn run(
     at: (i64, i64),
 ) -> rusqlite::Result<()> {
     let active = at.0;
-    record_sent(tx, settings, active)?;
+    record_sent(tx)?;
     for episode in open_episodes(tx)? {
         if let Some(acted) = episode.acted_active {
             let stall_minutes =
@@ -580,7 +608,7 @@ pub(crate) fn run(
             }
             continue;
         }
-        if episode.next_escalate.is_some_and(|due| active >= due) && level_sent(tx, &episode)? {
+        if episode.next_escalate.is_some_and(|due| active >= due) {
             escalate(tx, notices, &episode, settings, at)?;
         }
     }

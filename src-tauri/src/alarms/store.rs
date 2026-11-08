@@ -4,11 +4,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::activity::{self, Activity};
 use super::live::{Live, Taken, Write};
-use super::provisioner::{self, Provisioner};
+use super::provisioner;
 use super::state::{
     self, Cause, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition, Wake,
 };

@@ -10,9 +10,10 @@ use serde_json::{json, Value};
 use super::agents::{session_caller, Mono};
 use super::world::World;
 use crate::alarms::act::{self, Outcome, Refusal};
-use crate::alarms::taps::{Harness, Pipe, Tap};
-use crate::alarms::{test_taps, TylerAlarm};
+use crate::alarms::taps::Pipe;
+use crate::alarms::{test_taps, ChildTap, TylerAlarm};
 use crate::ask_scheduler;
+use crate::control::alarm_seam::{self, Sent};
 use crate::mono_messages::SessionId;
 use crate::mono_roster::MonoRole;
 
@@ -64,13 +65,11 @@ fn align(world: &mut World) {
     }
 }
 
-fn turn(world: &World, session: &SessionId, turn_id: &str, started: bool) {
-    let conn = world.conn();
-    let (at, wall) = (world.active_ms(), world.now());
+fn turn(world: &mut World, session: &SessionId, turn_id: &str, started: bool) {
     if started {
-        test_taps::turn_started(&conn, session, turn_id, at, wall).unwrap();
+        world.alarm_turn_started(session, turn_id);
     } else {
-        test_taps::turn_ended(&conn, session, turn_id, at, wall).unwrap();
+        world.alarm_turn_ended(session, turn_id);
     }
 }
 
@@ -147,7 +146,7 @@ fn call(world: &World, caller: &str, action: &str, input: Value) -> Result<Outco
 fn result(outcome: Result<Outcome, Refusal>) -> Value {
     match outcome {
         Ok(Outcome::Done { result, .. }) => result,
-        Ok(Outcome::Answer(plan)) => panic!("an answer plan: {plan:?}"),
+        Ok(Outcome::Forward(plan)) => panic!("a window act: {plan:?}"),
         Err(refusal) => panic!("refused: {refusal:?}"),
     }
 }
@@ -157,6 +156,86 @@ fn code(outcome: Result<Outcome, Refusal>) -> &'static str {
         Err(refusal) => refusal.code(),
         Ok(_) => "ok",
     }
+}
+
+/// The window each agent of `chain` has its session loaded in.
+fn windows(chain: &Chain) -> [(&'static str, &str); 4] {
+    [
+        ("worker-window", chain.worker.as_str()),
+        ("lead-window", chain.lead.as_str()),
+        ("mono-window", chain.mono.chat.as_str()),
+        ("giga-window", chain.giga.chat.as_str()),
+    ]
+}
+
+/// One `alarms.*` call from `caller`'s window as `serve` runs it; every
+/// window it reaches replies `reply`. The response, and what each window
+/// was sent.
+fn seam(
+    world: &World,
+    chain: &Chain,
+    caller: &str,
+    action: &str,
+    input: Value,
+    request_id: &str,
+    reply: &Value,
+) -> (Value, Vec<Sent>) {
+    let loaded = windows(chain);
+    let window = loaded
+        .iter()
+        .find(|(_, session)| *session == caller)
+        .map_or("main", |(window, _)| window);
+    alarm_seam::call(
+        world.store(),
+        &loaded,
+        (window, caller),
+        action,
+        input,
+        request_id,
+        reply,
+    )
+}
+
+fn ok() -> Value {
+    json!({"ok": true, "result": {"submitted": true}})
+}
+
+/// What `sessions.send` with whenBusy steer that `from`'s window was sent
+/// says, as `(window, session, action, sessionId, whenBusy, prompt)`.
+fn steer_sent(sent: &[Sent]) -> (String, String, String, String, String, String) {
+    let [(window, session, action, input)] = sent else {
+        panic!("one window event: {sent:?}");
+    };
+    (
+        window.clone(),
+        session.clone(),
+        action.clone(),
+        input["sessionId"].as_str().unwrap_or_default().into(),
+        input["whenBusy"].as_str().unwrap_or_default().into(),
+        input["prompt"].as_str().unwrap_or_default().into(),
+    )
+}
+
+fn acts(world: &World, episode: &str) -> Vec<(String, String, String)> {
+    world
+        .conn()
+        .prepare("SELECT actor, how, target FROM alarm_acts WHERE episode_id = ?1 ORDER BY seq")
+        .unwrap()
+        .query_map([episode], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+fn close_reason(world: &World, episode: &str) -> Option<String> {
+    world
+        .conn()
+        .query_row(
+            "SELECT close_reason FROM alarm_episodes WHERE id = ?1",
+            [episode],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 fn notify(world: &World) -> Vec<TylerAlarm> {
@@ -170,8 +249,8 @@ fn notify(world: &World) -> Vec<TylerAlarm> {
 }
 
 // Defect: an alarm nobody acts on stays with the lead, skips the Mono,
-// goes up before its level was taken or before 15 minutes, goes past Tyler,
-// or Tyler's notification shows twice.
+// waits for its row to be taken (a closed window never escalates), goes up
+// before 15 minutes, goes past Tyler, or Tyler's notification shows twice.
 #[test]
 fn no_act_for_fifteen_minutes_goes_one_level_up_and_ends_at_tyler_once() {
     let mut world = World::new("alarm-escalate");
@@ -182,17 +261,7 @@ fn no_act_for_fifteen_minutes_goes_one_level_up_and_ends_at_tyler_once() {
     let giga = format!("mono:{}", chain.giga.id.as_str());
     assert_eq!(sends(&world, &episode), vec![(1, lead.clone())]);
 
-    world.advance(2 * ESCALATE);
-    assert_eq!(sends(&world, &episode).len(), 1, "not taken: no escalation");
-    let first = take(&world, &test_taps::outbox_key(&episode, 1));
-    assert!(
-        first.contains(&format!(
-            "No act in 15 min goes to {}.",
-            chain.mono.id.as_str()
-        )),
-        "{first}"
-    );
-
+    // No window takes level 1 or level 3; each still goes up at 15 min.
     for (level, recipient) in [(2, &mono), (3, &giga)] {
         world.advance(ESCALATE - MINUTE);
         assert_eq!(sends(&world, &episode).len(), level - 1, "at 14 min");
@@ -200,7 +269,18 @@ fn no_act_for_fifteen_minutes_goes_one_level_up_and_ends_at_tyler_once() {
         assert_eq!(
             sends(&world, &episode).last(),
             Some(&(i64::try_from(level).unwrap(), recipient.clone())),
-            "level {level}"
+            "level {level}, its row untaken"
+        );
+        if level == 3 {
+            continue;
+        }
+        let first = take(&world, &test_taps::outbox_key(&episode, 1));
+        assert!(
+            first.contains(&format!(
+                "No act in 15 min goes to {}.",
+                chain.mono.id.as_str()
+            )),
+            "{first}"
         );
         let text = take(
             &world,
@@ -239,8 +319,9 @@ fn no_act_for_fifteen_minutes_goes_one_level_up_and_ends_at_tyler_once() {
 }
 
 // Defect: an act does not stop escalation, a nudge never reaches the
-// agent, or an act that changed nothing leaves the episode open forever
-// instead of a new alarm N minutes later.
+// agent's turn (a running one is steered, an idle one woken, through the
+// lead's own sessions.send), or an act that changed nothing leaves the
+// episode open forever instead of a new alarm N minutes later.
 #[test]
 fn a_nudge_stops_escalation_wakes_the_agent_and_no_progress_opens_a_new_episode() {
     let mut world = World::new("alarm-nudge");
@@ -255,25 +336,46 @@ fn a_nudge_stops_escalation_wakes_the_agent_and_no_progress_opens_a_new_episode(
     let episode = stalled_worker_after(&mut world, &chain, 30 * MINUTE);
     take(&world, &test_taps::outbox_key(&episode, 1));
     align(&mut world);
-    let nudged = result(call(
+    let (nudged, sent) = seam(
         &world,
+        &chain,
         chain.lead.as_str(),
         "alarms.nudge",
         json!({"alarm": episode}),
-    ));
+        "nudge-1",
+        &ok(),
+    );
     let worker = format!("session:{}", chain.worker.as_str());
-    assert_eq!(nudged["target"], worker.as_str());
-    let key = format!("nudge:{episode}:1");
-    assert!(ask_scheduler::pending(&world.conn(), &chain.worker)
-        .unwrap()
-        .contains(&key));
-    let text = take(&world, &key);
+    assert_eq!(nudged["result"]["target"], worker.as_str(), "{nudged}");
+    let (window, from, action, to, when_busy, text) = steer_sent(&sent);
+    assert_eq!(
+        (
+            window.as_str(),
+            from.as_str(),
+            action.as_str(),
+            to.as_str(),
+            when_busy.as_str()
+        ),
+        (
+            "lead-window",
+            chain.lead.as_str(),
+            "sessions.send",
+            chain.worker.as_str(),
+            "steer"
+        ),
+    );
     assert!(
         text.starts_with(&format!(
             "<mono_nudge alarm=\"{episode}\" from=\"session:{}\">\nYour provisioner nudged you. Open work: ask ",
             chain.lead.as_str()
         )),
         "{text}"
+    );
+    assert!(
+        ask_scheduler::pending(&world.conn(), &chain.worker)
+            .unwrap()
+            .is_empty(),
+        "a session's nudge is no outbox row"
     );
 
     world.advance(ESCALATE + MINUTE);
@@ -285,15 +387,10 @@ fn a_nudge_stops_escalation_wakes_the_agent_and_no_progress_opens_a_new_episode(
         "the worker's N (30 min) - 5 s after the act"
     );
     world.advance(PASS);
-    let closed: String = world
-        .conn()
-        .query_row(
-            "SELECT close_reason FROM alarm_episodes WHERE id = ?1",
-            [&episode],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(closed, "act_no_effect");
+    assert_eq!(
+        close_reason(&world, &episode).as_deref(),
+        Some("act_no_effect")
+    );
     world.advance(PASS);
     let open = open_episodes(&world);
     assert_eq!(open.len(), 1);
@@ -305,13 +402,17 @@ fn a_nudge_stops_escalation_wakes_the_agent_and_no_progress_opens_a_new_episode(
 
     // The new alarm's nudge wakes the worker; its turn is progress.
     let renudged = open[0].0.clone();
-    result(call(
+    let (response, _) = seam(
         &world,
+        &chain,
         chain.lead.as_str(),
         "alarms.nudge",
         json!({"alarm": renudged}),
-    ));
-    turn(&world, &chain.worker, "woken", true);
+        "nudge-2",
+        &ok(),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+    turn(&mut world, &chain.worker, "woken", true);
     world.advance(PASS);
     assert_eq!(open_episodes(&world), Vec::new(), "the turn closed it");
 }
@@ -391,16 +492,16 @@ fn a_dismiss_records_its_reason_and_a_message_to_the_agent_is_an_act() {
 const PERMISSION: &str = r#"{"type":"control_request","request_id":"req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf target"}}}"#;
 const ANSWER: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{"behavior":"allow"}}}"#;
 
-// Defect: someone off the chain, the agent itself or a recipient the alarm
-// left behind acts on it; a Mono answers its worker's dialog past its lead;
-// an answer goes to a dialog that is gone; report or set skip their checks.
+// Defect: someone off the chain or the agent itself acts on it; a Mono
+// answers its worker's dialog past its lead; report or set skip their
+// checks.
 #[test]
-fn acts_are_refused_to_all_but_the_current_recipient_and_those_above() {
+fn acts_are_refused_off_the_chain_and_answers_past_the_provisioner() {
     let mut world = World::new("alarm-auth");
     let chain = chain(&world, "ala");
     let stranger = world.add_session("ala-stranger", P, None);
-    let mut claude = Tap::new(Harness::Claude);
-    let episode = blocked_worker(&mut world, &chain, &mut claude);
+    let claude = claude_tap(&world, &chain);
+    let episode = blocked_worker(&mut world, &chain, &claude);
     let alarm = json!({"alarm": episode});
     let mono = chain.mono.chat.as_str();
 
@@ -486,97 +587,247 @@ fn acts_are_refused_to_all_but_the_current_recipient_and_those_above() {
     assert_eq!(set["stall_minutes"], 30);
 }
 
-/// Line `line` of the worker's Claude reaches its tap now.
-fn tap(world: &World, chain: &Chain, claude: &mut Tap, pipe: Pipe, line: &str) {
-    let now = world.active_ms();
-    if let Some(row) = claude.line(pipe, line, now) {
-        test_taps::write_tap(&world.conn(), &chain.worker, &row, world.now()).unwrap();
-        claude.wrote(row, now);
-    }
+/// The stdio tap `harness_spawn` gives the worker's Claude child.
+fn claude_tap(world: &World, chain: &Chain) -> ChildTap {
+    world
+        .store()
+        .alarms
+        .tap(chain.worker.as_str(), Some("claude"))
+        .unwrap()
 }
 
 /// The worker's turn asked a permission and it waited 3 minutes: its
 /// dialog episode.
-fn blocked_worker(world: &mut World, chain: &Chain, claude: &mut Tap) -> String {
+fn blocked_worker(world: &mut World, chain: &Chain, claude: &ChildTap) -> String {
     align(world);
     turn(world, &chain.worker, "t1", true);
-    tap(world, chain, claude, Pipe::Stdout, PERMISSION);
+    claude.line(Pipe::Stdout, PERMISSION);
     world.advance(3 * MINUTE);
     let [(episode, _, _)] = <[_; 1]>::try_from(open_episodes(world)).unwrap();
     episode
 }
 
-// Defect: an answer reaches another session than the stalled agent's, or
-// a dialog that is gone.
+const PERMISSION_2: &str = r#"{"type":"control_request","request_id":"req_2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push --force"}}}"#;
+
+// Defect: an answer reaches another session than the stalled agent's, or a
+// dialog other than the one the alarm named; it is logged before the
+// window answered; a retry answers twice or reports a failure.
 #[test]
 fn the_lead_answers_its_workers_dialog_through_the_workers_window_once() {
     let mut world = World::new("alarm-answer");
     let chain = chain(&world, "alw");
-    let mut claude = Tap::new(Harness::Claude);
-    let episode = blocked_worker(&mut world, &chain, &mut claude);
-    let plan = match call(
-        &world,
-        chain.lead.as_str(),
-        "alarms.answer",
-        json!({"alarm": episode, "allow": true}),
-    ) {
-        Ok(Outcome::Answer(plan)) => plan,
-        other => panic!("{:?}", other.map(|_| ()).map_err(|refusal| refusal.code())),
-    };
-    assert_eq!(
-        plan.session,
-        chain.worker.as_str(),
-        "the worker's window answers"
-    );
-    assert_eq!(
-        plan.forward,
-        json!({"alarm": episode, "kind": "permission", "decision": "allow"})
-    );
-    let answered = act::answered(&world.conn(), &plan, (world.active_ms(), world.now())).unwrap();
-    assert_eq!(answered["acted"], "answer");
+    let claude = claude_tap(&world, &chain);
+    let episode = blocked_worker(&mut world, &chain, &claude);
+    let input = json!({"alarm": episode, "allow": true});
+    let lead = chain.lead.as_str();
 
-    tap(&world, &chain, &mut claude, Pipe::Stdin, ANSWER);
-    assert_eq!(
-        code(call(
-            &world,
-            chain.lead.as_str(),
-            "alarms.answer",
-            json!({"alarm": episode, "deny": true})
-        )),
-        "dialog_gone"
+    let gone = json!({"ok": false, "code": "dialog_gone"});
+    let (refused, _) = seam(
+        &world,
+        &chain,
+        lead,
+        "alarms.answer",
+        input.clone(),
+        "a-0",
+        &gone,
     );
+    assert_eq!(refused["code"], "dialog_gone");
+    assert_eq!(
+        acts(&world, &episode),
+        Vec::new(),
+        "no act before the window answered"
+    );
+
+    let (answered, sent) = seam(
+        &world,
+        &chain,
+        lead,
+        "alarms.answer",
+        input.clone(),
+        "a-1",
+        &ok(),
+    );
+    assert_eq!(answered["result"]["acted"], "answer", "{answered}");
+    assert_eq!(
+        sent,
+        vec![(
+            "worker-window".to_string(),
+            chain.worker.as_str().to_string(),
+            "alarms.answer".to_string(),
+            json!({"alarm": episode, "kind": "permission", "decision": "allow", "dialogRequestId": "req_1"}),
+        )],
+        "the worker's window answers the dialog the alarm named"
+    );
+
+    // The user answered req_1 and the agent asked req_2; the pass closes
+    // the episode. A retry of the answer is the first answer; a new one is
+    // refused.
+    claude.line(Pipe::Stdin, ANSWER);
+    claude.line(Pipe::Stdout, PERMISSION_2);
+    world.advance(PASS);
+    let (retried, sent) = seam(
+        &world,
+        &chain,
+        lead,
+        "alarms.answer",
+        input.clone(),
+        "a-1",
+        &ok(),
+    );
+    assert_eq!(retried["result"]["duplicate"], true, "{retried}");
+    assert_eq!(retried["result"]["seq"], answered["result"]["seq"]);
+    assert_eq!(sent, Vec::new(), "no second answer");
+    let (late, _) = seam(&world, &chain, lead, "alarms.answer", input, "a-2", &ok());
+    assert_eq!(late["code"], "alarm_closed");
+    assert_eq!(acts(&world, &episode).len(), 1);
 }
 
-// Defect: the lead an alarm went past still acts on it, or the Mono it
-// reached acts on the worker past its lead.
+// Defect: the lead loses its acts once the alarm went past it (rights
+// accumulate), a steer to a running session waits for its turn end, the
+// Mono acts on the worker past its lead, a lower recipient dismisses the
+// alarm above it, or a steer to a Mono chat is dropped when the episode
+// closes; or a key the front end reads does not match its request id rule.
 #[test]
-fn a_recipient_the_alarm_left_behind_is_refused_and_the_mono_steers_its_lead() {
+fn every_recipient_so_far_acts_one_level_down_and_a_steer_outlives_its_episode() {
     let mut world = World::new("alarm-auth-up");
     let chain = chain(&world, "alu");
     let episode = stalled_worker(&mut world, &chain);
-    take(&world, &test_taps::outbox_key(&episode, 1));
     world.advance(ESCALATE + PASS);
     assert_eq!(sends(&world, &episode).len(), 2);
+    world.alarm_turn_started(&chain.lead, "lead-turn");
+    let (lead, mono) = (chain.lead.as_str(), chain.mono.chat.as_str());
+
+    let (nudged, sent) = seam(
+        &world,
+        &chain,
+        lead,
+        "alarms.nudge",
+        json!({"alarm": episode}),
+        "n-1",
+        &ok(),
+    );
+    assert_eq!(nudged["ok"], true, "{nudged}");
+    assert_eq!(
+        steer_sent(&sent).3,
+        chain.worker.as_str(),
+        "the lead still nudges its worker"
+    );
+    let text = "Your worker is idle with its ask.";
+    let (_, sent) = seam(
+        &world,
+        &chain,
+        mono,
+        "alarms.steer",
+        json!({"alarm": episode, "text": text}),
+        "s-1",
+        &ok(),
+    );
+    let (window, from, action, to, when_busy, prompt) = steer_sent(&sent);
+    assert_eq!(
+        (
+            window.as_str(),
+            from.as_str(),
+            action.as_str(),
+            to.as_str(),
+            when_busy.as_str()
+        ),
+        ("mono-window", mono, "sessions.send", lead, "steer"),
+        "the Mono steers its running lead, never the worker"
+    );
+    assert!(prompt.contains(text), "{prompt}");
     assert_eq!(
         code(call(
             &world,
-            chain.lead.as_str(),
-            "alarms.nudge",
-            json!({"alarm": episode})
+            lead,
+            "alarms.dismiss",
+            json!({"alarm": episode, "reason": "fine"})
         )),
         "alarm_moved_up"
     );
-    let steered = result(call(
-        &world,
-        chain.mono.chat.as_str(),
-        "alarms.steer",
-        json!({"alarm": episode, "text": "Your worker is idle with its ask."}),
-    ));
+    let lead_actor = format!("session:{lead}");
+    let mono_actor = format!("mono:{}", chain.mono.id.as_str());
+    let worker_actor = format!("session:{}", chain.worker.as_str());
     assert_eq!(
-        steered["target"],
-        format!("session:{}", chain.lead.as_str()),
-        "the Mono steers its lead, never the worker"
+        acts(&world, &episode),
+        vec![
+            (lead_actor.clone(), "nudge".into(), worker_actor),
+            (mono_actor.clone(), "steer".into(), lead_actor),
+        ]
     );
+
+    // The Giga steers its Mono through the outbox; the worker's turn closes
+    // the episode and the steer still goes out.
+    let (steered, sent) = seam(
+        &world,
+        &chain,
+        chain.giga.chat.as_str(),
+        "alarms.steer",
+        json!({"alarm": episode, "text": "Check your lead."}),
+        "s-2",
+        &ok(),
+    );
+    assert_eq!(sent, Vec::new(), "a Mono chat is steered by its outbox row");
+    assert_eq!(steered["result"]["target"], mono_actor.as_str());
+    let key = act::nudge_key(&episode, steered["result"]["seq"].as_i64().unwrap());
+    ran_a_turn(&mut world, &chain.worker);
+    world.advance(PASS);
+    assert_eq!(close_reason(&world, &episode).as_deref(), Some("progress"));
+    assert!(take(&world, &key).contains("Check your lead."));
+
+    assert_front_end_keys(&world);
+}
+
+/// Every alarms key that reaches the front end matches its request id rule
+/// (sessionStore keeps an appRequestId only if it matches).
+fn assert_front_end_keys(world: &World) {
+    let front_end = regex::Regex::new("^[A-Za-z0-9_-]+$").unwrap();
+    let conn = world.conn();
+    for sql in [
+        "SELECT key FROM mono_outbox WHERE stage IN ('alarm', 'nudge')",
+        "SELECT outbox_key FROM alarm_prompts",
+        "SELECT outbox_key FROM alarm_acts WHERE outbox_key IS NOT NULL",
+        "SELECT outbox_key FROM alarm_sends WHERE outbox_key IS NOT NULL",
+        "SELECT id FROM alarm_episodes",
+    ] {
+        let keys: Vec<String> = conn
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!keys.is_empty(), "{sql}");
+        for key in keys {
+            assert!(front_end.is_match(&key), "{sql}: {key}");
+        }
+    }
+}
+
+// Defect (lead ruling b): raising N mid-episode closes it as work_cleared,
+// so its escalation restarts and the report says the work went away.
+#[test]
+fn raising_n_mid_episode_keeps_the_episode_and_its_escalation() {
+    let mut world = World::new("alarm-set-mid");
+    let chain = chain(&world, "als");
+    let episode = stalled_worker(&mut world, &chain);
+    world.advance(5 * MINUTE);
+    result(call(
+        &world,
+        chain.lead.as_str(),
+        "alarms.set",
+        json!({"agent": chain.worker.as_str(), "stall_minutes": 60}),
+    ));
+    world.advance(ESCALATE - 5 * MINUTE + PASS);
+    assert_eq!(close_reason(&world, &episode), None);
+    assert_eq!(open_episodes(&world)[0].0, episode);
+    assert_eq!(
+        sends(&world, &episode).len(),
+        2,
+        "level 2 at 15 min, as before"
+    );
+    ran_a_turn(&mut world, &chain.worker);
+    world.advance(PASS);
+    assert_eq!(close_reason(&world, &episode).as_deref(), Some("progress"));
 }
 
 /// An episode row of the report: id, Mono, stalled since (wall), closed

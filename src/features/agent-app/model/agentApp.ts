@@ -1,10 +1,5 @@
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import {
-  respondHarnessApproval,
-  respondHarnessQuestion,
-} from "../../../integrations/harness/core/registry";
-import { buildQuestionReply } from "../../sessions/model/userQuestion";
-import {
   isRemoteProjectPath,
   looksLikeProject,
 } from "../../projects/model/recents";
@@ -13,6 +8,7 @@ import {
   modelEffortSetting,
   modelsFor,
 } from "../../sessions/model/models";
+import { answerAlarmDialog } from "./agentAppAlarms";
 import { requireHarnessModel } from "./agentModelChoice";
 import {
   newTurnId,
@@ -1813,61 +1809,6 @@ async function handleApprovals(
     }
   }
   throw new Error(`Unknown app action: ${action}`);
-}
-
-/**
- * alarms.answer (alarms design section 7). Only `control.rs` sends it, once
- * it has checked that the caller may answer: to the window that owns the
- * stalled agent's session, with that session as `source`. The dialog is
- * answered as the user answers it, so it closes the same way.
- */
-export function answerAlarmDialog(
-  source: Session,
-  input: Record<string, unknown>,
-): { answered: "permission" | "question" } {
-  if (source.worktreeRemoved || isRemoteProjectPath(source.cwd))
-    throw monoError("dialog_gone");
-  if (input.kind === "question") {
-    const prompt = source.pendingQuestion;
-    const question = prompt?.questions[0];
-    if (!prompt || !question) throw monoError("dialog_gone");
-    const choice = typeof input.choice === "string" ? input.choice.trim() : "";
-    const text = typeof input.text === "string" ? input.text.trim() : "";
-    const labels = question.options.map((option) => option.label).join(", ");
-    const option = question.options.find(
-      (item) =>
-        item.id === choice ||
-        item.label.trim().toLowerCase() === choice.toLowerCase(),
-    );
-    if (choice && !option)
-      throw new AppActionError(
-        "invalid_input",
-        `choice must be one of: ${labels}`,
-      );
-    if (!option && !(text && question.allowCustom))
-      throw new AppActionError(
-        "invalid_input",
-        `This question takes a choice: ${labels}`,
-      );
-    const reply = option
-      ? buildQuestionReply(prompt.questions, { [question.id]: [option.id] })
-      : buildQuestionReply(prompt.questions, {}, { [question.id]: text });
-    respondHarnessQuestion(source.harness, source.id, prompt.requestId, reply);
-    return { answered: "question" };
-  }
-  const pending = [...source.blocks]
-    .reverse()
-    .find((block) => block.approval && !block.approval.decided)?.approval;
-  if (!pending) throw monoError("dialog_gone");
-  if (input.decision !== "allow" && input.decision !== "deny")
-    throw new AppActionError("invalid_input", "decision must be allow or deny");
-  respondHarnessApproval(
-    source.harness,
-    source.id,
-    pending.requestId,
-    input.decision,
-  );
-  return { answered: "permission" };
 }
 
 export async function handleAgentApp(

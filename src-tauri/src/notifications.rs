@@ -26,9 +26,14 @@ fn handle_click(app: &AppHandle, identifier: &str) {
     if let Some(reminder) = identifier.strip_prefix(crate::reminders::NOTIFICATION_PREFIX) {
         crate::reminders::open_from_notification(app, reminder);
     } else if let Some(episode) = identifier.strip_prefix(ALARM_PREFIX) {
-        if let Some(session) = crate::alarms::alarm_session(app, episode) {
-            let _ = app.emit(CLICK_EVENT, session);
-        }
+        // The click arrives on the main thread; the lookup takes the store
+        // lock, which a detector pass may hold.
+        let (app, episode) = (app.clone(), episode.to_string());
+        std::thread::spawn(move || {
+            if let Some(session) = crate::alarms::alarm_session(&app, &episode) {
+                let _ = app.emit(CLICK_EVENT, session);
+            }
+        });
     } else {
         let _ = app.emit(CLICK_EVENT, identifier);
     }

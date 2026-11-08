@@ -164,6 +164,8 @@ export type HarnessEvent =
   | ({ type: "turn.metrics" } & TurnMetrics);
 
 export type ApprovalDecision = "allow" | "deny";
+/** A pending dialog of the harness: a permission or a question. */
+export type DialogKind = "approval" | "question";
 
 /** The turn is connecting or has just ended; retain the follow-up for later. */
 export class TurnNotReadyError extends Error {}

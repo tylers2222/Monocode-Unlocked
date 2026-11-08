@@ -298,6 +298,7 @@ fn space_two(data: &Path) {
                VALUES ('al_2', 1, 'mono:m2', 'alarm-al_2-1', 1300, 6);
              INSERT INTO mono_outbox (key, stage, recipient, at_active_ms) VALUES ('alarm-al_2-1', 'alarm', 'mono:m2', 1300);
              INSERT INTO alarm_prompts (outbox_key, episode_id, text) VALUES ('alarm-al_2-1', 'al_2', '<mono_alarm>');
+             INSERT INTO alarm_dialogs (episode_id, request_id) VALUES ('al_2', 'req_1');
              INSERT INTO alarm_acts (episode_id, seq, level, actor, target, how, at_active_ms, at_wall_ms)
                VALUES ('al_2', 1, 1, 'mono:m2', 'session:s2-b', 'dismiss', 1500, 1);
              INSERT INTO agent_alarm_settings (actor, stall_minutes) VALUES ('session:s2-b', 30);
@@ -426,7 +427,7 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 27);
+    assert_eq!(plan["changes"], 28);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
@@ -813,6 +814,10 @@ fn app_reads_the_rows(rig: &Rig) {
         ),
         (
             "SELECT count(*) FROM alarm_prompts WHERE episode_id = 'al_2'",
+            1,
+        ),
+        (
+            "SELECT count(*) FROM alarm_dialogs WHERE episode_id = 'al_2'",
             1,
         ),
         (

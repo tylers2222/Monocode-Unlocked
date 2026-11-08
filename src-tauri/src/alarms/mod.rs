@@ -9,6 +9,7 @@ pub(crate) mod act;
 mod activity;
 mod live;
 mod provisioner;
+mod rights;
 mod route;
 mod state;
 mod store;

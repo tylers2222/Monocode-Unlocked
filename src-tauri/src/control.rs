@@ -616,9 +616,7 @@ fn serve<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, inner: &Arc<Mute
 }
 
 /// Design section 7: the `alarms.*` actions run here, on the store, under
-/// the caller's app grant. Only `alarms.answer` goes to a window: the one
-/// that owns the stalled agent's session answers its dialog there, as the
-/// user would. The store lock is never held while `inner` is.
+/// the caller's app grant. The store lock is never held while `inner` is.
 fn alarm_call<R: Runtime>(
     app: &AppHandle<R>,
     inner: &Mutex<Inner>,
@@ -627,8 +625,24 @@ fn alarm_call<R: Runtime>(
     emit: &mut impl FnMut(&str, Event) -> bool,
     wait: Duration,
 ) -> Result<Value, Failure> {
-    use crate::alarms::act::{self, Outcome};
     let store = app.state::<SessionStore>();
+    let (response, notices) = alarm_act(&store, inner, grant, call, emit, wait)?;
+    notices.emit(app);
+    Ok(response)
+}
+
+/// One `alarms.*` call. An act a window does (an answer in the window that
+/// owns the stalled agent's session, as the user answers; a steer or nudge
+/// as the caller's own `sessions.send`) is logged once that window says ok.
+fn alarm_act(
+    store: &SessionStore,
+    inner: &Mutex<Inner>,
+    grant: &Grant,
+    call: Call,
+    emit: &mut impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> Result<(Value, crate::mono_messages::Notices), Failure> {
+    use crate::alarms::act::{self, Outcome};
     let outcome = {
         let conn = store.lock_conn()?;
         let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
@@ -642,12 +656,11 @@ fn alarm_call<R: Runtime>(
         )
     };
     let plan = match outcome {
-        Err(refusal) => return Ok(refusal.response()),
+        Err(refusal) => return Ok((refusal.response(), Default::default())),
         Ok(Outcome::Done { result, notices }) => {
-            notices.emit(app);
-            return Ok(json!({"ok": true, "result": result}));
+            return Ok((json!({"ok": true, "result": result}), notices))
         }
-        Ok(Outcome::Answer(plan)) => plan,
+        Ok(Outcome::Forward(plan)) => plan,
     };
     let response = dispatch(
         inner,
@@ -662,21 +675,85 @@ fn alarm_call<R: Runtime>(
         Call {
             namespace: "app".into(),
             request_id: call.request_id,
-            action: call.action,
-            input: plan.forward.clone(),
+            action: plan.action.into(),
+            input: plan.input.clone(),
         },
         emit,
         wait,
     )?;
     if response["ok"] != true {
-        return Ok(response);
+        return Ok((response, Default::default()));
     }
     let conn = store.lock_conn()?;
     let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
-    Ok(match act::answered(&conn, &plan, now) {
+    let response = match act::forwarded(&conn, &plan, now) {
         Ok(result) => json!({"ok": true, "result": result}),
         Err(refusal) => refusal.response(),
-    })
+    };
+    Ok((response, Default::default()))
+}
+
+/// The `alarms.*` seam as `serve` runs it, for the scenario tests.
+#[cfg(test)]
+pub(crate) mod alarm_seam {
+    use super::*;
+
+    /// One window event: the window, the session it acts as, the action
+    /// and its input.
+    pub(crate) type Sent = (String, String, String, Value);
+
+    /// One `alarms.*` call from `caller` (window, session). `loaded` says
+    /// which window has each session loaded; every window replies `reply`.
+    pub(crate) fn call(
+        store: &SessionStore,
+        loaded: &[(&str, &str)],
+        caller: (&str, &str),
+        action: &str,
+        input: Value,
+        request_id: &str,
+        reply: &Value,
+    ) -> (Value, Vec<Sent>) {
+        let mut host = Inner::default();
+        for (window, session) in loaded {
+            host.loaded
+                .entry((*window).to_string())
+                .or_default()
+                .insert((*session).to_string());
+        }
+        let inner = Mutex::new(host);
+        let grant = Grant {
+            window: caller.0.into(),
+            session: caller.1.into(),
+            cwd: String::new(),
+            token: String::new(),
+        };
+        let mut sent = Vec::new();
+        let response = alarm_act(
+            store,
+            &inner,
+            &grant,
+            Call {
+                namespace: "app".into(),
+                request_id: request_id.into(),
+                action: action.into(),
+                input,
+            },
+            &mut |window, event| {
+                let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
+                pending.reply.send(reply.clone()).unwrap();
+                sent.push((
+                    window.to_string(),
+                    event.session_id,
+                    event.action,
+                    event.input,
+                ));
+                true
+            },
+            Duration::from_secs(1),
+        )
+        .map_or_else(Failure::response, |(response, _)| response);
+        (response, sent)
+    }
 }
 
 /// Who a plain send reaches, for the alarms (design section 7): a
