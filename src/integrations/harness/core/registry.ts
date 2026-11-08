@@ -17,6 +17,7 @@ import { pathKey } from "../../../shared/lib/paths";
 import type { NativeCommandProvider } from "./nativeCommands";
 import type {
   ApprovalDecision,
+  DialogKind,
   CompactContextInput,
   HarnessEvent,
   RewindLastTurnInput,
@@ -86,6 +87,12 @@ export type HarnessAdapter = {
   ): void;
   /** Keep a timed question open once the user starts answering it. */
   keepQuestionOpen?(sessionId: string, requestId: number): void;
+  /** The provider's own id of pending dialog `requestId`, as its stdio frames name it. */
+  wireRequestId?(
+    sessionId: string,
+    kind: DialogKind,
+    requestId: number,
+  ): string | undefined;
   /** Kill the child but keep resume state for later rebind. */
   stopSession(sessionId: string): Promise<void>;
   /** Drop resume state and kill the child (delete, harness switch, idle detach). */
@@ -467,6 +474,15 @@ export function respondHarnessApproval(
   decision: ApprovalDecision,
 ): void {
   getHarness(harness)?.respondApproval(sessionId, requestId, decision);
+}
+
+export function harnessWireRequestId(
+  harness: HarnessId,
+  sessionId: string,
+  kind: DialogKind,
+  requestId: number,
+): string | undefined {
+  return getHarness(harness)?.wireRequestId?.(sessionId, kind, requestId);
 }
 
 export function respondHarnessQuestion(

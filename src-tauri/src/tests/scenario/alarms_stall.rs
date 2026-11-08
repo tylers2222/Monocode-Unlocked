@@ -113,18 +113,25 @@ type OutboxRow = (String, String);
 /// A send as `(episode, level, recipient)`.
 type Send = (String, i64, String);
 
-/// The alarm rows of the outbox, and the send log.
+/// Level 1 of the outbox alarm rows and the send log: what the detector
+/// writes (routing escalates an untaken level on its own clock).
 fn alarm_rows(world: &World) -> (Vec<OutboxRow>, Vec<Send>) {
     let conn = world.conn();
     let outbox = conn
-        .prepare("SELECT key, recipient FROM mono_outbox WHERE stage = 'alarm' ORDER BY key")
+        .prepare(
+            "SELECT key, recipient FROM mono_outbox WHERE stage = 'alarm'
+               AND key IN (SELECT outbox_key FROM alarm_sends WHERE level = 1) ORDER BY key",
+        )
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     let sends = conn
-        .prepare("SELECT episode_id, level, recipient FROM alarm_sends ORDER BY episode_id, level")
+        .prepare(
+            "SELECT episode_id, level, recipient FROM alarm_sends WHERE level = 1
+              ORDER BY episode_id, level",
+        )
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .unwrap()

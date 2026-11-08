@@ -60,6 +60,7 @@ import type {
   SendTurnInput,
   TurnResult,
   SteerTurnInput,
+  DialogKind,
 } from "../../core/types";
 
 type ApprovalOutcome = ApprovalDecision | "cancelled";
@@ -327,6 +328,19 @@ export function respondCodexApproval(
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
   pending.resolve(decision);
+}
+
+export function codexWireRequestId(
+  sessionId: string,
+  kind: DialogKind,
+  requestId: number,
+): string | undefined {
+  const live = liveByThread.get(sessionId);
+  const pending =
+    kind === "approval"
+      ? live?.approvals.get(requestId)
+      : live?.questions.get(requestId);
+  return pending?.rpcId == null ? undefined : String(pending.rpcId);
 }
 
 export function respondCodexQuestion(

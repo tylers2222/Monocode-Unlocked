@@ -1247,3 +1247,73 @@ describe("OMP Mono messaging host tools", () => {
     await running.turn;
   });
 });
+
+// Defect: an alarm's answer, named for the confirm the user already
+// answered, lands on the newer confirm the extension asked since; or an
+// answer is written for an id the extension never asked.
+it("answers an alarm only for the pending Pi-family confirm its id names", async () => {
+  const { ensureOmpRegistered, ompAdapter } = await import("./ompAdapter");
+  const { answerAlarmDialog } =
+    await import("../../../../features/agent-app/model/agentAppAlarms");
+  ensureOmpRegistered();
+  const running = await started();
+  const approvals = () =>
+    events.flatMap((event) =>
+      event.type === "approval.requested" ? [event.requestId] : [],
+    );
+  const asked = (id: string) =>
+    frame("omp-test", {
+      type: "extension_ui_request",
+      id,
+      method: "confirm",
+      title: "Run it?",
+      message: "git push --force",
+    });
+  const answeredFor = (id: string) =>
+    transport.requests.filter(
+      (r) => r.command.type === "extension_ui_response" && r.command.id === id,
+    ).length;
+  asked("c1");
+  await vi.waitFor(() => expect(approvals()).toHaveLength(1));
+  const [a] = approvals();
+  ompAdapter.respondApproval("omp-test", a!, "deny");
+  await vi.waitFor(() => expect(answeredFor("c1")).toBe(1));
+  asked("c2");
+  await vi.waitFor(() => expect(approvals()).toHaveLength(2));
+  const b = approvals()[1]!;
+  const session = {
+    ...newSession("omp", "/repo"),
+    id: "omp-test",
+    blocks: [
+      {
+        id: "a",
+        role: "tool" as const,
+        text: "",
+        approval: { requestId: a!, decided: "deny" as const },
+      },
+      { id: "b", role: "tool" as const, text: "", approval: { requestId: b } },
+    ],
+  };
+  const answer = (dialogRequestId: string) => {
+    try {
+      return answerAlarmDialog(session, {
+        kind: "permission",
+        decision: "allow",
+        dialogRequestId,
+      });
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+  };
+  expect(answer("c1")).toBe("dialog_gone");
+  expect(answer("c3")).toBe("dialog_gone");
+  expect(answeredFor("c2")).toBe(0);
+  expect(answer("c2")).toEqual({ answered: "permission" });
+  await vi.waitFor(() => expect(answeredFor("c2")).toBe(1));
+  frame("omp-test", {
+    type: "prompt_result",
+    id: running.request.id,
+    agentInvoked: false,
+  });
+  await running.turn;
+});

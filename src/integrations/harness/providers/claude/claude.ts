@@ -88,6 +88,7 @@ import type {
   SendTurnInput,
   TurnResult,
   SteerTurnInput,
+  DialogKind,
 } from "../../core/types";
 
 /**
@@ -313,6 +314,19 @@ export function respondClaudeApproval(
   const pending = live?.approvals.get(requestId);
   if (!pending) return;
   pending.resolve(decision);
+}
+
+export function claudeWireRequestId(
+  sessionId: string,
+  kind: DialogKind,
+  requestId: number,
+): string | undefined {
+  const live = liveByThread.get(sessionId);
+  const pending =
+    kind === "approval"
+      ? live?.approvals.get(requestId)
+      : live?.questions.get(requestId);
+  return pending?.requestId;
 }
 
 export function respondClaudeQuestion(

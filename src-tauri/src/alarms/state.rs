@@ -427,6 +427,9 @@ pub(crate) fn next_state(facts: &Facts, now: i64, limits: Thresholds) -> Transit
             Transition::Close(CloseReason::Progress)
         }
         (Some(_), Some(_)) => Transition::Stay,
+        // Still stalled, only under a raised threshold (alarms.set, lead
+        // ruling b): the episode stands until progress or the work goes.
+        (Some(_), None) if !matches!(status, Status::Idle | Status::Waiting) => Transition::Stay,
         (Some(_), None) => Transition::Close(CloseReason::WorkCleared),
     }
 }
@@ -928,6 +931,36 @@ mod tests {
         assert_eq!(
             next_state(&printed, start + 31 * MIN, LIMITS),
             Transition::Close(CloseReason::Progress)
+        );
+    }
+
+    // Defect: raising N mid-episode closes it as work_cleared, though the
+    // work is still open and the agent has not moved.
+    #[test]
+    fn a_raised_threshold_keeps_a_stall_that_has_not_moved_open() {
+        let raised = Thresholds {
+            stall_ms: 60 * MIN,
+            ..LIMITS
+        };
+        let waiting = after(with_ask(idle()), Cause::IdleOpenWork, ENDED);
+        assert_eq!(
+            next_state(&waiting, ENDED + 20 * MIN, raised),
+            Transition::Stay
+        );
+        let start = ENDED + MIN;
+        let hung = after(running(start, start, false), Cause::Hung, start);
+        assert_eq!(
+            next_state(&hung, start + 20 * MIN, raised),
+            Transition::Stay
+        );
+        assert_eq!(
+            next_state(
+                &after(idle(), Cause::IdleOpenWork, ENDED),
+                ENDED + 20 * MIN,
+                raised
+            ),
+            Transition::Close(CloseReason::WorkCleared),
+            "the work went"
         );
     }
 

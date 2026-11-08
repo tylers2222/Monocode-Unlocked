@@ -265,29 +265,26 @@ fn reminder_text(
 }
 
 /// An outbox row as a window reads it: who it goes to, and what its prompt
-/// names. Only a blocked row joins its question's seq and text (R15), and
-/// only an alarm row its send's open episode.
+/// names. Only a blocked row joins its question's seq and text (R15), an
+/// alarm row the text its open episode stored, and a nudge row its text.
 const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body,
-       al.id, al.actor, al.cause, s.level, o.claimed_by
+       al.id, ap.text, o.claimed_by
      FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
      LEFT JOIN mono_ask_events e ON o.stage = 'blocked' AND e.ask_id = o.ask_id
        AND e.kind = 'question' AND o.key = 'blocked:' || e.ask_id || ':' || e.seq
      LEFT JOIN mono_messages m ON m.id = e.message_id
-     LEFT JOIN alarm_sends s ON o.stage = 'alarm' AND s.outbox_key = o.key
-     LEFT JOIN alarm_episodes al ON al.id = s.episode_id AND al.closed_active_ms IS NULL";
+     LEFT JOIN alarm_prompts ap ON o.stage IN ('alarm', 'nudge') AND ap.outbox_key = o.key
+     LEFT JOIN alarm_episodes al ON al.id = ap.episode_id
+       AND (al.closed_active_ms IS NULL OR o.stage = 'nudge')";
 
 /// The key, recipient and prompt of a `ROW`; no prompt for a row with no
-/// ask, or at a stage this build does not send.
+/// ask, or at a stage this build does not send. An alarm row has one only
+/// while its episode is open.
 fn row_text(row: &rusqlite::Row) -> rusqlite::Result<(String, String, Option<String>)> {
     let (ask_id, stage): (Option<String>, String) = (row.get(2)?, row.get(3)?);
-    if stage == "alarm" {
-        let text = match (row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?) {
-            (
-                Some::<String>(episode),
-                Some::<String>(actor),
-                Some::<String>(cause),
-                Some(level),
-            ) => Some(crate::alarms::alarm_text(&episode, level, &actor, &cause)),
+    if matches!(stage.as_str(), "alarm" | "nudge") {
+        let text = match (row.get::<_, Option<String>>(7)?, row.get(8)?) {
+            (Some(_), Some::<String>(text)) => Some(text),
             _ => None,
         };
         return Ok((row.get(0)?, row.get(1)?, text));
@@ -452,7 +449,7 @@ pub(crate) fn waiting_recipients(conn: &Connection) -> rusqlite::Result<HashSet<
             alarm_key_sql("o.key")
         ))?
         .query_map([], |row| {
-            Ok((row_text(row)?, row.get::<_, Option<String>>(11)?))
+            Ok((row_text(row)?, row.get::<_, Option<String>>(9)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows

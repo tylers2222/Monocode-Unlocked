@@ -570,24 +570,224 @@ fn serve<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, inner: &Arc<Mute
         {
             return Err("Invalid input or request ID".into());
         }
-        dispatch(
+        let mut emit = |window: &str, event: Event| {
+            app.emit_to(window, "monocode-control-request", event)
+                .is_ok()
+        };
+        let call = Call {
+            namespace: request.namespace.clone(),
+            request_id: request.request_id,
+            action: request.action,
+            input: request.input,
+        };
+        if call.namespace == "app" && call.action.starts_with("alarms.") {
+            let grant = {
+                let host = inner.lock().map_err(|_| "Control service unavailable")?;
+                request_grant(&host, "app", &request.token)?
+            };
+            return alarm_call(app, inner, &grant, call, &mut emit, REPLY_WAIT);
+        }
+        let sent = (call.namespace == "app")
+            .then(|| message_target(&call.action, &call.input))
+            .flatten()
+            .map(|to| (to, call.request_id.clone()));
+        let response = dispatch(
             inner,
             |host| request_grant(host, &request.namespace, &request.token),
-            Call {
-                namespace: request.namespace.clone(),
-                request_id: request.request_id,
-                action: request.action,
-                input: request.input,
-            },
-            &mut |window, event| {
-                app.emit_to(window, "monocode-control-request", event)
-                    .is_ok()
-            },
+            call,
+            &mut emit,
             REPLY_WAIT,
-        )
+        )?;
+        if let (Some((to, request_id)), true) = (sent, response["ok"] == true) {
+            let caller = inner.lock().ok().and_then(|host| {
+                host.app_grants
+                    .values()
+                    .find(|grant| grant.token == request.token)
+                    .map(|grant| grant.session.clone())
+            });
+            if let Some(caller) = caller {
+                message_act(app, &caller, &to, &request_id);
+            }
+        }
+        Ok(response)
     })();
     let response = result.unwrap_or_else(Failure::response);
     let _ = writeln!(stream, "{response}");
+}
+
+/// Design section 7: the `alarms.*` actions run here, on the store, under
+/// the caller's app grant. The store lock is never held while `inner` is.
+fn alarm_call<R: Runtime>(
+    app: &AppHandle<R>,
+    inner: &Mutex<Inner>,
+    grant: &Grant,
+    call: Call,
+    emit: &mut impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> Result<Value, Failure> {
+    let store = app.state::<SessionStore>();
+    let (response, notices) = alarm_act(&store, inner, grant, call, emit, wait)?;
+    notices.emit(app);
+    Ok(response)
+}
+
+/// One `alarms.*` call. An act a window does (an answer in the window that
+/// owns the stalled agent's session, as the user answers; a steer or nudge
+/// as the caller's own `sessions.send`) is logged once that window says ok.
+fn alarm_act(
+    store: &SessionStore,
+    inner: &Mutex<Inner>,
+    grant: &Grant,
+    call: Call,
+    emit: &mut impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> Result<(Value, crate::mono_messages::Notices), Failure> {
+    use crate::alarms::act::{self, Outcome};
+    let outcome = {
+        let conn = store.lock_conn()?;
+        let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+        act::call(
+            &conn,
+            &grant.session,
+            &call.action,
+            &call.input,
+            &call.request_id,
+            now,
+        )
+    };
+    let plan = match outcome {
+        Err(refusal) => return Ok((refusal.response(), Default::default())),
+        Ok(Outcome::Done {
+            result,
+            notices,
+            answered_plan,
+        }) => {
+            if let Some(session) = answered_plan {
+                store.alarms.plan_answered(&session);
+            }
+            return Ok((json!({"ok": true, "result": result}), notices));
+        }
+        Ok(Outcome::Forward(plan)) => plan,
+    };
+    let response = dispatch(
+        inner,
+        |host| {
+            Ok(Grant {
+                window: host.route_owner(&plan.session, &grant.window),
+                session: plan.session.clone(),
+                cwd: String::new(),
+                token: String::new(),
+            })
+        },
+        Call {
+            namespace: "app".into(),
+            request_id: call.request_id,
+            action: plan.action.into(),
+            input: plan.input.clone(),
+        },
+        emit,
+        wait,
+    )?;
+    if response["ok"] != true {
+        return Ok((response, Default::default()));
+    }
+    // The window answered the plan, whether or not the log below lands.
+    if let Some(session) = &plan.answered_plan {
+        store.alarms.plan_answered(session);
+    }
+    let conn = store.lock_conn()?;
+    let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+    let response = match crate::alarms::deliver::forwarded(&conn, &plan, now) {
+        Ok(result) => json!({"ok": true, "result": result}),
+        Err(refusal) => refusal.response(),
+    };
+    Ok((response, Default::default()))
+}
+
+/// The `alarms.*` seam as `serve` runs it, for the scenario tests.
+#[cfg(test)]
+pub(crate) mod alarm_seam {
+    use super::*;
+
+    /// One window event: the window, the session it acts as, the action
+    /// and its input.
+    pub(crate) type Sent = (String, String, String, Value);
+
+    /// One `alarms.*` call from `caller` (window, session). `loaded` says
+    /// which window has each session loaded; every window replies `reply`.
+    pub(crate) fn call(
+        store: &SessionStore,
+        loaded: &[(&str, &str)],
+        caller: (&str, &str),
+        action: &str,
+        input: Value,
+        request_id: &str,
+        reply: &Value,
+    ) -> (Value, Vec<Sent>) {
+        let mut host = Inner::default();
+        for (window, session) in loaded {
+            host.loaded
+                .entry((*window).to_string())
+                .or_default()
+                .insert((*session).to_string());
+        }
+        let inner = Mutex::new(host);
+        let grant = Grant {
+            window: caller.0.into(),
+            session: caller.1.into(),
+            cwd: String::new(),
+            token: String::new(),
+        };
+        let mut sent = Vec::new();
+        let response = alarm_act(
+            store,
+            &inner,
+            &grant,
+            Call {
+                namespace: "app".into(),
+                request_id: request_id.into(),
+                action: action.into(),
+                input,
+            },
+            &mut |window, event| {
+                let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
+                pending.reply.send(reply.clone()).unwrap();
+                sent.push((
+                    window.to_string(),
+                    event.session_id,
+                    event.action,
+                    event.input,
+                ));
+                true
+            },
+            Duration::from_secs(1),
+        )
+        .map_or_else(Failure::response, |(response, _)| response);
+        (response, sent)
+    }
+}
+
+/// Who a plain send reaches, for the alarms (design section 7): a
+/// recipient's message to the agent it acts on is an act on its alarm.
+fn message_target(action: &str, input: &Value) -> Option<String> {
+    let field = match action {
+        "messages.send" => "send_to",
+        "sessions.send" => "sessionId",
+        _ => return None,
+    };
+    input[field].as_str().map(str::to_string)
+}
+
+fn message_act<R: Runtime>(app: &AppHandle<R>, caller: &str, to: &str, request_id: &str) {
+    let store = app.state::<SessionStore>();
+    let logged = store.lock_conn().and_then(|conn| {
+        let now = crate::alarms::now(&store.alarms, &conn).map_err(|error| error.to_string())?;
+        crate::alarms::deliver::message(&conn, caller, to, request_id, now)
+            .map_err(|error| error.to_string())
+    });
+    if let Err(error) = logged {
+        eprintln!("Could not log a message act: {error}");
+    }
 }
 
 #[tauri::command]
@@ -1159,7 +1359,8 @@ pub fn control_host_call(
     input: Value,
     request_id: String,
 ) -> Value {
-    host_call(
+    let sent = message_target(&action, &input).map(|to| (to, request_id.clone()));
+    let response = host_call(
         &host.inner,
         window.label(),
         &session_id,
@@ -1173,7 +1374,11 @@ pub fn control_host_call(
         },
         REPLY_WAIT,
     )
-    .unwrap_or_else(Failure::response)
+    .unwrap_or_else(Failure::response);
+    if let (Some((to, request_id)), true) = (sent, response["ok"] == true) {
+        message_act(window.app_handle(), &session_id, &to, &request_id);
+    }
+    response
 }
 
 #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
