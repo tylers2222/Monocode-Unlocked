@@ -18,20 +18,29 @@ use super::{
 /// The client's own deadline. The hook timeout is 150 s and Codex fails
 /// open when a hook times out, so the client must give up first.
 const DEADLINE: Duration = Duration::from_secs(120);
-/// The longest `hold.wait`; the app answers each within 35 s.
+/// The longest `hold.wait`, inside the app's reply window.
 const SLICE: Duration = Duration::from_secs(30);
+/// How long the app may take to answer any call (control.rs REPLY_WAIT).
+const REPLY_WAIT: Duration = Duration::from_secs(35);
 /// Time left for a reply to arrive after the app's wait ends.
 const MARGIN: Duration = Duration::from_secs(5);
+/// The least time between two `hold.wait` calls, so an app that answers
+/// `pending` at once is not polled in a tight loop.
+const POLL_FLOOR: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A larger payload is cut, fails to parse, and is refused (fail closed).
 const MAX_STDIN: u64 = 4_000_000;
 const MAX_REPLY: u64 = 64_000;
 const MAX_SHOWN: usize = 300;
 const SHORT_SLEEP_SKIP: &str = "MONOCODE_SHORT_SLEEP_SKIP_S";
+/// Alarms design 12 (card #87): a single wait under 10 s runs unasked.
+const DEFAULT_SHORT_SLEEP_SKIP: Duration = Duration::from_secs(10);
 
 /// Time since the client started.
 pub trait Clock {
     fn elapsed(&self) -> Duration;
+    fn sleep(&self, duration: Duration);
 }
 
 struct SystemClock(Instant);
@@ -39,6 +48,10 @@ struct SystemClock(Instant);
 impl Clock for SystemClock {
     fn elapsed(&self) -> Duration {
         self.0.elapsed()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
     }
 }
 
@@ -98,6 +111,9 @@ impl Transport for Tcp {
             .take(MAX_REPLY + 1)
             .read_line(&mut line)
             .map_err(|error| format!("no reply from MonoCode: {error}"))?;
+        if line.len() as u64 > MAX_REPLY {
+            return Err("MonoCode's reply is too large".into());
+        }
         serde_json::from_str(&line).map_err(|_| "MonoCode returned an invalid reply".to_string())
     }
 }
@@ -187,9 +203,10 @@ fn hold<T: Transport>(
         return Outcome::Run;
     };
     let skip_below = var(SHORT_SLEEP_SKIP)
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .unwrap_or(0);
-    if wait.seconds.is_some_and(|seconds| seconds < skip_below) {
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .unwrap_or(DEFAULT_SHORT_SLEEP_SKIP);
+    if wait.is_short(skip_below) {
         return Outcome::Run;
     }
     let _ = COMMAND.set(call.command.clone());
@@ -223,12 +240,17 @@ fn ask(
 ) -> Result<HoldWaitReply, String> {
     let id = &request.tool_use_id;
     let input = serde_json::to_value(request).map_err(|error| error.to_string())?;
-    let requested: HoldRequested =
-        read_reply(transport.call("request", input, &format!("hold-{id}"), MARGIN)?)?;
+    let requested: HoldRequested = read_reply(transport.call(
+        "request",
+        input,
+        &format!("hold-{id}"),
+        REPLY_WAIT + MARGIN,
+    )?)?;
     let mut slice = 0u32;
     loop {
+        let started = clock.elapsed();
         let Some(wait) = DEADLINE
-            .checked_sub(clock.elapsed() + MARGIN)
+            .checked_sub(started + MARGIN)
             .map(|left| Duration::from_secs(left.min(SLICE).as_secs()))
             .filter(|wait| !wait.is_zero())
         else {
@@ -240,7 +262,11 @@ fn ask(
         });
         let request_id = format!("hold-{id}-wait-{slice}");
         match read_reply(transport.call("wait", input, &request_id, wait + MARGIN)?)? {
-            HoldWaitReply::Pending => slice += 1,
+            HoldWaitReply::Pending => {
+                slice += 1;
+                let spent = clock.elapsed().saturating_sub(started);
+                clock.sleep(POLL_FLOOR.saturating_sub(spent));
+            }
             decided => return Ok(decided),
         }
     }
@@ -314,6 +340,10 @@ mod tests {
     impl Clock for FakeClock {
         fn elapsed(&self) -> Duration {
             Duration::from_millis(self.0.load(Ordering::SeqCst))
+        }
+
+        fn sleep(&self, duration: Duration) {
+            self.advance(duration);
         }
     }
 
@@ -494,8 +524,114 @@ mod tests {
             .iter()
             .map(|request| request["input"]["timeoutSeconds"].as_u64().unwrap())
             .collect();
-        assert_eq!(slices, [30, 30, 30, 25]);
+        assert!(slices.iter().all(|&slice| slice <= 30), "{slices:?}");
         assert!(clock.elapsed() + MARGIN <= DEADLINE);
+        assert!(
+            clock.elapsed() + MARGIN + POLL_FLOOR > DEADLINE,
+            "gave up early"
+        );
+    }
+
+    #[test]
+    fn an_app_that_answers_pending_at_once_is_polled_at_most_once_a_second() {
+        // Defect: an app that answers `pending` without waiting makes the
+        // client reconnect in a tight loop until its deadline.
+        let clock = FakeClock::default();
+        let seen = clock.clone();
+        let polled_at = Arc::new(Mutex::new(Vec::new()));
+        let polls = Arc::clone(&polled_at);
+        let app = FakeApp::start(move |request| {
+            if request["action"] == "request" {
+                return json!({"ok": true, "hold": "sh_1"}).to_string();
+            }
+            polls.lock().unwrap().push(seen.elapsed());
+            json!({"ok": true, "status": "pending"}).to_string()
+        });
+        let (code, stderr) = run_hold(
+            Harness::Claude,
+            &claude_bash("sleep 600", false),
+            &app.env(),
+            &clock,
+        );
+        assert_eq!(
+            (code, stderr.trim_end()),
+            (2, refusal(Some("sleep 600"), &Cause::NoAnswer).as_str())
+        );
+        let polled_at = polled_at.lock().unwrap();
+        assert!(
+            polled_at
+                .windows(2)
+                .all(|pair| pair[1] - pair[0] >= POLL_FLOOR),
+            "{polled_at:?}"
+        );
+        let most = (DEADLINE - MARGIN).as_secs_f64() / POLL_FLOOR.as_secs_f64();
+        assert!(polled_at.len() as f64 <= most, "{}", polled_at.len());
+    }
+
+    /// An app that takes `request_delay` to grant the hold, then answers
+    /// each wait with `status` after the slice it was given. A delay past
+    /// the client's read timeout is a socket timeout.
+    struct SlowApp {
+        clock: FakeClock,
+        request_delay: Duration,
+        status: &'static str,
+    }
+
+    impl Transport for SlowApp {
+        fn call(
+            &mut self,
+            action: &str,
+            input: Value,
+            _request_id: &str,
+            read_timeout: Duration,
+        ) -> Result<Value, String> {
+            let delay = match action {
+                "request" => self.request_delay,
+                _ => Duration::from_secs(input["timeoutSeconds"].as_u64().unwrap()),
+            };
+            if delay > read_timeout {
+                self.clock.advance(read_timeout);
+                return Err("no reply from MonoCode: timed out".into());
+            }
+            self.clock.advance(delay);
+            Ok(match action {
+                "request" => json!({"ok": true, "hold": "sh_1"}),
+                _ => json!({"ok": true, "status": self.status}),
+            })
+        }
+    }
+
+    #[test]
+    fn a_hold_request_answered_late_in_the_apps_reply_window_still_counts() {
+        // Defect: the request waits only 5 s for a reply, so an app busy for
+        // longer inside its 35 s reply window gets a wait refused that the
+        // provisioner would allow.
+        let ask = |status| {
+            let clock = FakeClock::default();
+            let app = SlowApp {
+                clock: clock.clone(),
+                request_delay: REPLY_WAIT - Duration::from_millis(500),
+                status,
+            };
+            let outcome = hold(
+                Harness::Claude,
+                &claude_bash("sleep 30", false),
+                &|_| None,
+                &clock,
+                || Ok(app),
+            );
+            (outcome, clock.elapsed())
+        };
+        assert_eq!(ask("allow").0, Outcome::Run);
+        let (outcome, elapsed) = ask("pending");
+        assert_eq!(
+            outcome,
+            Outcome::Refused {
+                command: Some("sleep 30".into()),
+                cause: Cause::NoAnswer
+            }
+        );
+        assert!(elapsed + MARGIN <= DEADLINE, "{elapsed:?}");
     }
 
     #[test]
@@ -614,16 +750,21 @@ mod tests {
     }
 
     #[test]
-    fn short_sleeps_skip_only_below_the_threshold_and_unbounded_waits_never_skip() {
-        // Defect: the skip lets an unbounded wait through, or skips at the
-        // threshold itself.
-        let skip = [(SHORT_SLEEP_SKIP, "10")];
-        let held =
-            |command: &str| run_offline(Harness::Claude, &claude_bash(command, false), &skip).1;
-        assert!(!held("sleep 9"));
-        assert!(held("sleep 10"));
-        assert!(held("gh pr checks 1 --watch"));
-        assert!(run_offline(Harness::Claude, &claude_bash("sleep 1", false), &[]).1);
+    fn only_a_single_wait_under_ten_seconds_runs_unasked() {
+        // Defect (card #87): a short sleep in a loop or repeated in one
+        // command runs unasked, a 10 s sleep skips, or an unbounded wait
+        // slips through the short-sleep skip.
+        let held = |command: &str, env: &[(&str, &str)]| {
+            run_offline(Harness::Claude, &claude_bash(command, false), env).1
+        };
+        assert!(!held("sleep 9.9", &[]));
+        assert!(held("sleep 10", &[]));
+        assert!(held("for i in 1 2 3; do sleep 1; done", &[]));
+        assert!(held("sleep 2; sleep 2", &[]));
+        assert!(held("gh pr checks 1 --watch", &[]));
+        assert!(!held("sleep 5 &", &[]));
+        assert!(held("sleep 1", &[(SHORT_SLEEP_SKIP, "0")]));
+        assert!(!held("sleep 20", &[(SHORT_SLEEP_SKIP, "30")]));
     }
 
     #[test]

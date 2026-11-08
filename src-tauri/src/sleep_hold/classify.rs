@@ -1,7 +1,9 @@
 //! Alarms design 10: does a shell command wait in the foreground? A small
 //! shell lexer and parser find the words in command position; only those
 //! count, so `echo "sleep 5"` or a heredoc body never holds.
-use serde::Serialize;
+use std::time::Duration;
+
+use serde::{Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,6 +17,8 @@ pub enum WaitKind {
     Timeout,
     ClusterWait,
     Interpreter,
+    /// Nested past the depth budget, so not read to the end.
+    TooDeep,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -22,11 +26,39 @@ pub struct Wait {
     pub kind: WaitKind,
     /// How long it waits, when the command says so literally. `None` is
     /// unbounded or unknown, and never counts as short.
-    pub seconds: Option<u32>,
+    #[serde(serialize_with = "as_seconds")]
+    pub seconds: Option<Duration>,
+    /// It waits more than once: a loop, or two waits in one command.
+    #[serde(skip)]
+    pub repeats: bool,
 }
 
-/// `bash -c`, `eval` and `$(...)` nest; past this depth the rest is ignored.
-const MAX_DEPTH: u8 = 8;
+impl Wait {
+    /// Alarms design 12: only a single wait of known length under `below`
+    /// runs without asking.
+    pub fn is_short(&self, below: Duration) -> bool {
+        !self.repeats && self.seconds.is_some_and(|seconds| seconds < below)
+    }
+}
+
+fn as_seconds<S: Serializer>(seconds: &Option<Duration>, out: S) -> Result<S::Ok, S::Error> {
+    match seconds {
+        None => out.serialize_none(),
+        Some(length) if length.subsec_nanos() == 0 => out.serialize_some(&length.as_secs()),
+        Some(length) => out.serialize_some(&length.as_secs_f64()),
+    }
+}
+
+/// Every nesting the classifier follows (subshells, blocks, loops,
+/// substitutions, `bash -c`, `eval`, wrappers) spends one level. Past the
+/// budget the command holds as `TooDeep`: the stack stays bounded, since a
+/// stack overflow aborts without the panic hook and the hook would fail open.
+const MAX_DEPTH: u8 = 32;
+
+const TOO_DEEP: Wait = wait(WaitKind::TooDeep, None);
+
+#[derive(Debug)]
+struct PastBudget;
 
 pub fn classify(command: &str, background: bool) -> Option<Wait> {
     if background {
@@ -37,14 +69,23 @@ pub fn classify(command: &str, background: bool) -> Option<Wait> {
 
 fn text_wait(text: &str, depth: u8) -> Option<Wait> {
     if depth > MAX_DEPTH {
-        return None;
+        return Some(TOO_DEEP);
     }
-    let jobs = Parser::new(Lexer::new(text).tokens()).program();
-    jobs_wait(&jobs, depth)
+    let parsed = Lexer::new(text, depth)
+        .tokens()
+        .and_then(|toks| Parser::new(toks, depth).program());
+    match parsed {
+        Ok(jobs) => jobs_wait(&jobs, depth),
+        Err(PastBudget) => Some(TOO_DEEP),
+    }
 }
 
-const fn wait(kind: WaitKind, seconds: Option<u32>) -> Wait {
-    Wait { kind, seconds }
+const fn wait(kind: WaitKind, seconds: Option<Duration>) -> Wait {
+    Wait {
+        kind,
+        seconds,
+        repeats: false,
+    }
 }
 
 /// Two waits run one after the other: the first names the kind, and the
@@ -57,6 +98,7 @@ fn then(first: Option<Wait>, next: Option<Wait>) -> Option<Wait> {
                 .seconds
                 .zip(next.seconds)
                 .map(|(a, b)| a.saturating_add(b)),
+            repeats: true,
         }),
         (first, next) => first.or(next),
     }
@@ -100,15 +142,19 @@ struct Lexer {
     /// Heredocs whose body starts after the next newline: token index,
     /// delimiter, and whether leading tabs are stripped (`<<-`).
     pending: Vec<(usize, String, bool)>,
+    depth: u8,
+    too_deep: bool,
 }
 
 impl Lexer {
-    fn new(text: &str) -> Self {
+    fn new(text: &str, depth: u8) -> Self {
         Self {
             chars: text.chars().collect(),
             at: 0,
             toks: Vec::new(),
             pending: Vec::new(),
+            depth,
+            too_deep: false,
         }
     }
 
@@ -126,7 +172,7 @@ impl Lexer {
         Some(c)
     }
 
-    fn tokens(mut self) -> Vec<Tok> {
+    fn tokens(mut self) -> Result<Vec<Tok>, PastBudget> {
         while let Some(c) = self.peek() {
             match c {
                 ' ' | '\t' | '\r' => self.at += 1,
@@ -145,7 +191,10 @@ impl Lexer {
                 _ => self.word(),
             }
         }
-        self.toks
+        if self.too_deep {
+            return Err(PastBudget);
+        }
+        Ok(self.toks)
     }
 
     fn push(&mut self, op: Op, width: usize) {
@@ -227,7 +276,7 @@ impl Lexer {
                 } else {
                     line
                 };
-                if line == delimiter {
+                if line.trim_end_matches('\r') == delimiter {
                     break;
                 }
                 body.push_str(&line);
@@ -356,8 +405,21 @@ impl Lexer {
         word.text.push_str("`…`");
     }
 
-    /// The text up to the `)` that closes an already-read `(`.
+    /// The text up to the `)` that closes an already-read `(`. Quotes
+    /// inside it nest (`"$("$(...)")"`), so this spends a depth level.
     fn balanced(&mut self) -> String {
+        if self.depth >= MAX_DEPTH {
+            self.too_deep = true;
+            self.at = self.chars.len();
+            return String::new();
+        }
+        self.depth += 1;
+        let inner = self.balanced_text();
+        self.depth -= 1;
+        inner
+    }
+
+    fn balanced_text(&mut self) -> String {
         let start = self.at;
         let mut depth = 1;
         while let Some(c) = self.bump() {
@@ -413,21 +475,31 @@ enum Cmd {
 struct Parser {
     toks: Vec<Tok>,
     at: usize,
+    depth: u8,
+    too_deep: bool,
 }
 
 impl Parser {
-    fn new(toks: Vec<Tok>) -> Self {
-        Self { toks, at: 0 }
+    fn new(toks: Vec<Tok>, depth: u8) -> Self {
+        Self {
+            toks,
+            at: 0,
+            depth,
+            too_deep: false,
+        }
     }
 
-    fn program(mut self) -> Vec<Job> {
+    fn program(mut self) -> Result<Vec<Job>, PastBudget> {
         let mut jobs = Vec::new();
         while self.at < self.toks.len() {
             jobs.extend(self.list(&[]));
             // A stray `)` ended the list; step over it.
             self.at += 1;
         }
-        jobs
+        if self.too_deep {
+            return Err(PastBudget);
+        }
+        Ok(jobs)
     }
 
     fn reserved(&self, at: usize) -> Option<&str> {
@@ -492,7 +564,21 @@ impl Parser {
         Job { cmds, background }
     }
 
+    /// Every nested construct parses its commands through here, so the
+    /// depth spent here bounds the parser's recursion.
     fn command(&mut self) -> Cmd {
+        if self.depth >= MAX_DEPTH {
+            self.too_deep = true;
+            self.at = self.toks.len();
+            return Cmd::Skip;
+        }
+        self.depth += 1;
+        let cmd = self.nested_command();
+        self.depth -= 1;
+        cmd
+    }
+
+    fn nested_command(&mut self) -> Cmd {
         match self.toks.get(self.at) {
             None => Cmd::Skip,
             Some(Tok::Op(Op::Open)) => {
@@ -703,12 +789,13 @@ fn cmd_wait(cmd: &Cmd, depth: u8) -> Option<Wait> {
                 .map(|sub| text_wait(sub, depth + 1))
                 .fold(words_wait(&text, stdin, depth), then)
         }
-        Cmd::Group(jobs) => jobs_wait(jobs, depth),
-        Cmd::Loop { body, iterations } => jobs_wait(body, depth).map(|inner| {
-            let seconds = iterations
+        Cmd::Group(jobs) => jobs_wait(jobs, depth + 1),
+        Cmd::Loop { body, iterations } => jobs_wait(body, depth + 1).map(|inner| Wait {
+            kind: WaitKind::PollLoop,
+            seconds: iterations
                 .zip(inner.seconds)
-                .map(|(n, each)| n.saturating_mul(each));
-            wait(WaitKind::PollLoop, seconds)
+                .map(|(n, each)| each.saturating_mul(n)),
+            repeats: true,
         }),
         Cmd::Skip => None,
     }
@@ -716,35 +803,286 @@ fn cmd_wait(cmd: &Cmd, depth: u8) -> Option<Wait> {
 
 /// One simple command's words, quotes removed. `stdin` is its heredoc.
 fn words_wait(words: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
+    if depth > MAX_DEPTH {
+        return Some(TOO_DEEP);
+    }
     let words = after_prefixes(words)?;
     let (&head, args) = words.split_first()?;
     let name = head.rsplit('/').next().unwrap_or(head);
+    if let Some(kind) = follow_kind(name, args) {
+        return Some(wait(kind, None));
+    }
+    let inner = |words| words_wait(words, stdin, depth + 1);
     match name {
         "sleep" | "gsleep" => sleep_wait(args),
         "wait" => Some(wait(WaitKind::WaitBuiltin, None)),
         "gh" => gh_wait(args),
-        "watch" => Some(wait(WaitKind::Watch, None)),
-        "tail" => (short_flag(args, 'f') || short_flag(args, 'F') || long_flag(args, "--follow"))
-            .then_some(wait(WaitKind::Follow, None)),
-        "fswatch" => (!short_flag(args, '1') && !long_flag(args, "--one-event"))
-            .then_some(wait(WaitKind::Watch, None)),
-        "inotifywait" => (short_flag(args, 'm') || long_flag(args, "--monitor"))
-            .then_some(wait(WaitKind::Watch, None)),
         "timeout" | "gtimeout" => timeout_wait(args, stdin, depth),
         "kubectl" => kubectl_wait(args),
         "docker" | "podman" => docker_wait(args),
         "wait-on" | "wait-for-it" | "wait-for-it.sh" | "wait-for" => {
             Some(wait(WaitKind::ClusterWait, None))
         }
-        "npx" | "bunx" | "pnpx" => words_wait(skip_flags(args, &["-p", "--package"]), stdin, depth),
+        "npx" | "bunx" | "pnpx" => inner(skip_flags(args, &["-p", "--package"])),
         "pnpm" | "yarn" => match args {
-            ["dlx" | "exec", rest @ ..] => words_wait(skip_flags(rest, &[]), stdin, depth),
+            ["dlx" | "exec", rest @ ..] => inner(skip_flags(rest, &[])),
+            _ => None,
+        },
+        "uv" | "poetry" | "pipx" | "pdm" => match args {
+            ["run", rest @ ..] => inner(skip_flags(rest, &["--with", "-p", "--python", "--spec"])),
             _ => None,
         },
         "bash" | "sh" | "zsh" | "dash" | "ksh" => shell_wait(args, stdin, depth),
         "eval" => text_wait(&args.join(" "), depth + 1),
         _ => interpreter_wait(name, args, stdin),
     }
+}
+
+/// A tool that blocks while it follows a log or watches for changes.
+struct Follower {
+    tool: &'static str,
+    /// The subcommand words between the tool and its flags.
+    path: &'static [&'static str],
+    /// Flags that take a value, so a cluster ends at one (`-owide`) and its
+    /// value is not read as a subcommand (`compose -f x.yml logs`).
+    valued: &'static [&'static str],
+    /// Flags that make it follow; empty means it always follows.
+    on: &'static [&'static str],
+    /// Flags that make it return at once.
+    off: &'static [&'static str],
+    kind: WaitKind,
+}
+
+const TAIL_VALUED: &[&str] = &["-n", "--lines", "-c", "--bytes", "-s", "--pid"];
+const DOCKER_VALUED: &[&str] = &[
+    "-H",
+    "--host",
+    "--context",
+    "--config",
+    "-c",
+    "-l",
+    "--log-level",
+    "-f",
+    "--file",
+    "-p",
+    "--project-name",
+    "--profile",
+    "--env-file",
+    "--project-directory",
+    "-n",
+    "--tail",
+    "--since",
+    "--until",
+];
+const KUBECTL_VALUED: &[&str] = &[
+    "-n",
+    "--namespace",
+    "--context",
+    "--kubeconfig",
+    "--cluster",
+    "--user",
+    "-s",
+    "--server",
+    "-l",
+    "--selector",
+    "-c",
+    "--container",
+    "-o",
+    "--output",
+    "-L",
+    "--label-columns",
+    "-f",
+    "--filename",
+    "-k",
+    "--kustomize",
+    "--field-selector",
+    "--since",
+    "--tail",
+];
+const JOURNALCTL_VALUED: &[&str] = &[
+    "-u",
+    "--unit",
+    "-t",
+    "--identifier",
+    "-p",
+    "--priority",
+    "-o",
+    "--output",
+    "-S",
+    "--since",
+    "-U",
+    "--until",
+    "-D",
+    "--directory",
+    "-M",
+    "--machine",
+    "-g",
+    "--grep",
+    "-n",
+    "--lines",
+    "-b",
+    "--boot",
+];
+const FOLLOW: &[&str] = &["-f", "--follow"];
+
+const fn follower(
+    tool: &'static str,
+    path: &'static [&'static str],
+    valued: &'static [&'static str],
+    on: &'static [&'static str],
+    kind: WaitKind,
+) -> Follower {
+    Follower {
+        tool,
+        path,
+        valued,
+        on,
+        off: &[],
+        kind,
+    }
+}
+
+const FOLLOWERS: &[Follower] = &[
+    follower(
+        "tail",
+        &[],
+        TAIL_VALUED,
+        &["-f", "-F", "--follow"],
+        WaitKind::Follow,
+    ),
+    follower("docker", &["logs"], DOCKER_VALUED, FOLLOW, WaitKind::Follow),
+    follower(
+        "docker",
+        &["compose", "logs"],
+        DOCKER_VALUED,
+        FOLLOW,
+        WaitKind::Follow,
+    ),
+    follower(
+        "docker-compose",
+        &["logs"],
+        DOCKER_VALUED,
+        FOLLOW,
+        WaitKind::Follow,
+    ),
+    follower("podman", &["logs"], DOCKER_VALUED, FOLLOW, WaitKind::Follow),
+    follower(
+        "kubectl",
+        &["logs"],
+        KUBECTL_VALUED,
+        FOLLOW,
+        WaitKind::Follow,
+    ),
+    follower(
+        "kubectl",
+        &["get"],
+        KUBECTL_VALUED,
+        &["-w", "--watch", "--watch-only"],
+        WaitKind::Watch,
+    ),
+    follower(
+        "journalctl",
+        &[],
+        JOURNALCTL_VALUED,
+        FOLLOW,
+        WaitKind::Follow,
+    ),
+    Follower {
+        off: &["--no-follow"],
+        ..follower("stern", &[], &[], &[], WaitKind::Follow)
+    },
+    follower("watch", &[], &[], &[], WaitKind::Watch),
+    Follower {
+        valued: &[
+            "-l",
+            "--latency",
+            "-e",
+            "--exclude",
+            "-i",
+            "--include",
+            "-m",
+            "--monitor",
+        ],
+        off: &["-1", "--one-event"],
+        ..follower("fswatch", &[], &[], &[], WaitKind::Watch)
+    },
+    follower(
+        "inotifywait",
+        &[],
+        &[
+            "-e",
+            "--event",
+            "-t",
+            "--timeout",
+            "-o",
+            "--outfile",
+            "--format",
+            "--timefmt",
+        ],
+        &["-m", "--monitor"],
+        WaitKind::Watch,
+    ),
+];
+
+fn follow_kind(name: &str, args: &[&str]) -> Option<WaitKind> {
+    FOLLOWERS
+        .iter()
+        .filter(|row| row.tool == name)
+        .find_map(|row| {
+            let rest = after_path(args, row.path, row.valued)?;
+            let has = |flag: &&str| has_flag(rest, flag, row.valued);
+            let follows = row.on.is_empty() || row.on.iter().any(has);
+            (follows && !row.off.iter().any(has)).then_some(row.kind)
+        })
+}
+
+/// The arguments after the subcommand `path`, when the command names it.
+fn after_path<'a>(args: &'a [&'a str], path: &[&str], valued: &[&str]) -> Option<&'a [&'a str]> {
+    let mut path = path.iter();
+    let Some(mut want) = path.next() else {
+        return Some(args);
+    };
+    let mut at = 0;
+    while let Some(&arg) = args.get(at) {
+        at += if valued.contains(&arg) { 2 } else { 1 };
+        if arg.starts_with('-') {
+            continue;
+        }
+        if arg != *want {
+            return None;
+        }
+        match path.next() {
+            Some(next) => want = next,
+            None => return Some(&args[at..]),
+        }
+    }
+    None
+}
+
+/// `flag` is set: `--watch` (not `--watch=false`), or `-f` alone or in a
+/// cluster before any flag that takes the rest as its value (`-tf`, not
+/// `-owide` for `-w`).
+fn has_flag(args: &[&str], flag: &str, valued: &[&str]) -> bool {
+    if flag.starts_with("--") {
+        return long_flag(args, flag);
+    }
+    let Some(target) = flag.strip_prefix('-').and_then(|name| name.chars().next()) else {
+        return false;
+    };
+    args.iter().any(|arg| {
+        let Some(cluster) = arg.strip_prefix('-').filter(|rest| !rest.starts_with('-')) else {
+            return false;
+        };
+        for name in cluster.chars() {
+            if name == target {
+                return true;
+            }
+            if valued.iter().any(|v| v.len() == 2 && v.ends_with(name)) {
+                return false;
+            }
+        }
+        false
+    })
 }
 
 /// The command after assignments and wrappers that run their argument in
@@ -816,16 +1154,12 @@ fn positionals<'a>(args: &[&'a str], valued: &[&str]) -> Vec<&'a str> {
     found
 }
 
-fn short_flag(args: &[&str], flag: char) -> bool {
-    args.iter().any(|arg| {
-        arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains(flag)
-    })
-}
-
+/// `--flag` or `--flag=value`, except `--flag=false`.
 fn long_flag(args: &[&str], flag: &str) -> bool {
-    args.iter().any(|arg| {
-        arg.strip_prefix(flag)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+    args.iter().any(|arg| match arg.strip_prefix(flag) {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix('=').is_some_and(|value| value != "false"),
+        None => false,
     })
 }
 
@@ -839,9 +1173,9 @@ fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
         })
 }
 
-/// `5`, `1.5`, `2m`, `1h`, `1d` in whole seconds, rounded up. `None` for
-/// `infinity`, `$N`, or anything else not literal.
-fn parse_duration(text: &str) -> Option<u32> {
+/// `5`, `9.9`, `2m`, `1h`, `1d`. `None` for `infinity`, `$N`, or anything
+/// else not literal.
+fn parse_duration(text: &str) -> Option<Duration> {
     let split = text
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
         .unwrap_or(text.len());
@@ -854,16 +1188,21 @@ fn parse_duration(text: &str) -> Option<u32> {
         "d" => 86400.0,
         _ => return None,
     };
-    let seconds = (value * scale).ceil();
-    // `as` saturates at u32::MAX.
-    seconds.is_finite().then_some(seconds as u32)
+    Some(Duration::try_from_secs_f64(value * scale).unwrap_or(Duration::MAX))
 }
 
 fn sleep_wait(args: &[&str]) -> Option<Wait> {
+    if args
+        .iter()
+        .any(|arg| matches!(*arg, "--help" | "--version"))
+    {
+        return None;
+    }
+    let args: Vec<&str> = args.iter().copied().filter(|arg| *arg != "--").collect();
     if args.is_empty() {
         return None;
     }
-    let seconds = args.iter().try_fold(0u32, |sum, arg| {
+    let seconds = args.iter().try_fold(Duration::ZERO, |sum, arg| {
         Some(sum.saturating_add(parse_duration(arg)?))
     });
     Some(wait(WaitKind::Sleep, seconds))
@@ -882,28 +1221,23 @@ fn gh_wait(args: &[&str]) -> Option<Wait> {
 fn timeout_wait(args: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
     let rest = skip_flags(args, &["-s", "--signal", "-k", "--kill-after"]);
     let (&limit, command) = rest.split_first()?;
-    let inner = words_wait(command, stdin, depth)?;
-    let seconds = match (parse_duration(limit).filter(|&n| n > 0), inner.seconds) {
+    let inner = words_wait(command, stdin, depth + 1)?;
+    let seconds = match (
+        parse_duration(limit).filter(|n| !n.is_zero()),
+        inner.seconds,
+    ) {
         (Some(limit), Some(inner)) => Some(limit.min(inner)),
         (limit, inner) => limit.or(inner),
     };
-    Some(wait(WaitKind::Timeout, seconds))
+    Some(Wait {
+        kind: WaitKind::Timeout,
+        seconds,
+        repeats: inner.repeats,
+    })
 }
 
 fn kubectl_wait(args: &[&str]) -> Option<Wait> {
-    let valued = [
-        "-n",
-        "--namespace",
-        "--context",
-        "--kubeconfig",
-        "--cluster",
-        "--user",
-        "-l",
-        "--selector",
-        "--for",
-        "--timeout",
-    ];
-    let waits = match positionals(args, &valued).as_slice() {
+    let waits = match positionals(args, KUBECTL_VALUED).as_slice() {
         ["wait", ..] => true,
         ["rollout", "status", ..] => !args
             .iter()
@@ -915,38 +1249,46 @@ fn kubectl_wait(args: &[&str]) -> Option<Wait> {
 }
 
 fn docker_wait(args: &[&str]) -> Option<Wait> {
-    let valued = [
-        "-H",
-        "--host",
-        "--context",
-        "--config",
-        "-c",
-        "--log-level",
-        "-f",
-        "--file",
-        "-p",
-        "--project-name",
-    ];
     matches!(
-        positionals(args, &valued).as_slice(),
+        positionals(args, DOCKER_VALUED).as_slice(),
         ["wait", ..] | ["compose", "wait", ..]
     )
     .then_some(wait(WaitKind::ClusterWait, None))
 }
 
-/// `bash -c '...'` runs its string; `bash` with no script runs its heredoc.
+/// `bash -c '...'` runs its first operand; `bash` with no operand runs its
+/// heredoc. `-o name` and `-O name`, alone or in a cluster (`-euo
+/// pipefail`), take the next word, which is not an operand.
 fn shell_wait(args: &[&str], stdin: Option<&str>, depth: u8) -> Option<Wait> {
-    let mut args = args.iter();
-    while let Some(&arg) = args.next() {
-        if matches!(arg, "-o" | "+o") {
-            args.next();
-        } else if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
-            return text_wait(args.next()?, depth + 1);
-        } else if !arg.starts_with(['-', '+']) {
-            return None;
+    let mut command_string = false;
+    let mut operand = None;
+    let mut args = args.iter().copied();
+    while let Some(arg) = args.next() {
+        if matches!(arg, "--" | "-") {
+            operand = args.next();
+            break;
         }
+        if let Some(long) = arg.strip_prefix("--") {
+            if matches!(long, "rcfile" | "init-file") {
+                args.next();
+            }
+            continue;
+        }
+        let Some(cluster) = arg.strip_prefix(['-', '+']) else {
+            operand = Some(arg);
+            break;
+        };
+        for _ in cluster.matches(['o', 'O']) {
+            args.next();
+        }
+        command_string |= arg.starts_with('-') && cluster.contains('c');
     }
-    text_wait(stdin?, depth + 1)
+    match (operand, command_string) {
+        (Some(code), true) => text_wait(code, depth + 1),
+        (None, false) => text_wait(stdin?, depth + 1),
+        // A script file, or `-c` with nothing to run.
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1037,17 +1379,21 @@ fn code_wait(lang: Lang, code: &str) -> Option<Wait> {
 fn called<'a>(code: &'a str, name: &str, next: impl Fn(char) -> bool) -> Vec<&'a str> {
     code.match_indices(name)
         .filter(|(at, _)| {
-            !code[..*at]
+            let before = &code[..*at];
+            let in_word = before
                 .chars()
                 .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            // `:sleep` is a Ruby symbol; `Time::HiRes::sleep` is a call.
+            let symbol = before.ends_with(':') && !before.ends_with("::");
+            !in_word && !symbol
         })
         .map(|(at, _)| code[at + name.len()..].trim_start())
         .filter(|rest| rest.chars().next().is_none_or(&next))
         .collect()
 }
 
-fn leading_number(args: &str) -> Option<u32> {
+fn leading_number(args: &str) -> Option<Duration> {
     let args = args.trim_start_matches(['(', ' ']);
     let end = args
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
@@ -1068,7 +1414,6 @@ mod tests {
         ("sleep 1m", Sleep, Some(60)),
         ("sleep 2h", Sleep, Some(7200)),
         ("sleep 1d", Sleep, Some(86400)),
-        ("sleep 0.5", Sleep, Some(1)),
         ("sleep 5 10", Sleep, Some(15)),
         ("sleep $DELAY", Sleep, None),
         ("sleep infinity", Sleep, None),
@@ -1181,6 +1526,18 @@ mod tests {
         ),
         ("ruby -e 'sleep 2'", Interpreter, Some(2)),
         ("perl -le 'sleep 2'", Interpreter, Some(2)),
+        (
+            "perl -e 'use Time::HiRes; Time::HiRes::sleep(2)'",
+            Interpreter,
+            Some(2),
+        ),
+        (
+            "uv run python -c 'import time; time.sleep(3)'",
+            Interpreter,
+            Some(3),
+        ),
+        ("poetry run sleep 3", Sleep, Some(3)),
+        ("cat <<EOF > f\r\nhi\r\nEOF\r\nsleep 6\r\n", Sleep, Some(6)),
     ];
 
     /// Design 10 "False-positive guards", plus commands that look close.
@@ -1235,13 +1592,19 @@ mod tests {
         "bash script.sh",
         "echo done; echo do",
         "x=$((1+2)); echo $x",
+        "gh pr checks 1 --watch=false",
+        "ruby -e 'puts :sleep'",
+        "sleep --help",
+        "sleep --version",
+        "pnpm run watch",
     ];
 
     fn check(rows: &[Row]) {
         for &(command, kind, seconds) in rows {
+            let seconds = seconds.map(|n| Duration::from_secs(n.into()));
             assert_eq!(
-                classify(command, false),
-                Some(Wait { kind, seconds }),
+                classify(command, false).map(|wait| (wait.kind, wait.seconds)),
+                Some((kind, seconds)),
                 "{command:?}"
             );
         }
@@ -1293,11 +1656,194 @@ mod tests {
         ]);
     }
 
+    /// Each recursive entry point, nested `n` levels around `sleep 1`.
+    fn nested(n: usize) -> Vec<(&'static str, String)> {
+        let wrap =
+            |open: &str, close: &str| format!("{}sleep 1{}", open.repeat(n), close.repeat(n));
+        vec![
+            ("subshell", wrap("( ", " )")),
+            ("brace block", wrap("{ ", "; }")),
+            ("if", wrap("if true; then ", "; fi")),
+            ("while", wrap("while true; do ", "; done")),
+            ("for", wrap("for i in 1; do ", "; done")),
+            ("not", wrap("! ", "")),
+            ("function body", wrap("f() { ", "; }; ")),
+            ("command substitution", wrap("echo $(", ")")),
+            ("quoted substitution", wrap("echo \"$(", ")\"")),
+            ("process substitution", wrap("cat <(", ")")),
+            ("eval", wrap("eval ", "")),
+            ("timeout", wrap("timeout 1 ", "")),
+            ("npx", wrap("npx ", "")),
+            ("nohup", wrap("nohup ", "")),
+            (
+                "shell heredoc",
+                (0..n).fold("sleep 1".to_string(), |inner, level| {
+                    format!("bash <<E{level}\n{inner}\nE{level}")
+                }),
+            ),
+        ]
+    }
+
     #[test]
-    fn deep_nesting_stops_without_overflowing() {
-        // Defect: a hostile chain of substitutions recurses until the stack
-        // overflows, and a crash in the hook fails open on Codex.
-        let command = format!("{}sleep 1{}", "echo $(".repeat(200), ")".repeat(200));
-        assert_eq!(classify(&command, false), None);
+    fn nesting_past_the_depth_budget_holds_without_overflowing() {
+        // Defect: deep nesting recurses until the stack overflows, which
+        // aborts past the panic hook, so Codex runs the wait unasked.
+        let worker = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                for (entry, command) in nested(5_000) {
+                    assert!(classify(&command, false).is_some(), "{entry}");
+                }
+            })
+            .unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn nesting_within_the_budget_still_reads_the_wait() {
+        // Defect: the depth budget is so low that a real nested wait reads
+        // as too deep and loses its kind and length.
+        for (entry, command) in nested(6) {
+            match classify(&command, false) {
+                Some(wait) => assert_ne!(wait.kind, TooDeep, "{entry}"),
+                // Defining a function runs nothing.
+                None => assert_eq!(entry, "function body"),
+            }
+        }
+    }
+
+    #[test]
+    fn follow_and_watch_flags_hold_only_when_they_follow() {
+        // Defect: a log tool that follows forever (`docker logs -f`) runs
+        // unasked, or the same tool without its follow flag is held.
+        let rows: &[(&str, Option<WaitKind>)] = &[
+            ("tail -f app.log", Some(Follow)),
+            ("tail -5f app.log", Some(Follow)),
+            ("tail -n 5 app.log", None),
+            ("docker logs -f api", Some(Follow)),
+            ("docker logs --follow api", Some(Follow)),
+            ("docker logs -tf api", Some(Follow)),
+            ("docker logs api -f", Some(Follow)),
+            ("docker -H tcp://h logs -f api", Some(Follow)),
+            ("docker logs api", None),
+            ("docker logs --tail 50 api", None),
+            ("docker compose logs -f web", Some(Follow)),
+            ("docker compose -f x.yml logs -f web", Some(Follow)),
+            ("docker compose -f x.yml logs web", None),
+            ("docker compose -f x.yml up", None),
+            ("docker-compose logs -f", Some(Follow)),
+            ("docker-compose logs", None),
+            ("podman logs -f ctr", Some(Follow)),
+            ("podman logs ctr", None),
+            ("kubectl logs -f deploy/api", Some(Follow)),
+            ("kubectl -n prod logs --follow api", Some(Follow)),
+            ("kubectl logs -c sidecar -f api", Some(Follow)),
+            ("kubectl logs api", None),
+            ("kubectl logs --follow=false api", None),
+            ("kubectl get pods -w", Some(Watch)),
+            ("kubectl get pods --watch", Some(Watch)),
+            ("kubectl get pods --watch-only", Some(Watch)),
+            ("kubectl get pods", None),
+            ("kubectl get pods -owide", None),
+            ("kubectl get pods --watch=false", None),
+            ("kubectl rollout status deploy/api", Some(ClusterWait)),
+            ("journalctl -f", Some(Follow)),
+            ("journalctl -fu nginx", Some(Follow)),
+            ("journalctl -xef", Some(Follow)),
+            ("journalctl -u nginx --follow", Some(Follow)),
+            ("journalctl -u nginx", None),
+            ("journalctl -u f", None),
+            ("stern api", Some(Follow)),
+            ("stern api --no-follow", None),
+            ("watch -n 5 kubectl get pods", Some(Watch)),
+            ("fswatch src", Some(Watch)),
+            ("fswatch -1 src", None),
+            ("inotifywait -m src", Some(Watch)),
+            ("inotifywait src", None),
+        ];
+        for &(command, kind) in rows {
+            assert_eq!(
+                classify(command, false).map(|wait| wait.kind),
+                kind,
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_option_clusters_before_c_still_run_the_string() {
+        // Defect: `bash -euo pipefail -c '...'` reads `pipefail` as a
+        // script name, so the wait inside runs unasked.
+        check(&[
+            ("bash -euo pipefail -c 'sleep 3'", Sleep, Some(3)),
+            ("sh -eo pipefail -c 'sleep 3'", Sleep, Some(3)),
+            ("bash -e -o pipefail -c 'sleep 3'", Sleep, Some(3)),
+            ("bash -o errexit -o nounset -c 'sleep 3'", Sleep, Some(3)),
+            ("bash -O extglob -c 'sleep 3'", Sleep, Some(3)),
+            ("sh -ec 'sleep 3'", Sleep, Some(3)),
+            ("zsh -fc 'sleep 3'", Sleep, Some(3)),
+            ("bash -c -e 'sleep 3'", Sleep, Some(3)),
+            ("bash --norc -c 'sleep 3'", Sleep, Some(3)),
+            ("bash --rcfile x.rc -c 'sleep 3'", Sleep, Some(3)),
+        ]);
+        assert_eq!(
+            classify("bash -eo pipefail -c 'gh run watch 1'", false).map(|wait| wait.kind),
+            Some(GhWatch)
+        );
+        for command in ["bash -euo pipefail script.sh", "bash -c 'echo sleep'"] {
+            assert_eq!(classify(command, false), None, "{command:?}");
+        }
+    }
+
+    #[test]
+    fn seconds_keep_their_fraction() {
+        // Defect: `sleep 9.9` rounds up to 10 s and asks, though it is
+        // under the 10 s short-sleep line.
+        let seconds = |command| classify(command, false).and_then(|wait| wait.seconds);
+        assert_eq!(seconds("sleep 9.9"), Some(Duration::from_millis(9900)));
+        assert_eq!(seconds("sleep 0.5"), Some(Duration::from_millis(500)));
+        assert_eq!(seconds("sleep 0.5m"), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn only_a_single_short_wait_counts_as_short() {
+        // Defect: a short sleep in a loop or repeated in one command runs
+        // unasked, though it adds up to an unbounded or long wait.
+        let below = Duration::from_secs(10);
+        let short = |command| classify(command, false).unwrap().is_short(below);
+        assert!(short("sleep 9.9"));
+        assert!(short("timeout 30 sleep 2"));
+        assert!(!short("sleep 10"));
+        assert!(!short("sleep $N"));
+        assert!(!short("gh pr checks 1 --watch"));
+        assert!(!short("for i in 1 2 3; do sleep 1; done"));
+        assert!(!short("for i in 1; do sleep 1; done"));
+        assert!(!short("while true; do sleep 1; done"));
+        assert!(!short("sleep 2; sleep 2"));
+        assert!(!short("sleep 1 && echo $(sleep 1)"));
+        assert!(!short("bash -c 'sleep 1; sleep 1'"));
+        assert!(!short("timeout 5 bash -c 'sleep 1; sleep 1'"));
+        assert!(!short(
+            "python3 -c 'import time; time.sleep(1); time.sleep(1)'"
+        ));
+        assert_eq!(classify("sleep 5 &", false), None);
+    }
+
+    #[test]
+    fn the_wire_carries_seconds_with_their_fraction() {
+        // Defect: the app shows 9.9 s as 9 s, or whole seconds as floats.
+        let json = |command| serde_json::to_value(classify(command, false).unwrap()).unwrap();
+        assert_eq!(
+            json("sleep 30"),
+            serde_json::json!({"kind": "sleep", "seconds": 30})
+        );
+        assert_eq!(
+            json("sleep 9.9"),
+            serde_json::json!({"kind": "sleep", "seconds": 9.9})
+        );
+        assert_eq!(
+            json("wait"),
+            serde_json::json!({"kind": "wait_builtin", "seconds": null})
+        );
     }
 }
