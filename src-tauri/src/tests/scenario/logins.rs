@@ -330,17 +330,26 @@ esac"#,
     // An agent's `notify` from an earlier run; the login has no config.toml.
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join("config.toml"), "notify = [\"planted\"]").unwrap();
-    assert_eq!(
-        rig.start(
+    let ran = rig
+        .start(
             "linked",
             "codex",
             &codex,
             "codex",
             "app-server",
-            Some("mono")
-        ),
-        Ok(format!("{}\n", text(&home))),
-        "the Mono's CODEX_HOME is not its own home beside the app data"
+            Some("mono"),
+        )
+        .unwrap();
+    // The sleep hold's Codex home (alarms P2), each entry a link into the Mono's.
+    let codex_home = Path::new(ran.trim_end());
+    assert_eq!(
+        codex_home.parent(),
+        Some(home.with_file_name(".hold").as_path())
+    );
+    assert_eq!(
+        std::fs::read_link(codex_home.join("sessions")).ok(),
+        Some(home.join("sessions")),
+        "the Mono's CODEX_HOME is not over its own home beside the app data"
     );
     assert_eq!(
         std::fs::read_link(home.join("config.toml")).ok(),

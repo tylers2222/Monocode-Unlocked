@@ -205,8 +205,9 @@ impl Live {
         }
     }
 
-    /// The sleep hold of `session` reported in. Queued behind its spawn, so
-    /// the spawn's reset cannot land after it. `false` when not recorded.
+    /// The sleep hold of `session` reported in. Queued in order with the
+    /// spawn's reset, which `harness_spawn` records as the child starts, long
+    /// before omp boots far enough to ping. `false` when not recorded.
     pub(crate) fn hold_pinged(&self, session: &str) -> bool {
         let (Some(session), Some(_)) = (SessionId::parse(session), self.now()) else {
             return false;

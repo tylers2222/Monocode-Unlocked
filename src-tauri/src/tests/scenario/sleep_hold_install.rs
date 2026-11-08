@@ -239,3 +239,222 @@ fn a_stall_supersedes_the_missing_hold_alarm_and_the_spawn_is_not_told_again() {
         "the stall is over; this spawn was told already"
     );
 }
+
+/// `session` gets a new omp child, waiting for its extension's ping.
+fn omp_spawned(world: &World, session: &SessionId) {
+    spawn(world, session, "omp", Some(HoldState::AwaitingPing));
+}
+
+// Defect (P2 r1 m1): a ping in the last seconds of the grace waits in the
+// queue for the next pass while the tick already judged the session
+// silent, so its row reads missing.
+#[test]
+fn a_ping_at_the_end_of_its_grace_is_never_judged_silent() {
+    let mut world = World::new("hold-late-ping");
+    let chain = chain(&world, "hl");
+    // Spawn between two passes, so the grace ends between them too.
+    while world.active_ms() % PASS != 2 * SECOND {
+        world.advance(SECOND);
+    }
+    omp_spawned(&world, &chain.worker);
+    world.alarm_turn_started(&chain.worker, "turn-1");
+    world.advance(PING_GRACE_MS - SECOND);
+    assert_eq!(
+        ping(&world, &chain.worker),
+        json!({"ok": true, "recorded": true})
+    );
+    for _ in 0..2 * PASS / SECOND {
+        world.advance(SECOND);
+        assert_ne!(
+            hold_state_of(&world, &chain.worker).0.as_deref(),
+            Some("missing"),
+            "at {}",
+            world.active_ms()
+        );
+    }
+    assert_eq!(
+        hold_state_of(&world, &chain.worker),
+        (Some("installed".into()), None)
+    );
+}
+
+// Defect (P2 r1 fable m2): an omp session whose turns all end inside 30 s
+// is never judged, so an extension that never loaded reads as pending for
+// good; or one that pinged in its short turn reads as missing.
+#[test]
+fn a_short_turn_with_no_ping_leaves_the_hold_missing() {
+    let mut world = World::new("hold-short-turn");
+    let chain = chain(&world, "hq");
+    omp_spawned(&world, &chain.worker);
+    world.alarm_turn_started(&chain.worker, "turn-1");
+    world.advance(10 * SECOND);
+    world.alarm_turn_ended(&chain.worker, "turn-1");
+    world.advance(PASS);
+    assert_eq!(
+        hold_state_of(&world, &chain.worker),
+        (Some("missing".into()), Some(SILENT.into()))
+    );
+
+    omp_spawned(&world, &chain.worker);
+    world.alarm_turn_started(&chain.worker, "turn-2");
+    world.advance(SECOND);
+    ping(&world, &chain.worker);
+    world.advance(SECOND);
+    world.alarm_turn_ended(&chain.worker, "turn-2");
+    world.advance(PASS);
+    assert_eq!(
+        hold_state_of(&world, &chain.worker),
+        (Some("installed".into()), None),
+        "pinged inside its short turn"
+    );
+}
+
+/// A canonical scratch folder for one spawn scenario.
+#[cfg(unix)]
+fn spawn_root(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("monocode-p2-{name}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    root.canonicalize().unwrap()
+}
+
+// Defect (P2 r1 M2): in the agent sandbox omp cannot read the hold's
+// extension or its timeout overlay in the app data folder, and stops at
+// the overlay before any session starts; or srt opens more of the app
+// data folder than the folder those two files are alone in.
+#[test]
+#[cfg(unix)]
+fn an_omp_spawn_in_the_agent_sandbox_may_read_only_its_hold_folder() {
+    use super::agent_sandbox::{main_window, mock_app, script, stand_in_srt};
+    use tauri::Manager;
+
+    let root = spawn_root("srt");
+    let data = root.join("com.monocode.p2srt");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("agent-sandbox-on"), b"").unwrap();
+    stand_in_srt(&root.join("srt"));
+    let omp = script(
+        &root.join("omp"),
+        r#"[ "$1" = --version ] && { echo 18.2.11; exit 0; }
+[ "$1" = --help ] && { echo '--mode=<value> text, json, rpc'; exit 0; }
+printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
+    )
+    .to_string_lossy()
+    .into_owned();
+    let app = mock_app(&data);
+    let workdir = root.join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    crate::harness::harness_spawn(
+        app.handle().clone(),
+        main_window(&app),
+        app.state::<crate::harness::HarnessHost>(),
+        "p2srt".into(),
+        omp.clone(),
+        vec!["--mode".into(), "rpc".into()],
+        workdir.to_string_lossy().into_owned(),
+        None,
+        Some("omp".into()),
+        Some(omp),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let argv = super::omp_mcp::argv(&workdir);
+    assert_eq!((argv[0].as_str(), argv[2].as_str()), ("-e", "--config"));
+    let settings = super::agent_sandbox::wait_for(&workdir.join("srt-settings"));
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+    let reads: std::collections::BTreeSet<&str> = settings["filesystem"]["allowRead"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.as_str().unwrap())
+        .collect();
+    let hold = data.join("omp/hold");
+    for file in [&argv[1], &argv[3]] {
+        assert_eq!(std::path::Path::new(file).parent(), Some(hold.as_path()));
+    }
+    assert_eq!(
+        reads,
+        [hold.to_str().unwrap()].into_iter().collect(),
+        "the hold's folder, nothing else"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+// Defect (P2 r1 B1): an app-spawned Codex runs on a home without the
+// trusted hook (app-server runs no session-flag hook), its databases move
+// into the hold's home, or the login's own config is written.
+#[test]
+#[cfg(unix)]
+fn a_codex_spawn_runs_on_the_holds_home_over_its_login() {
+    use super::agent_sandbox::{main_window, mock_app, script};
+    use tauri::Manager;
+
+    let root = spawn_root("codex");
+    let data = root.join("com.monocode.p2codex");
+    let app = mock_app(&data);
+    let codex = script(
+        &root.join("codex"),
+        r#"[ "$1" = --version ] && { echo codex-cli 0.165.0; exit 0; }
+printf '%s\n' "$CODEX_HOME" "$CODEX_SQLITE_HOME" > env.part && mv env.part env"#,
+    )
+    .to_string_lossy()
+    .into_owned();
+    let account = crate::harness::HarnessAccount {
+        provider: "codex".into(),
+        id: "p2-login".into(),
+    };
+    let login = crate::harness::provider_account_dir(app.handle(), "codex", Some(&account.id))
+        .unwrap()
+        .unwrap();
+    std::fs::write(login.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+    std::fs::write(login.join("auth.json"), "{}").unwrap();
+    let workdir = root.join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    crate::harness::harness_spawn(
+        app.handle().clone(),
+        main_window(&app),
+        app.state::<crate::harness::HarnessHost>(),
+        "p2codex".into(),
+        codex.clone(),
+        vec!["app-server".into()],
+        workdir.to_string_lossy().into_owned(),
+        Some(account),
+        Some("codex".into()),
+        Some(codex),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let env = super::agent_sandbox::wait_for(&workdir.join("env"));
+    let [home, sqlite] = <[&str; 2]>::try_from(env.lines().collect::<Vec<_>>()).unwrap();
+    let home = std::path::Path::new(home);
+    assert!(
+        home.starts_with(crate::codex_mono_store::homes(&data).unwrap()),
+        "{home:?}"
+    );
+    assert_eq!(std::path::Path::new(sqlite), login);
+    assert_eq!(
+        std::fs::read_link(home.join("auth.json")).unwrap(),
+        login.join("auth.json")
+    );
+    let config: toml::Table = std::fs::read_to_string(home.join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(config["model"].as_str(), Some("gpt-5"));
+    let key = format!("{}:pre_tool_use:0:0", home.join("config.toml").display());
+    assert!(
+        config["hooks"]["state"][&key]["trusted_hash"].is_str(),
+        "{config:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(login.join("config.toml")).unwrap(),
+        "model = \"gpt-5\"\n"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}

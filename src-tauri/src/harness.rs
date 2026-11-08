@@ -1060,9 +1060,28 @@ pub fn harness_spawn<R: Runtime>(
             return Err("Private Mono storage is only supported for Codex app-server".into())
         }
     };
+    // The sleep hold goes in a session's own child, not a helper's, before
+    // srt's rules: they open what the hold reads.
+    let (args, hold) = match binary_provider
+        .as_deref()
+        .and_then(crate::sleep_hold::Harness::parse)
+    {
+        Some(harness) if helper.is_none() => {
+            let spawn = crate::sleep_hold::install::Spawn {
+                workdir: &workdir,
+                login: login.as_ref(),
+                codex_store: codex_store.as_ref().map(|store| store.home.as_path()),
+            };
+            let mut install = crate::sleep_hold::install::for_spawn(&app, harness, spawn, args);
+            (std::mem::take(&mut install.args), Some(install))
+        }
+        _ => (args, None),
+    };
     let homes = crate::agent_sandbox::Homes {
         account: login.as_ref().map(LoginDir::path),
         codex: codex_store.as_ref().map(|store| store.home.as_path()),
+        hold: hold.as_ref().and_then(|hold| hold.codex_home.as_deref()),
+        reads: hold.as_ref().map_or(&[], |hold| hold.reads.as_slice()),
     };
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
         crate::agent_sandbox::command(&app, &command, &srt_deny, homes)?;
@@ -1071,17 +1090,6 @@ pub fn harness_spawn<R: Runtime>(
             crate::claude_deny::args(&app, &workdir, login.as_ref(), sandboxed, args)?
         }
         _ => args,
-    };
-    // The sleep hold goes in a session's own child, not a helper's.
-    let (args, hold) = match binary_provider
-        .as_deref()
-        .and_then(crate::sleep_hold::Harness::parse)
-    {
-        Some(harness) if helper.is_none() => {
-            let install = crate::sleep_hold::install::for_spawn(&app, harness, args);
-            (install.args, Some((install.env, install.state)))
-        }
-        _ => (args, None),
     };
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
@@ -1120,9 +1128,6 @@ pub fn harness_spawn<R: Runtime>(
     // the disk throttles (ADE-259).
     crate::background_work::configure_child(&mut cmd);
     apply_provider_account(&mut cmd, login.as_ref());
-    if let Some((env, _)) = &hold {
-        cmd.envs(env.iter().cloned());
-    }
     if let Some(store) = &codex_store {
         let private_path = serde_json::to_string(&store.home).map_err(|e| e.to_string())?;
         // Explicit config takes precedence over CODEX_SQLITE_HOME. Override
@@ -1130,6 +1135,10 @@ pub fn harness_spawn<R: Runtime>(
         cmd.env("CODEX_HOME", &store.home)
             .env("CODEX_SQLITE_HOME", &store.home)
             .args(["-c", &format!("sqlite_home={private_path}")]);
+    }
+    // After the login's and the store's: the hold's Codex home overlays theirs.
+    if let Some(hold) = &hold {
+        cmd.envs(hold.env.iter().cloned());
     }
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
@@ -1193,7 +1202,7 @@ pub fn harness_spawn<R: Runtime>(
         return Err(SPAWN_CANCELLED.to_string());
     }
     if helper.is_none() {
-        alarms.spawned(&session_id, tap.as_deref(), hold.map(|(_, state)| state));
+        alarms.spawned(&session_id, tap.as_deref(), hold.map(|hold| hold.state));
     }
 
     let stdout_app = app.clone();

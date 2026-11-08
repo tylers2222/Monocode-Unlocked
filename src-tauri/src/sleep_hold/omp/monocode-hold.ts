@@ -5,6 +5,9 @@
 import { spawn } from "node:child_process";
 
 function hold(args, stdin) {
+  if (!process.env.MONOCODE_HOLD_EXE) {
+    return Promise.resolve({ code: null, stderr: "MonoCode's sleep hold binary is not set." });
+  }
   return new Promise(resolve => {
     const child = spawn(process.env.MONOCODE_HOLD_EXE, ["hold", ...args], { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";

@@ -424,6 +424,7 @@ pub(crate) fn progressed(facts: &Facts, episode: &Episode) -> bool {
 pub(crate) fn next_state(facts: &Facts, now: i64, limits: Thresholds) -> Transition {
     let status = status(facts, now, limits);
     let stall = status.stall(now, limits);
+    let untold = matches!(facts.hold, Hold::Missing { told: false, .. }) && status != Status::Gone;
     if facts
         .episode
         .as_ref()
@@ -432,12 +433,10 @@ pub(crate) fn next_state(facts: &Facts, now: i64, limits: Thresholds) -> Transit
         return hold_missing(facts, status, stall.is_some());
     }
     match (&facts.episode, stall) {
-        (None, None) if matches!(facts.hold, Hold::Missing { told: false, .. }) => {
-            Transition::Open {
-                cause: Cause::HoldMissing,
-                stalled_since: now,
-            }
-        }
+        (None, None) if untold => Transition::Open {
+            cause: Cause::HoldMissing,
+            stalled_since: now,
+        },
         (None, None) => Transition::Stay,
         (None, Some((cause, stalled_since))) => Transition::Open {
             cause,
@@ -1034,8 +1033,8 @@ mod tests {
         }
     }
 
-    // Defect: a missing sleep hold waits out a stall clock before anyone
-    // hears, or opens again for a spawn already told.
+    // Defect: a missing sleep hold waits out a stall clock, opens again for
+    // a spawn already told, or opens for an agent already gone.
     #[test]
     fn a_missing_hold_opens_at_once_and_once_per_spawn() {
         let now = ENDED + MIN;
@@ -1046,12 +1045,15 @@ mod tests {
                 stalled_since: now
             }
         );
-        assert_eq!(next_state(&missing(true), now, LIMITS), Transition::Stay);
-        assert_eq!(
-            next_state(&idle(), now, LIMITS),
-            Transition::Stay,
-            "installed"
-        );
+        let mut gone = missing(false);
+        gone.gone = true;
+        for (facts, why) in [
+            (missing(true), "told"),
+            (idle(), "installed"),
+            (gone, "gone"),
+        ] {
+            assert_eq!(next_state(&facts, now, LIMITS), Transition::Stay, "{why}");
+        }
     }
 
     // Defect: the hold_missing episode closes at the agent's next turn

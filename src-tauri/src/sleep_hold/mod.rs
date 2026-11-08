@@ -4,6 +4,8 @@
 //! and the `hold` namespace messages it exchanges with the app.
 pub mod classify;
 pub mod client;
+mod claude_settings;
+mod codex_home;
 pub(crate) mod install;
 pub(crate) mod service;
 pub(crate) mod store;

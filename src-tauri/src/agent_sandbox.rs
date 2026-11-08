@@ -120,6 +120,12 @@ pub(crate) struct Homes<'a> {
     /// A Mono's private Codex home (`codex_mono_store`), in the folder of
     /// homes every spawn is denied reads of: this spawn reads and writes it.
     pub(crate) codex: Option<&'a Path>,
+    /// The sleep hold's Codex home (`sleep_hold::codex_home`), in that same
+    /// folder, opened as `codex` is.
+    pub(crate) hold: Option<&'a Path>,
+    /// Folders inside the app data folder the sleep hold has this spawn
+    /// read, each holding the hold's files alone.
+    pub(crate) reads: &'a [PathBuf],
 }
 
 /// srt rules one spawn adds to the shared settings.
@@ -188,13 +194,16 @@ pub(crate) fn command_in(
             .deny_write
             .extend(LOGIN_CONFIG.map(|file| path_entry(&dir.join(file))));
     }
-    if let Some(home) = homes.codex {
+    for home in [homes.codex, homes.hold].into_iter().flatten() {
         rules.allow_write.push(path_entry(home));
         rules.allow_read.push(path_entry(home));
         rules
             .deny_write
             .extend(LOGIN_CONFIG.map(|file| path_entry(&home.join(file))));
     }
+    rules
+        .allow_read
+        .extend(homes.reads.iter().map(|file| path_entry(file)));
     let settings = write_settings(data, &srt, rules)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);

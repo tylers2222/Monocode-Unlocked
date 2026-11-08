@@ -193,6 +193,7 @@ fn turn_ended(
     at: i64,
     wall: i64,
 ) -> rusqlite::Result<()> {
+    crate::sleep_hold::install::mark_unreported(conn, session.as_str(), turn_id)?;
     conn.execute(
         "INSERT INTO agent_activity (session_id, turn_state, turn_id, turn_ended_active_ms,
            updated_wall_ms)

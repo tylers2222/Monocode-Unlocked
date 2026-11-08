@@ -1,6 +1,7 @@
 //! The sleep hold in each session the app starts (alarms design 11): Claude
 //! Code, Codex and omp run `<exe> hold` before every shell call. The hook goes
-//! in through this spawn's own flags and env; no user file is written.
+//! in through this spawn's own flags, env and app-owned files; no user file
+//! is written.
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +9,9 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
 
+use super::claude_settings::{hooks_off, ClaudeFiles, MANAGED};
 use super::Harness;
+use crate::harness::LoginDir;
 
 /// Above the client's own deadline, so the client always answers first:
 /// Codex runs the command when its hook times out.
@@ -19,81 +22,185 @@ const OMP_EXTENSION: &str = include_str!("omp/monocode-hold.ts");
 /// How long an omp session's extension has, from its spawn and into a turn,
 /// to report in with `hold ping`.
 pub(crate) const PING_GRACE_MS: i64 = 30_000;
-const HOOKS_DISABLED: &str = "hooks disabled";
 const NO_PING: &str = "the omp hold extension did not report in";
 
 /// What a spawn's install came to, for `agent_activity.hold_state`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HoldState {
-    /// The hook is in the spawn's flags.
+    /// The hook is in, where the harness runs it.
     Installed,
     /// The omp extension reports in with `hold ping` inside a turn.
     AwaitingPing,
     Missing(String),
 }
 
-/// A spawn's args and env with the hold in, and what that came to.
+/// A spawn's args and env with the hold in, what that came to, and what the
+/// agent sandbox must open for it.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Install {
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<(&'static str, String)>,
     pub(crate) state: HoldState,
+    /// The hold's Codex home: the spawn reads and writes it.
+    pub(crate) codex_home: Option<PathBuf>,
+    /// Folders the spawn reads in the app's denied folders.
+    pub(crate) reads: Vec<PathBuf>,
+}
+
+/// Where a spawn's harness finds what its hold depends on.
+pub(crate) struct Places<'a> {
+    pub(crate) exe: &'a str,
+    /// `<app data>/omp/hold`: the omp extension and its timeout overlay,
+    /// alone in their folder.
+    pub(crate) omp: Result<&'a Path, String>,
+    /// The Codex home the spawn runs on, and the folder its overlay goes in.
+    pub(crate) codex: Result<(&'a Path, &'a Path), String>,
+    pub(crate) claude: ClaudeFiles<'a>,
+}
+
+/// The spawn `harness_spawn` makes, as far as its hold depends on it.
+pub(crate) struct Spawn<'a> {
+    pub(crate) workdir: &'a Path,
+    pub(crate) login: Option<&'a LoginDir>,
+    /// A Mono's private Codex home, when the spawn runs on one.
+    pub(crate) codex_store: Option<&'a Path>,
 }
 
 /// `harness_spawn`'s install for a session (not a helper) of `harness`.
 pub(crate) fn for_spawn<R: Runtime>(
     app: &AppHandle<R>,
     harness: Harness,
+    spawn: Spawn,
     args: Vec<String>,
 ) -> Install {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe.to_string_lossy().into_owned(),
         Err(error) => {
-            let state = HoldState::Missing(format!("no MonoCode binary path: {error}"));
-            return Install {
-                args,
-                env: Vec::new(),
-                state,
-            };
+            let reason = format!("no MonoCode binary path: {error}");
+            return missing(args, Vec::new(), reason);
         }
     };
     let store = app.state::<crate::session_store::SessionStore>();
-    let skip_s = store
+    // Read once: a session hears a changed setting at its next spawn.
+    let settings = store
         .lock_conn()
-        .ok()
-        .and_then(|conn| crate::alarms::Settings::load(&conn).ok())
-        .unwrap_or_default()
+        .map_err(|error| error.to_string())
+        .and_then(|conn| crate::alarms::Settings::load(&conn).map_err(|e| e.to_string()));
+    let skip_s = settings
+        .unwrap_or_else(|error| {
+            eprintln!("Sleep hold: the alarm settings did not load ({error}); using the default");
+            crate::alarms::Settings::default()
+        })
         .short_sleep_skip_s;
-    let omp_dir = app.path().app_data_dir().map(|dir| dir.join("omp"));
-    install(
-        harness,
-        &exe,
-        omp_dir.as_deref().map_err(ToString::to_string),
-        skip_s,
-        args,
-    )
+    let data = app.path().app_data_dir().map_err(|e| e.to_string());
+    let omp = data
+        .as_ref()
+        .map(|dir| dir.join("omp").join("hold"))
+        .map_err(String::clone);
+    let home = crate::dirs_home().map(PathBuf::from).unwrap_or_default();
+    let codex_real = codex_home(&spawn, &home);
+    let overlays = data.as_deref().map_err(String::clone).and_then(|data| {
+        let name = data.file_name().ok_or("The app data folder has no name")?;
+        let homes = crate::codex_mono_store::homes(data)
+            .ok_or("The app data folder has no parent folder")?;
+        Ok(homes.join(name).join(".hold"))
+    });
+    let claude_config = match spawn.login {
+        Some(LoginDir::Claude(dir)) => dir.clone(),
+        _ => std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(|| home.join(".claude"), PathBuf::from),
+    };
+    let places = Places {
+        exe: &exe,
+        omp: omp.as_deref().map_err(String::clone),
+        codex: overlays
+            .as_deref()
+            .map(|root| (codex_real.as_path(), root))
+            .map_err(String::clone),
+        claude: ClaudeFiles {
+            config: &claude_config,
+            workdir: spawn.workdir,
+            managed: Path::new(MANAGED),
+        },
+    };
+    let mut install = install(harness, &places, skip_s, args);
+    // Codex keeps its databases in the home, so they stay in the real one.
+    let sqlite_set = std::env::var_os("CODEX_SQLITE_HOME").is_some_and(|dir| !dir.is_empty());
+    if install.codex_home.is_some() && !sqlite_set {
+        install.env.push((
+            "CODEX_SQLITE_HOME",
+            codex_real.to_string_lossy().into_owned(),
+        ));
+    }
+    install
 }
 
-/// `args` with the hook for `harness` that runs `exe hold`. A hook that
-/// cannot go in leaves `args` as they came, with the reason.
+/// The Codex home the spawn would run on, as `harness_spawn` sets it.
+fn codex_home(spawn: &Spawn, home: &Path) -> PathBuf {
+    match (spawn.codex_store, spawn.login) {
+        (Some(store), _) => store.to_path_buf(),
+        (None, Some(LoginDir::Codex(dir))) => dir.clone(),
+        _ => std::env::var_os("CODEX_HOME")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(|| home.join(".codex"), PathBuf::from),
+    }
+}
+
+impl Install {
+    /// `args` and `state` alone: no env, home or reads.
+    fn plain(args: Vec<String>, state: HoldState) -> Self {
+        Install {
+            args,
+            env: Vec::new(),
+            state,
+            codex_home: None,
+            reads: Vec::new(),
+        }
+    }
+}
+
+fn missing(args: Vec<String>, env: Vec<(&'static str, String)>, reason: String) -> Install {
+    Install {
+        env,
+        ..Install::plain(args, HoldState::Missing(reason))
+    }
+}
+
+/// `args` with the hook for `harness` that runs `places.exe hold`. A hook
+/// that cannot go in leaves `args` as they came, with the reason.
 pub(crate) fn install(
     harness: Harness,
-    exe: &str,
-    omp_dir: Result<&Path, String>,
+    places: &Places,
     skip_s: i64,
     args: Vec<String>,
 ) -> Install {
     let mut env = vec![(super::client::SHORT_SLEEP_SKIP, skip_s.to_string())];
+    let command = hook_command(places.exe, harness);
     let installed = match harness {
-        Harness::Claude => claude(&hook_command(exe, harness), &args),
-        Harness::Codex => codex(&hook_command(exe, harness), &args),
+        Harness::Claude => {
+            claude(&command, &places.claude, &args).map(|(args, state)| Install::plain(args, state))
+        }
+        Harness::Codex => places.codex.clone().and_then(|(real, root)| {
+            let home = super::codex_home::overlay(real, root, &command, HOOK_TIMEOUT_S)?;
+            Ok(Install {
+                env: vec![("CODEX_HOME", home.to_string_lossy().into_owned())],
+                codex_home: Some(home),
+                ..Install::plain(args.clone(), HoldState::Installed)
+            })
+        }),
         Harness::Omp => {
-            env.push((EXE_ENV, exe.to_owned()));
-            omp_dir.and_then(|dir| omp(dir, &args))
+            env.push((EXE_ENV, places.exe.to_owned()));
+            places.omp.clone().and_then(|dir| omp(dir, &args))
         }
     };
-    let (args, state) = installed.unwrap_or_else(|reason| (args, HoldState::Missing(reason)));
-    Install { args, env, state }
+    match installed {
+        Ok(mut install) => {
+            env.append(&mut install.env);
+            Install { env, ..install }
+        }
+        Err(reason) => missing(args, env, reason),
+    }
 }
 
 /// `'<exe>' hold --harness <name>`, as the harness's shell reads it.
@@ -107,8 +214,13 @@ fn hook_command(exe: &str, harness: Harness) -> String {
 }
 
 /// The hook merged into Claude Code's `--settings` JSON. `disableAllHooks`
-/// (the user's hooks toggle off) drops it, so the hold is missing.
-fn claude(command: &str, args: &[String]) -> Result<(Vec<String>, HoldState), String> {
+/// in any settings source the spawn loads (the app's hooks toggle off sets
+/// it in `--settings`) drops it, so the hold is missing.
+fn claude(
+    command: &str,
+    files: &ClaudeFiles,
+    args: &[String],
+) -> Result<(Vec<String>, HoldState), String> {
     let mut args = args.to_vec();
     let at = match args.iter().position(|arg| arg == "--settings") {
         Some(flag) => flag + 1,
@@ -122,8 +234,11 @@ fn claude(command: &str, args: &[String]) -> Result<(Vec<String>, HoldState), St
     else {
         return Err("Claude Code's --settings is not a JSON object".into());
     };
-    if settings.get("disableAllHooks") == Some(&Value::Bool(true)) {
-        return Ok((args, HoldState::Missing(HOOKS_DISABLED.into())));
+    if let Some(source) = hooks_off(&settings, files, &args) {
+        return Ok((
+            args,
+            HoldState::Missing(format!("hooks disabled in {source}")),
+        ));
     }
     let hook = json!({
         "matcher": "Bash",
@@ -145,36 +260,25 @@ fn claude(command: &str, args: &[String]) -> Result<(Vec<String>, HoldState), St
     Ok((args, HoldState::Installed))
 }
 
-/// The hook as a session-flag config layer. Codex runs a session-flag hook
-/// only with its trust check bypassed (codex-cli 0.165.0).
-fn codex(command: &str, args: &[String]) -> Result<(Vec<String>, HoldState), String> {
-    let hooks = toml::Value::try_from(json!([{
-        "matcher": "Bash",
-        "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}],
-    }]))
-    .map_err(|error| format!("Codex hook config: {error}"))?;
-    let flags = [
-        "-c".to_owned(),
-        format!("hooks.PreToolUse={hooks}"),
-        "--dangerously-bypass-hook-trust".to_owned(),
-    ];
-    Ok((prepend(&flags, args), HoldState::Installed))
-}
-
 /// The extension and the handler timeout overlay, each in `dir`. omp takes
 /// more than one `--config`, so this one stays apart from ADE-117's.
-fn omp(dir: &Path, args: &[String]) -> Result<(Vec<String>, HoldState), String> {
+fn omp(dir: &Path, args: &[String]) -> Result<Install, String> {
     let extension = write_if_changed(&dir.join("monocode-hold.ts"), OMP_EXTENSION)?;
     let overlay = json!({"extensionHandlers": {"toolCallTimeoutMs": HOOK_TIMEOUT_S * 1000}});
     let overlay = crate::private_file::write_once(dir, "hold", &overlay.to_string())?;
-    let path = |path: PathBuf| path.to_string_lossy().into_owned();
+    let path = |path: &Path| path.to_string_lossy().into_owned();
     let flags = [
         "-e".to_owned(),
-        path(extension),
+        path(&extension),
         "--config".to_owned(),
-        path(overlay),
+        path(&overlay),
     ];
-    Ok((prepend(&flags, args), HoldState::AwaitingPing))
+    Ok(Install {
+        // omp stops at an overlay it cannot read, and loads an extension
+        // only from a folder it may read (srt 0.0.81, omp 18.2.11).
+        reads: vec![dir.to_path_buf()],
+        ..Install::plain(prepend(&flags, args), HoldState::AwaitingPing)
+    })
 }
 
 fn prepend(flags: &[String], args: &[String]) -> Vec<String> {
@@ -184,22 +288,29 @@ fn prepend(flags: &[String], args: &[String]) -> Vec<String> {
     [flags, args].concat()
 }
 
-/// `path` holds `contents` after this, written only when it differs. A
-/// running omp read its copy at start, so a replace cannot change it.
-fn write_if_changed(path: &Path, contents: &str) -> Result<PathBuf, String> {
+/// `path` holds `contents` after this, owner-only, written only when it
+/// differs. A running harness read its copy at start, so a replace cannot
+/// change it.
+pub(super) fn write_if_changed(path: &Path, contents: &str) -> Result<PathBuf, String> {
     if std::fs::read_to_string(path).is_ok_and(|text| text == contents) {
         return Ok(path.to_path_buf());
     }
     let dir = path
         .parent()
-        .ok_or("the omp extension path has no folder")?;
+        .ok_or_else(|| format!("{} has no folder", path.display()))?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let temp = dir.join(format!(
         ".monocode-hold-{}-{}.tmp",
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ));
-    std::fs::write(&temp, contents)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(&temp)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, contents.as_bytes()))
         .and_then(|()| std::fs::rename(&temp, path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&temp);
@@ -208,8 +319,9 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-/// Each tick: an omp session running a turn whose extension has not
-/// reported in by its grace is missing its hold.
+/// Each detector pass, after the pass applied the pings it took: an omp
+/// session running a turn whose extension has not reported in by its grace
+/// is missing its hold.
 pub(crate) fn mark_silent(conn: &Connection, active: i64) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE agent_activity SET hold_state = 'missing', hold_missing_reason = ?2
@@ -220,7 +332,24 @@ pub(crate) fn mark_silent(conn: &Connection, active: i64) -> rusqlite::Result<us
     )
 }
 
-#[cfg(test)]
+/// The extension pings at the start of every turn, before any tool call,
+/// so a turn of this spawn that ended with no ping had no hold.
+/// Runs before the end of running turn `turn_id` lands.
+pub(crate) fn mark_unreported(
+    conn: &Connection,
+    session: &str,
+    turn_id: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE agent_activity SET hold_state = 'missing', hold_missing_reason = ?2
+         WHERE session_id = ?1 AND turn_state = 'running' AND turn_id = ?4
+           AND hold_state IS NULL AND hold_ping_due_active_ms IS NOT NULL
+           AND turn_started_active_ms >= hold_ping_due_active_ms - ?3",
+        params![session, NO_PING, PING_GRACE_MS, turn_id],
+    )
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -246,8 +375,46 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
+    /// Places with no omp folder or Codex home, and Claude Code settings
+    /// files in `claude` (none there unless a test writes them).
+    fn places<'a>(exe: &'a str, omp: Result<&'a Path, String>, claude: &'a Path) -> Places<'a> {
+        Places {
+            exe,
+            omp,
+            codex: Err("no Codex home".into()),
+            claude: ClaudeFiles {
+                config: claude,
+                workdir: claude,
+                managed: Path::new("/nonexistent/managed-settings.json"),
+            },
+        }
+    }
+
     fn installed(harness: Harness, list: Vec<String>) -> Install {
-        install(harness, EXE, Err("no omp folder".into()), 10, list)
+        install(
+            harness,
+            &places(EXE, Err("no omp folder".into()), Path::new("/nonexistent")),
+            10,
+            list,
+        )
+    }
+
+    /// A Codex install on the home `real`, its overlay in `root`.
+    fn codex_at(exe: &str, real: &Path, root: &Path, list: Vec<String>) -> Install {
+        let places = Places {
+            codex: Ok((real, root)),
+            ..places(exe, Err("no omp folder".into()), Path::new("/nonexistent"))
+        };
+        install(Harness::Codex, &places, 10, list)
+    }
+
+    fn omp_in(dir: &Path, exe: &str, list: Vec<String>) -> Install {
+        install(
+            Harness::Omp,
+            &places(exe, Ok(dir), Path::new("/nonexistent")),
+            10,
+            list,
+        )
     }
 
     fn settings(args: &[String]) -> Value {
@@ -263,12 +430,18 @@ mod tests {
         }]})
     }
 
-    /// The hook value of Codex's `-c hooks.PreToolUse=<toml>` flag.
-    fn codex_hooks(args: &[String]) -> Value {
-        let flag = args.iter().position(|arg| arg == "-c").unwrap();
-        let value = args[flag + 1].strip_prefix("hooks.PreToolUse=").unwrap();
-        let table: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
-        serde_json::to_value(&table["v"]).unwrap()
+    /// The config.toml of the Codex home `install` points the spawn at.
+    fn codex_config(install: &Install) -> toml::Table {
+        let home = install
+            .env
+            .iter()
+            .find(|(key, _)| *key == "CODEX_HOME")
+            .unwrap();
+        assert_eq!(Some(Path::new(&home.1)), install.codex_home.as_deref());
+        std::fs::read_to_string(Path::new(&home.1).join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap()
     }
 
     // Defect: the hold replaces the user's own hooks or other settings, or
@@ -293,7 +466,8 @@ mod tests {
     }
 
     // Defect: a spawn with no --settings (claude auth login) gets the flag
-    // after its subcommand, which claude refuses.
+    // after its subcommand, which claude refuses. A login spawn takes the
+    // hook too, harmlessly: it runs no Bash.
     #[test]
     fn the_claude_hook_brings_its_own_settings_first() {
         let install = installed(Harness::Claude, args(&["auth", "login"]));
@@ -308,16 +482,15 @@ mod tests {
     // Defect: a second install adds a second hook, so each Bash call asks twice.
     #[test]
     fn installing_twice_is_installing_once() {
-        let given = args(&["--settings", r#"{"hooks":{}}"#, "app-server"]);
-        for harness in [Harness::Claude, Harness::Codex] {
-            let once = installed(harness, given.clone());
-            let twice = installed(harness, once.args.clone());
-            assert_eq!(twice, once, "{harness:?}");
-        }
+        let given = args(&["--settings", r#"{"hooks":{}}"#]);
+        let once = installed(Harness::Claude, given);
+        assert_eq!(installed(Harness::Claude, once.args.clone()), once);
         let dir = folder();
-        let once = install(Harness::Omp, EXE, Ok(&dir), 10, args(&["--mode", "rpc"]));
-        let twice = install(Harness::Omp, EXE, Ok(&dir), 10, once.args.clone());
-        assert_eq!(twice, once);
+        let once = omp_in(&dir, EXE, args(&["--mode", "rpc"]));
+        assert_eq!(omp_in(&dir, EXE, once.args.clone()), once);
+        let (real, root) = (dir.join("codex"), dir.join("overlays"));
+        let once = codex_at(EXE, &real, &root, args(&["app-server"]));
+        assert_eq!(codex_at(EXE, &real, &root, once.args.clone()), once);
     }
 
     // Defect: with the user's hooks toggle off Claude Code drops every
@@ -327,7 +500,10 @@ mod tests {
         let given = args(&["--settings", r#"{"disableAllHooks":true}"#]);
         let install = installed(Harness::Claude, given.clone());
         assert_eq!(install.args, given);
-        assert_eq!(install.state, HoldState::Missing("hooks disabled".into()));
+        assert_eq!(
+            install.state,
+            HoldState::Missing("hooks disabled in --settings".into())
+        );
     }
 
     // Defect: settings the merge cannot read stop the session from starting,
@@ -351,26 +527,56 @@ mod tests {
         ));
     }
 
-    // Defect: Codex gets the hook after its subcommand, or without the trust
-    // bypass, and never runs it (codex-cli 0.165.0 runs a session-flag hook
-    // only with --dangerously-bypass-hook-trust).
+    // Defect: Codex app-server gets the hook as a session flag, which it
+    // lists untrusted and never runs (codex-cli 0.165.0), or the spawn's own
+    // Codex home is written.
     #[test]
-    fn the_codex_hook_is_a_session_flag_before_the_subcommand() {
-        let install = installed(Harness::Codex, args(&["app-server"]));
+    fn codex_runs_the_hook_from_a_trusted_home_of_its_own() {
+        let dir = folder();
+        let real = dir.join("codex");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        let install = codex_at(EXE, &real, &dir.join("overlays"), args(&["app-server"]));
         assert_eq!(install.state, HoldState::Installed);
-        assert_eq!(install.args[0], "-c");
+        assert_eq!(install.args, args(&["app-server"]), "no session-flag hook");
+        let config = codex_config(&install);
+        assert_eq!(config["model"].as_str(), Some("gpt-5"));
         assert_eq!(
-            install.args[2..],
-            args(&["--dangerously-bypass-hook-trust", "app-server"])[..]
-        );
-        assert_eq!(
-            codex_hooks(&install.args),
+            serde_json::to_value(&config["hooks"]["PreToolUse"]).unwrap(),
             json!([{"matcher": "Bash", "hooks": [{
                 "type": "command",
                 "command": "'/Applications/MonoCode 2.app/Contents/MacOS/monocode' hold --harness codex",
                 "timeout": 150,
             }]}])
         );
+        assert_eq!(
+            std::fs::read_to_string(real.join("config.toml")).unwrap(),
+            "model = \"gpt-5\"\n"
+        );
+    }
+
+    // Defect: a Codex hook that Codex will not run (no home of the hold's
+    // own, or a config the hook cannot join) is recorded as installed.
+    #[test]
+    fn a_codex_hook_codex_will_not_run_is_never_installed() {
+        let dir = folder();
+        let real = dir.join("codex");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("config.toml"), "hooks = 1").unwrap();
+        let unresolved = installed(Harness::Codex, args(&["app-server"]));
+        let unjoinable = codex_at(EXE, &real, &dir.join("overlays"), args(&["app-server"]));
+        for install in [unresolved, unjoinable] {
+            assert!(
+                matches!(install.state, HoldState::Missing(_)),
+                "{install:?}"
+            );
+            assert_eq!(install.args, args(&["app-server"]));
+            assert!(
+                install.env.iter().all(|(key, _)| *key != "CODEX_HOME"),
+                "{install:?}"
+            );
+            assert_eq!(install.codex_home, None);
+        }
     }
 
     // Defect: omp gets no extension, keeps its 30 s handler timeout (which
@@ -378,7 +584,7 @@ mod tests {
     #[test]
     fn omp_gets_the_extension_the_timeout_and_the_binary() {
         let dir = folder();
-        let install = install(Harness::Omp, EXE, Ok(&dir), 10, args(&["--mode", "rpc"]));
+        let install = omp_in(&dir, EXE, args(&["--mode", "rpc"]));
         assert_eq!(install.state, HoldState::AwaitingPing);
         let extension = dir.join("monocode-hold.ts");
         assert_eq!(
@@ -395,6 +601,20 @@ mod tests {
             json!({"extensionHandlers": {"toolCallTimeoutMs": 150_000}})
         );
         assert!(install.env.contains(&("MONOCODE_HOLD_EXE", EXE.to_owned())));
+        assert_eq!(
+            install.reads,
+            std::slice::from_ref(&dir),
+            "what srt must let omp read"
+        );
+        let listed: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(
+            listed.len(),
+            2,
+            "the folder holds the hold's files alone: {listed:?}"
+        );
     }
 
     // Defect: each spawn rewrites the extension a running omp may be reading,
@@ -404,14 +624,14 @@ mod tests {
         let dir = folder();
         let extension = dir.join("monocode-hold.ts");
         std::fs::write(&extension, "// an older build's extension").unwrap();
-        install(Harness::Omp, EXE, Ok(&dir), 10, Vec::new());
+        omp_in(&dir, EXE, Vec::new());
         assert_eq!(std::fs::read_to_string(&extension).unwrap(), OMP_EXTENSION);
         let file = std::fs::File::options()
             .write(true)
             .open(&extension)
             .unwrap();
         file.set_modified(std::time::UNIX_EPOCH).unwrap();
-        install(Harness::Omp, EXE, Ok(&dir), 10, Vec::new());
+        omp_in(&dir, EXE, Vec::new());
         let modified = std::fs::metadata(&extension).unwrap().modified().unwrap();
         assert_eq!(
             modified,
@@ -428,7 +648,7 @@ mod tests {
         let blocker = dir.join("omp");
         std::fs::write(&blocker, "a file where the folder goes").unwrap();
         let given = args(&["--mode", "rpc"]);
-        let install = install(Harness::Omp, EXE, Ok(&blocker), 10, given.clone());
+        let install = omp_in(&blocker, EXE, given.clone());
         assert_eq!(install.args, given);
         assert!(
             matches!(install.state, HoldState::Missing(_)),
@@ -442,8 +662,13 @@ mod tests {
     #[test]
     fn every_harness_hears_the_short_sleep_setting() {
         let dir = folder();
+        let real = dir.join("codex");
+        let places = Places {
+            codex: Ok((&real, &dir)),
+            ..places(EXE, Ok(&dir), &dir)
+        };
         for harness in [Harness::Claude, Harness::Codex, Harness::Omp] {
-            let install = install(harness, EXE, Ok(&dir), 7, Vec::new());
+            let install = install(harness, &places, 7, Vec::new());
             assert!(
                 install
                     .env
@@ -531,12 +756,24 @@ mod tests {
         for (harness, payload, tool_use_id, reason) in cases {
             let dir = folder();
             let exe = stand_in(&dir);
-            let install = install(harness, &exe, Err("no omp folder".into()), 10, Vec::new());
             let command = match harness {
                 Harness::Claude => {
+                    let install = install(
+                        harness,
+                        &places(&exe, Err("none".into()), &dir),
+                        10,
+                        Vec::new(),
+                    );
                     settings(&install.args)["hooks"]["PreToolUse"][0]["hooks"][0]["command"].clone()
                 }
-                _ => codex_hooks(&install.args)[0]["hooks"][0]["command"].clone(),
+                _ => {
+                    let real = dir.join("codex");
+                    let install = codex_at(&exe, &real, &dir.join("overlays"), Vec::new());
+                    serde_json::to_value(
+                        &codex_config(&install)["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                    )
+                    .unwrap()
+                }
             };
             let output = run_hook(command.as_str().unwrap(), payload);
             assert_eq!(output.status.code(), Some(2), "{harness:?}");
@@ -585,7 +822,7 @@ console.log(JSON.stringify(results));
     fn the_omp_extension_pings_then_runs_the_client_on_each_foreground_bash_call() {
         let dir = folder();
         let exe = stand_in(&dir);
-        let install = install(Harness::Omp, &exe, Ok(&dir.join("omp")), 10, Vec::new());
+        let install = omp_in(&dir.join("omp"), &exe, Vec::new());
         // As omp loads a `.ts`; Node needs `.mjs` to load it as a module.
         let module = dir.join("monocode-hold.mjs");
         std::fs::copy(&install.args[1], &module).unwrap();

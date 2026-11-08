@@ -471,14 +471,12 @@ fn reply(row: &HoldRow) -> HoldWaitReply {
     }
 }
 
-/// Holds past their deadline with no decision become `timeout`, and an omp
-/// session whose extension stayed silent is missing its hold. The
+/// Holds past their deadline with no decision become `timeout`. The
 /// active clock's tick runs it; a read or an answer that finds its hold
 /// due runs it first, so no one sees a decision the log does not have.
 pub(crate) fn sweep(conn: &Connection, now: (i64, i64)) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let expired = store::expire(&tx, now)?;
-    super::install::mark_silent(&tx, now.0)?;
     tx.commit()?;
     if expired > 0 {
         changed();

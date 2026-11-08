@@ -825,6 +825,9 @@ fn pass(
         activity::reconcile(&tx, running, &recorded, active_ms, wall_ms)?;
     }
     unseen::seed(&tx, active_ms, wall_ms);
+    // After the pings this pass took, so a ping in the last moments of its
+    // grace is not judged silent.
+    crate::sleep_hold::install::mark_silent(&tx, active_ms)?;
     let rows = Rows::load(&tx)?;
     let agents: Vec<(&Activity, Actor)> = rows
         .activity
