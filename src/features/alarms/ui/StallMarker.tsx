@@ -1,4 +1,10 @@
-import { useId, useRef, useState, type ReactNode } from "react";
+import {
+  useId,
+  useRef,
+  useState,
+  type FocusEvent,
+  type ReactNode,
+} from "react";
 import { Popover } from "../../../shared/ui/Popover";
 import { Clock, MessageQuestion } from "../../../shared/ui/icons";
 import {
@@ -19,10 +25,40 @@ function MarkerIcon({ marker }: { marker: StallMarkerView }) {
   );
 }
 
+/** Whether the marker's row has keyboard focus, and the id its card takes so the row can point at it. */
+export type StallFocus = { open: boolean; cardId: string };
+
+type MarkerProps = { marker: StallMarkerView; focus?: StallFocus };
+
+/**
+ * The marker sits inside its row's focus target, so the row opens the card
+ * from the keyboard, as hover does: `row(key, stall)` goes on the focusable
+ * row, `marker(key)` on the marker inside it.
+ */
+export function useStallFocus() {
+  const baseId = useId();
+  const [focused, setFocused] = useState<string | null>(null);
+  const cardId = (key: string) => `${baseId}${key}`;
+  return {
+    marker: (key: string): StallFocus => ({
+      open: focused === key,
+      cardId: cardId(key),
+    }),
+    row: (key: string, stall: StallMarkerView | undefined) => ({
+      onFocus: (event: FocusEvent<HTMLElement>) =>
+        setFocused(
+          stall && event.currentTarget.matches(":focus-visible") ? key : null,
+        ),
+      onBlur: () => setFocused((current) => (current === key ? null : current)),
+      describedBy: stall && focused === key ? cardId(key) : undefined,
+    }),
+  };
+}
+
 /** Frame 1: the amber chip that takes a stalled session row's status words. */
-export function StallChip({ marker }: { marker: StallMarkerView }) {
+export function StallChip({ marker, focus }: MarkerProps) {
   return (
-    <StallHover marker={marker}>
+    <StallHover marker={marker} focus={focus}>
       <AlarmChip tone="amber">
         <MarkerIcon marker={marker} />
         {stallChipLabel(marker)}
@@ -32,9 +68,9 @@ export function StallChip({ marker }: { marker: StallMarkerView }) {
 }
 
 /** Frame 1: a Mono rail row has no room for words, so clock and minutes. */
-export function StallRailMarker({ marker }: { marker: StallMarkerView }) {
+export function StallRailMarker({ marker, focus }: MarkerProps) {
   return (
-    <StallHover marker={marker}>
+    <StallHover marker={marker} focus={focus}>
       <span className="flex shrink-0 items-center gap-[3px] text-[11px] tabular-nums text-amber-400">
         <MarkerIcon marker={marker} />
         {marker.minutes}m
@@ -45,27 +81,26 @@ export function StallRailMarker({ marker }: { marker: StallMarkerView }) {
 
 function StallHover({
   marker,
+  focus,
   children,
-}: {
-  marker: StallMarkerView;
-  children: ReactNode;
-}) {
+}: MarkerProps & { children: ReactNode }) {
   const anchor = useRef<HTMLSpanElement>(null);
-  const tooltipId = useId();
-  const [open, setOpen] = useState(false);
+  const hoverId = useId();
+  const tooltipId = focus?.cardId ?? hoverId;
+  const [hovered, setHovered] = useState(false);
   return (
     <>
       <span
         ref={anchor}
         role="img"
         aria-label={stallChipLabel(marker)}
-        aria-describedby={open ? tooltipId : undefined}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
+        aria-describedby={hovered ? tooltipId : undefined}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         className="inline-flex min-w-0"
       >
         {children}
-        {open ? (
+        {hovered || focus?.open ? (
           <Popover
             anchor={anchor}
             side="right"

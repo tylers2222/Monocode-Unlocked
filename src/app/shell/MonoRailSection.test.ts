@@ -9,7 +9,10 @@ import {
   saveMonoGiga,
 } from "../../features/monos/model/mono";
 import { loadMonosEnabled } from "../../features/settings/model/settings";
-import { hoverStallMarker } from "../../features/alarms/ui/stallHoverProbe";
+import {
+  focusStallRow,
+  hoverStallMarker,
+} from "../../features/alarms/test/stallProbe";
 import { MonoRailSection } from "./MonoRailSection";
 
 let root: Root;
@@ -163,6 +166,10 @@ it("marks a stalled mono with its minutes only when it has an episode", async ()
   expect(
     container.querySelector('button[aria-label*="Stalled 22m"]'),
   ).not.toBeNull();
+  // Defect: from the keyboard the row gives "Stalled 22m" but never why, or who was told.
+  expect(await focusStallRow(container, "Stalled 22m")).toEqual({
+    card: expect.stringMatching(/Cause.*No turn for 22 min.*Told/),
+  });
   expect(await hoverStallMarker(container, "Stalled 22m")).toEqual({
     card: expect.stringContaining("Mono Reviewer is stalled since 13:58"),
   });

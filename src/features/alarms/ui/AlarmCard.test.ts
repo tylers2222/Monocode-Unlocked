@@ -373,6 +373,32 @@ describe("AlarmCard, frame 2 state C (level 2, escalated)", () => {
       "NudgedFork Orchestrator nudged PR-S1 at 14:36 · escalation stopped",
     );
   });
+
+  it("names the stalled worker once Read or Answer, which land on it, acted", async () => {
+    // Defect: "answered the dialog for PR-S1" when the dialog answered was PR S1 reviewer's.
+    const escalatedDialog: AlarmCardView = {
+      ...DIALOG,
+      level: 2,
+      next: { kind: "provisioner", name: "Monocode General", minutes: 15 },
+      escalation: { target: LEAD, missed: "its worker's dialog", minutes: 15 },
+    };
+    const lines: string[] = [];
+    for (const how of ["answer", "read"] as const) {
+      await render({
+        view: {
+          ...escalatedDialog,
+          acted: { how, by: "Fork Orchestrator", at: "14:36" },
+        },
+      });
+      lines.push(text());
+    }
+    expect(lines[0]).toContain(
+      "Fork Orchestrator answered the dialog for PR S1 reviewer at 14:36",
+    );
+    expect(lines[1]).toContain(
+      "Fork Orchestrator read the alarm for PR S1 reviewer at 14:36",
+    );
+  });
 });
 
 describe("AlarmCard, frame 4 (Tyler's landing)", () => {

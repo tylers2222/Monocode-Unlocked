@@ -118,8 +118,12 @@ export type TylerLandingView = AlarmEpisodeView & {
 
 export type AlarmCardView = ProvisionerAlarmView | TylerLandingView;
 
-/** Who an act lands on: the stalled agent, or at level 2 the lead that did not act. */
-export function alarmTarget(view: AlarmCardView): AlarmAgent {
+/**
+ * Who an act lands on. Read and Answer reach the stalled agent, whose dialog it
+ * is; the others at level 2 reach the lead that did not act.
+ */
+export function actTarget(view: AlarmCardView, act: AlarmActKind): AlarmAgent {
+  if (act === "read" || act === "answer") return view.stalled;
   return view.audience === "provisioner" && view.escalation
     ? view.escalation.target
     : view.stalled;
@@ -357,8 +361,11 @@ export function holdFraction(view: SleepHoldView): number {
 }
 
 const MONO_ALARM = /^\s*<mono_alarm\b[^>]*\balarm="([^"]+)"/;
-/** S2's outbox key, which a claimed reminder carries as its request id. */
-const ALARM_REQUEST = /^alarm:([^:]+):\d+$/;
+/**
+ * S2's outbox key `alarm-<episode>-<level>`, carried as the request id. Dashes,
+ * since sessionStore drops request ids outside [A-Za-z0-9_-] on save and load.
+ */
+const ALARM_REQUEST = /^alarm-(al_[A-Za-z0-9]+)-\d+$/;
 
 /**
  * The episode id of a `<mono_alarm>` the app delivered. Like the U10 notices,

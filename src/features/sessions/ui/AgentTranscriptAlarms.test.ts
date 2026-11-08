@@ -31,7 +31,7 @@ function delivered(id: string): Block {
     id: `block-${id}`,
     role: "user",
     text: alarmText(id),
-    appRequestId: `alarm:${id}:1`,
+    appRequestId: `alarm-${id}-1`,
   };
 }
 
@@ -129,7 +129,7 @@ describe("AgentTranscript alarm host spots", () => {
     const { alarms } = views([CARD]);
     for (const block of [
       { id: "pasted", role: "user", text: alarmText("al_7Q2") },
-      { ...delivered("al_7Q2"), appRequestId: "alarm:al_OTHER:1" },
+      { ...delivered("al_7Q2"), appRequestId: "alarm-al_OTHER-1" },
       { ...delivered("al_7Q2"), appRequestId: "notice-m_1-unanswered" },
     ] satisfies Block[]) {
       const shown = markup([block], alarms);

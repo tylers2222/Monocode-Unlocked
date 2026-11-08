@@ -5,7 +5,7 @@ import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import {
   actedLine,
   agentLabel,
-  alarmTarget,
+  actTarget,
   countdownText,
   dialogLine,
   roleWord,
@@ -67,7 +67,10 @@ export function AlarmCard({
         <OpenActRow view={view} open={open} onSend={send} />
       </AlarmCardFrame>
       {view.acted ? (
-        <ActedLine acted={view.acted} target={alarmTarget(view)} />
+        <ActedLine
+          acted={view.acted}
+          target={actTarget(view, view.acted.how)}
+        />
       ) : null}
     </div>
   );
@@ -191,7 +194,7 @@ function AlarmActs({
   onToggle: (act: OpenAct) => void;
   onSend: (body: CardActBody) => void;
 }) {
-  const target = alarmTarget(view);
+  const target = actTarget(view, "nudge");
   const named = target === view.stalled ? "" : ` ${target.name}`;
   // The landing is the read, so it drops Read and offers the lead instead.
   const lead = view.audience === "tyler" ? view.lead : undefined;
@@ -199,7 +202,9 @@ function AlarmActs({
     <div className="mt-1 flex items-center gap-1.5">
       {view.audience === "tyler" ? null : (
         <SecondaryButton
-          onClick={() => onSend({ act: "read", target: view.stalled })}
+          onClick={() =>
+            onSend({ act: "read", target: actTarget(view, "read") })
+          }
         >
           Read
         </SecondaryButton>
@@ -250,15 +255,14 @@ function OpenActRow({
   open: OpenAct | null;
   onSend: (body: CardActBody) => void;
 }) {
-  const target = alarmTarget(view);
+  if (!open) return null;
+  const target = actTarget(view, open);
   if (open === "answer" && view.dialog)
     return (
       <AnswerRow
-        agent={view.stalled}
+        agent={target}
         dialog={view.dialog}
-        onAnswer={(answer) =>
-          onSend({ act: "answer", target: view.stalled, answer })
-        }
+        onAnswer={(answer) => onSend({ act: "answer", target, answer })}
       />
     );
   if (open === "steer")

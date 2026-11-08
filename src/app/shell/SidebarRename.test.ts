@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSessionTitle } from "../../features/sessions/model/session";
 import { formatReminderTime } from "../../features/sessions/model/sessionReminders";
 import { Sidebar } from "./Sidebar";
-import { hoverStallMarker } from "../../features/alarms/ui/stallHoverProbe";
+import {
+  focusStallRow,
+  hoverStallMarker,
+} from "../../features/alarms/test/stallProbe";
 import { saveProjectRailOrder } from "../../features/projects/model/recents";
 import {
   loadSessionFolders,
@@ -2597,7 +2600,7 @@ describe("sidebar stall alarms", () => {
     expect(menuItem("Stall alarm")).toBeUndefined();
   });
 
-  it("swaps the row's status words for the stall marker, whose card opens on hover", async () => {
+  it("swaps the row's status words for the stall marker, whose card opens on hover or keyboard focus", async () => {
     // Defect: a stalled session still reads Working or its time, or its marker hides before the pointer reaches it.
     props.onArchiveSession = vi.fn();
     props.sessionStalls = new Map([["session-1", stall]]);
@@ -2606,6 +2609,10 @@ describe("sidebar stall alarms", () => {
       card().querySelector('[aria-label="Stalled 17m"]')?.textContent,
     ).toBe("Stalled 17m");
     expect(card().textContent).not.toContain("Working...");
+    // Defect: from the keyboard the row gives "Stalled 17m" but never why, or who was told.
+    expect(await focusStallRow(card(), "Stalled 17m")).toEqual({
+      card: expect.stringMatching(/Cause.*No turn for 17 min.*Told/),
+    });
     expect(await hoverStallMarker(card(), "Stalled 17m")).toEqual({
       card: expect.stringContaining(
         "Original conversation is stalled since 14:05",
@@ -2625,7 +2632,7 @@ describe("sidebar stall alarms", () => {
     props.sessionStalls = new Map([["app-session-1-builder", stall]]);
   }
 
-  it("counts the stalled sessions a lead started, and their markers open on hover", async () => {
+  it("counts the stalled sessions a lead started, and their markers open on hover or keyboard focus", async () => {
     // Defect: a lead whose workers stalled reads as fine, or the dense row hides the marker on hover.
     stalledLead();
     act(() => render());
@@ -2634,6 +2641,9 @@ describe("sidebar stall alarms", () => {
       '[data-session-card="app-session-1-builder"]',
     )!;
     expect(builder.textContent).toContain("17m");
+    expect(await focusStallRow(builder, "Stalled 17m")).toEqual({
+      card: expect.stringMatching(/Cause.*No turn for 17 min.*Told/),
+    });
     expect(await hoverStallMarker(builder, "Stalled 17m")).toEqual({
       card: expect.stringContaining(
         "Original conversation is stalled since 14:05",

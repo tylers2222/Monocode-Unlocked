@@ -44,7 +44,11 @@ import {
   spacesView,
   subscribeSpaces,
 } from "../../features/spaces/model/activeSpace";
-import { StallRailMarker } from "../../features/alarms/ui/StallMarker";
+import {
+  StallRailMarker,
+  useStallFocus,
+  type StallFocus,
+} from "../../features/alarms/ui/StallMarker";
 import {
   stallChipLabel,
   type StallMarkerView,
@@ -250,6 +254,7 @@ function MonoRows({
 }) {
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
+  const stallFocus = useStallFocus();
   return (
     <div className={`flex flex-col gap-px${inset ? "" : " px-2"}`}>
       {monos.map((mono) => {
@@ -258,6 +263,7 @@ function MonoRows({
         const selected = mono.id === activeId;
         const unseen = selected ? 0 : (unseenCounts?.get(mono.id) ?? 0);
         const stall = stalls?.get(mono.id);
+        const stallRow = stallFocus.row(mono.id, stall);
         const projects = look.projects.length
           ? monoProjectsPhrase(look.projects)
           : "No projects yet";
@@ -306,6 +312,9 @@ function MonoRows({
                 projects,
               )}
               aria-current={selected ? "true" : undefined}
+              aria-describedby={stallRow.describedBy}
+              onFocus={stallRow.onFocus}
+              onBlur={stallRow.onBlur}
               className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[button:focus-visible]:pr-6"
             >
               <MonoRailMascot
@@ -326,7 +335,11 @@ function MonoRows({
                   {look.name}
                 </span>
               )}
-              <MonoRowMarks stall={stall} unseen={unseen} />
+              <MonoRowMarks
+                stall={stall}
+                focus={stallFocus.marker(mono.id)}
+                unseen={unseen}
+              />
             </button>
             <button
               type="button"
@@ -371,15 +384,17 @@ function monoRowLabel(
 /** What sits at a Mono row's end: its stall minutes, then its unread count. */
 function MonoRowMarks({
   stall,
+  focus,
   unseen,
 }: {
   stall?: StallMarkerView;
+  focus: StallFocus;
   unseen: number;
 }) {
   return (
     <>
       {/* Stays through hover, beside the menu button, so its card can open. */}
-      {stall ? <StallRailMarker marker={stall} /> : null}
+      {stall ? <StallRailMarker marker={stall} focus={focus} /> : null}
       {unseen ? (
         <span
           aria-hidden

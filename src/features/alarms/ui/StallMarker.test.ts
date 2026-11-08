@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StallMarkerView } from "../model/alarmViews";
 import { StallChip, StallDetails, StallRailMarker } from "./StallMarker";
-import { hoverStallMarker } from "./stallHoverProbe";
+import { hoverStallMarker } from "../test/stallProbe";
 
 /** Frame 1: PR S1 builder, stalled 17 min. */
 const STALLED: StallMarkerView = {

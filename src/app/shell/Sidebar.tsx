@@ -209,6 +209,7 @@ import { sessionReminderPresets } from "../../features/sessions/ui/sessionRemind
 import {
   StallChip,
   StallRailMarker,
+  useStallFocus,
 } from "../../features/alarms/ui/StallMarker";
 import {
   stallAlarmMenuItem,
@@ -5034,6 +5035,8 @@ export const SessionCard = memo(function SessionCard({
   const previewCloseTimer = useRef<number | null>(null);
   const previewId = useId();
   const [previewOpen, setPreviewOpen] = useState(false);
+  const stallFocus = useStallFocus();
+  const stallRow = stallFocus.row(session.id, stall);
   const orchestrationTooltipRootRef = useRef<HTMLDivElement>(null);
   const orchestrationTooltipId = useId();
   const [dragging, setDragging] = useState(false);
@@ -5123,7 +5126,7 @@ export const SessionCard = memo(function SessionCard({
           ? "text-content/55"
           : "text-content/45";
   const status = stall ? (
-    <StallChip marker={stall} />
+    <StallChip marker={stall} focus={stallFocus.marker(session.id)} />
   ) : (
     <span
       className={`flex shrink-0 items-center gap-1 text-[11px] tabular-nums ${statusClass}`}
@@ -5423,11 +5426,19 @@ export const SessionCard = memo(function SessionCard({
             aria-current={isActive ? "true" : undefined}
             aria-pressed={isSelected}
             data-session-select={session.id}
-            aria-describedby={dense && previewOpen ? previewId : undefined}
+            aria-describedby={
+              [dense && previewOpen ? previewId : "", stallRow.describedBy]
+                .filter(Boolean)
+                .join(" ") || undefined
+            }
             onFocus={(event) => {
+              stallRow.onFocus(event);
               if (event.currentTarget.matches(":focus-visible")) showPreview();
             }}
-            onBlur={closePreview}
+            onBlur={() => {
+              stallRow.onBlur();
+              closePreview();
+            }}
             onKeyDown={onKeyDown}
             onMouseDown={(event) => {
               if (event.button !== 0) return;
@@ -5521,7 +5532,12 @@ export const SessionCard = memo(function SessionCard({
                       {startedStalled} stalled
                     </span>
                   ) : null}
-                  {stall ? <StallRailMarker marker={stall} /> : null}
+                  {stall ? (
+                    <StallRailMarker
+                      marker={stall}
+                      focus={stallFocus.marker(session.id)}
+                    />
+                  ) : null}
                   {onArchive ? (
                     <button
                       type="button"
