@@ -75,6 +75,7 @@ mod scenario;
 mod search;
 mod session_store;
 mod skills;
+pub mod sleep_hold;
 mod spaces;
 pub mod ssh_askpass;
 mod tool_detail;
