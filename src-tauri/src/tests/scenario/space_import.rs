@@ -264,7 +264,9 @@ fn space_one(data: &Path) {
 /// MonoCode 2 today: its own clock and downtime, a Mono with its chat and
 /// projects (one only it lists, two Space 1's Mono lists too), a worker in a
 /// project only it used, an open ask with its event and outbox
-/// row on its clock, an approval numbered as Space 1's, and a note.
+/// row on its clock, the worker's open stall alarm with its activity, send,
+/// outbox row and own N, its closed one, an alarm setting, an approval numbered as Space
+/// 1's, and a note.
 fn space_two(data: &Path) {
     app_folder(
         data,
@@ -281,6 +283,22 @@ fn space_two(data: &Path) {
                VALUES ('k2', 'mono:m2', 'session:s2-b', 2, 3, 'open', 1500, 1600, 1);
              INSERT INTO mono_ask_events (ask_id, kind, seq, at_active_ms, at_wall_ms) VALUES ('k2', 'update', 1, 1200, 1);
              INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms) VALUES ('o2', 'k2', 't5', 'mono:m2', 1400);
+             INSERT INTO agent_activity (session_id, harness, turn_started_active_ms, turn_ended_active_ms,
+               last_progress_active_ms, last_progress_wall_ms, background_ended_active_ms, dialog_kind,
+               dialog_since_active_ms, wake_pending_since_active_ms, updated_wall_ms)
+               VALUES ('s2-b', 'claude', 700, 900, 800, 7, 850, 'plan', 870, 950, 1);
+             INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json, stalled_since_active_ms,
+               stalled_since_wall_ms, opened_active_ms, opened_wall_ms, next_escalate_active_ms)
+               VALUES ('al_2', 'session:s2-b', 'm2', 'mono:m2', 'idle_open_work', '[]', 900, 1, 1300, 1, 2200);
+             INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json, stalled_since_active_ms,
+               stalled_since_wall_ms, opened_active_ms, opened_wall_ms, acted_active_ms, closed_active_ms,
+               closed_wall_ms, close_reason)
+               VALUES ('al_1', 'session:s2-b', 'm2', 'mono:m2', 'hung', '[]', 300, 3, 400, 4, 450, 500, 5, 'progress');
+             INSERT INTO alarm_sends (episode_id, level, recipient, outbox_key, created_active_ms, sent_wall_ms)
+               VALUES ('al_2', 1, 'mono:m2', 'alarm-al_2-1', 1300, 6);
+             INSERT INTO mono_outbox (key, stage, recipient, at_active_ms) VALUES ('alarm-al_2-1', 'alarm', 'mono:m2', 1300);
+             INSERT INTO agent_alarm_settings (actor, stall_minutes) VALUES ('session:s2-b', 30);
+             INSERT INTO alarm_settings (key, value) VALUES ('stall_minutes', '20');
              {APPROVAL} VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2', '/q', 'Made-up', 'S',
                '{{\"pros\":[],\"cons\":[]}}', '[]', 'blocking', '[]', 'm2', 'Two', 1, 'open');
              INSERT INTO notes (id, slug, title, created_at, updated_at) VALUES ('n2', 'made-up-plan', 'Made-up plan', 1, 1);"
@@ -317,9 +335,10 @@ fn space_two(data: &Path) {
 /// table it has no rule for or Spaces rows MonoCode 2 made itself, or on a
 /// path in the real home without `--real`; it copies the login folder
 /// instead of linking it, touches the first app's `~/.codex`, leaves a Space
-/// 2 row in Space 1, a project only Space 2 used in Space 1, an ask on
-/// MonoCode 2's clock or an approval on its number, copies MonoCode 2's own
-/// clock state, or a second apply changes anything.
+/// 2 row in Space 1, a project only Space 2 used in Space 1, an ask or a
+/// stall alarm on MonoCode 2's clock or an approval on its number, copies
+/// MonoCode 2's own clock state or alarm settings, or a second apply changes
+/// anything.
 #[test]
 #[ignore = "monocode_2_imports_as_space_2 runs it in a process of its own"]
 fn import_child() {
@@ -354,6 +373,7 @@ fn import_child() {
     apply_makes_the_prediction(&rig, &resumed);
     second_apply_changes_nothing(&rig);
     app_reads_the_rows(&rig);
+    every_alarm_clock_column_moves(&rig);
     app_reads_the_spaces(&rig);
     first_apps_codex_login_untouched(&rig, codex_mtime);
 }
@@ -385,6 +405,7 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
         "MonoCode 2's downtime is copied"
     );
     assert_eq!(plan["kept"]["mono_downtime"], 1);
+    assert_eq!(plan["kept"]["alarm_settings"], 1);
     assert_eq!(plan["clock_delta_ms"], DELTA);
     assert_eq!(plan["folders"]["monos"]["copy"], serde_json::json!(["m2"]));
     assert_eq!(
@@ -402,7 +423,7 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 19);
+    assert_eq!(plan["changes"], 25);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
@@ -759,10 +780,91 @@ fn app_reads_the_rows(rig: &Rig) {
             "SELECT number FROM approvals WHERE id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2'",
             2,
         ),
+        (
+            "SELECT turn_ended_active_ms FROM agent_activity WHERE session_id = 's2-b'",
+            900 + DELTA,
+        ),
+        (
+            "SELECT last_progress_active_ms FROM agent_activity WHERE session_id = 's2-b'",
+            800 + DELTA,
+        ),
+        (
+            "SELECT stalled_since_active_ms FROM alarm_episodes WHERE id = 'al_2'",
+            900 + DELTA,
+        ),
+        (
+            "SELECT opened_active_ms FROM alarm_episodes WHERE id = 'al_2'",
+            1300 + DELTA,
+        ),
+        (
+            "SELECT next_escalate_active_ms FROM alarm_episodes WHERE id = 'al_2'",
+            2200 + DELTA,
+        ),
+        (
+            "SELECT created_active_ms FROM alarm_sends WHERE episode_id = 'al_2'",
+            1300 + DELTA,
+        ),
+        (
+            "SELECT stall_minutes FROM agent_alarm_settings WHERE actor = 'session:s2-b'",
+            30,
+        ),
+        ("SELECT count(*) FROM alarm_settings", 0),
         ("SELECT active_ms FROM mono_clock WHERE id = 1", 5000),
         ("SELECT count(*) FROM mono_downtime", 0),
     ] {
         assert_eq!(one_value(&conn, sql), want, "{sql}");
+    }
+}
+
+/// The alarms' tables, each with its key.
+const ALARM_TABLES: [(&str, &str); 4] = [
+    ("agent_activity", "session_id"),
+    ("alarm_episodes", "id"),
+    ("alarm_sends", "episode_id || '/' || level"),
+    ("mono_outbox", "key"),
+];
+
+/// Defect (S1 r4 F1): a column of the alarms' tables on the active clock
+/// that the import's list misses is copied raw, so an imported stall
+/// counts from Space 1's future (or past) by the clock difference; or a
+/// wall time is moved as if it were active time.
+fn every_alarm_clock_column_moves(rig: &Rig) {
+    let (source, target) = (rig.db(&rig.two), rig.db(&rig.one));
+    for (table, key) in ALARM_TABLES {
+        let columns: Vec<String> = source
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for column in columns {
+            let shift = match column {
+                ref c if c.ends_with("_active_ms") => DELTA,
+                ref c if c.ends_with("_wall_ms") => 0,
+                _ => continue,
+            };
+            let values = |conn: &Connection| -> BTreeMap<String, Option<i64>> {
+                conn.prepare(&format!("SELECT {key}, {column} FROM {table}"))
+                    .unwrap()
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            };
+            let (before, after) = (values(&source), values(&target));
+            assert!(
+                before.values().any(Option::is_some),
+                "{table}.{column}: set it in a MonoCode 2 row"
+            );
+            for (row, value) in before {
+                assert_eq!(
+                    after.get(&row).copied().flatten(),
+                    value.map(|value| value + shift),
+                    "{table}.{column} of {row}"
+                );
+            }
+        }
     }
 }
 

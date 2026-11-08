@@ -71,6 +71,18 @@ COPY = {
     "mono_ask_events": (("ask_id", "kind", "seq"), ("at_active_ms",)),
     "mono_outbox": (("key",), ("at_active_ms",)),
     "mono_messages": (("id",), ()),
+    # The stall detector's rows move with their agents, as the asks do: an
+    # import reads to the detector as a restart (alarms design section 8).
+    "agent_activity": (("session_id",), (
+        "turn_started_active_ms", "turn_ended_active_ms", "last_progress_active_ms",
+        "background_ended_active_ms", "dialog_since_active_ms", "wake_pending_since_active_ms",
+    )),
+    "alarm_episodes": (("id",), (
+        "stalled_since_active_ms", "opened_active_ms", "next_escalate_active_ms",
+        "acted_active_ms", "closed_active_ms",
+    )),
+    "alarm_sends": (("episode_id", "level"), ("created_active_ms",)),
+    "agent_alarm_settings": (("actor",), ()),
     "mono_session_ends": (("session_id",), ()),
     "mono_completion_deliveries": (("group_id",), ()),
     "notes": (("id",), ()),
@@ -102,6 +114,7 @@ KEEP = {
     "in_flight_sessions": "MonoCode 2's windows at quit",
     "mono_completions": "MonoCode 2's windows at quit",
     "space_settings": "the target's own settings",
+    "alarm_settings": "the target's own alarm settings",
     "checkout_leases": "the app takes a lease again on the next start",
 }
 # Spaces tables in a source that a Spaces build opened: rows matching the

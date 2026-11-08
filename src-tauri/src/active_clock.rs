@@ -67,6 +67,24 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// The wall time at which the clock read `active_ms`, when it reads
+/// `now_active` at `now_wall`: every sleep and app downtime logged since is
+/// taken out, so a time before an 8 h sleep stays before it. A downtime
+/// logged at `active_ms` itself came after it.
+pub(crate) fn wall_at(
+    conn: &Connection,
+    active_ms: i64,
+    (now_active, now_wall): (i64, i64),
+) -> rusqlite::Result<i64> {
+    let down: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(end_wall_ms - start_wall_ms), 0) FROM mono_downtime
+          WHERE active_ms >= ?1",
+        [active_ms],
+        |row| row.get(0),
+    )?;
+    Ok(now_wall - (now_active - active_ms) - down)
+}
+
 /// The running active clock of the one process that holds the lease. The
 /// lease is part of it, so a clock that ticks always holds its lease.
 pub(crate) struct ActiveClock<C: Clock> {
@@ -76,6 +94,8 @@ pub(crate) struct ActiveClock<C: Clock> {
     persisted_ns: u64,
     uptime_ns: u64,
     monotonic_ns: u64,
+    /// The `alarms::PASS_MS` slice the detector last ran in.
+    alarm_slice: Option<i64>,
 }
 
 impl<C: Clock> ActiveClock<C> {
@@ -109,6 +129,7 @@ impl<C: Clock> ActiveClock<C> {
             }
             None => 0,
         };
+        crate::alarms::end_all_running(&tx, active_ms)?;
         tx.execute(
             "INSERT INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms)
              VALUES (1, ?1, ?2, ?3)
@@ -124,14 +145,20 @@ impl<C: Clock> ActiveClock<C> {
             clock,
             active_ns,
             persisted_ns: active_ns,
+            alarm_slice: None,
         })
     }
 
     /// Adds the uptime since the last tick, at most 30 s; logs a sleep when
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep. Then it enqueues the reminders
-    /// that fell due (`ask_scheduler::run`) and names their chats.
-    pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<Notices> {
+    /// that fell due (`ask_scheduler::run`), runs the stall detector once
+    /// per 5 s of active time on `alarms`, and names the chats of both.
+    pub(crate) fn tick(
+        &mut self,
+        conn: &Connection,
+        alarms: &crate::alarms::Sources,
+    ) -> rusqlite::Result<Notices> {
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
@@ -156,7 +183,24 @@ impl<C: Clock> ActiveClock<C> {
             )?;
             self.persisted_ns = self.active_ns;
         }
-        crate::ask_scheduler::run(conn, self.active_ms(), now.wall_ms)
+        let active = self.active_ms();
+        alarms.live.set_now(active);
+        let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
+        let slice = active / crate::alarms::PASS_MS;
+        if self.alarm_slice != Some(slice) {
+            self.alarm_slice = Some(slice);
+            // A detector fault must not stop the reminders or the clock.
+            match crate::alarms::run(conn, active, now.wall_ms, alarms) {
+                Ok(alarms) => notices.merge(alarms),
+                Err(error) => {
+                    let error = error.to_string();
+                    if alarms.live.new_fault(Some(error.clone())) {
+                        eprintln!("Could not run the stall detector: {error}");
+                    }
+                }
+            }
+        }
+        Ok(notices)
     }
 
     pub(crate) fn active_ms(&self) -> i64 {
@@ -213,13 +257,27 @@ pub(crate) fn init<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
         eprintln!("Another MonoCode process runs the active clock for this data folder");
         return Ok(());
     };
+    // Taps record from launch, not from the first tick.
+    app.state::<SessionStore>()
+        .alarms
+        .set_now(clock.active_ms());
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
-        let ticked = app
-            .state::<SessionStore>()
-            .lock_conn()
-            .and_then(|conn| clock.tick(&conn).map_err(|error| error.to_string()));
+        // Before the store lock (design 5.3 lock order).
+        let running = app
+            .try_state::<crate::control::ControlHost>()
+            .and_then(|host| host.active_turns());
+        let store = app.state::<SessionStore>();
+        let alarms = crate::alarms::Sources {
+            live: &store.alarms,
+            running: running.as_ref(),
+        };
+        let ticked = store.lock_conn().and_then(|conn| {
+            clock
+                .tick(&conn, &alarms)
+                .map_err(|error| error.to_string())
+        });
         // After the store lock is let go, as every command emits (design 5.3).
         match ticked {
             Ok(notices) => notices.emit(&app),
@@ -428,5 +486,43 @@ mod fake {
             );
             std::fs::remove_dir_all(&dir).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOUR_MS: i64 = 3_600_000;
+
+    fn log(conn: &Connection, (start, end): (i64, i64), cause: &str, active_ms: i64) {
+        conn.execute(
+            "INSERT INTO mono_downtime (start_wall_ms, end_wall_ms, cause, active_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![start, end, cause, active_ms],
+        )
+        .unwrap();
+    }
+
+    // Defect (lead, S1 r5 item 6): an active time before a logged gap maps
+    // to a wall time late by that gap; or a gap logged at the active time
+    // itself (the next tick after it) counts as before it; or a second
+    // gap, or an app downtime with no sleep, is missed.
+    #[test]
+    fn a_wall_time_takes_out_every_gap_logged_from_its_active_time_on() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_tables(&conn).unwrap();
+        // Active 0 at wall 1000. 8 h sleep logged at active 60 s, the app
+        // down 1 h logged at active 120 s; now active 180 s.
+        log(&conn, (61_000, 61_000 + 8 * HOUR_MS), "sleep", 60_000);
+        let up = 121_000 + 8 * HOUR_MS;
+        log(&conn, (up, up + HOUR_MS), "app_down", 120_000);
+        let now = (180_000, 181_000 + 9 * HOUR_MS);
+        let wall = |active| wall_at(&conn, active, now).unwrap();
+        assert_eq!(wall(30_000), 31_000, "before both gaps");
+        assert_eq!(wall(60_000), 61_000, "a gap logged at it came after it");
+        assert_eq!(wall(90_000), 91_000 + 8 * HOUR_MS, "after the sleep only");
+        assert_eq!(wall(150_000), 151_000 + 9 * HOUR_MS, "after both");
+        assert_eq!(wall(180_000), now.1);
     }
 }
