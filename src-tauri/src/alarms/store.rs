@@ -10,9 +10,9 @@ use super::activity::{self, Activity};
 use super::live::{Live, Taken, Write};
 use super::provisioner::{self, Provisioner};
 use super::state::{
-    self, Cause, Child, ChildState, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition,
-    Wake,
+    self, Cause, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition, Wake,
 };
+use super::tree::{self, Edge, Edges};
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
@@ -200,9 +200,11 @@ struct Rows {
     archived: HashMap<String, bool>,
     /// The open asks: (id, parent actor, child actor).
     asks: Vec<(String, String, String)>,
-    /// Who started each agent or gave it work, and whom each did.
-    parents: HashMap<String, Vec<String>>,
-    children: HashMap<String, Vec<String>>,
+    /// Whom each agent started or asked.
+    edges: Edges,
+    /// The watched sessions whose queue the user paused: nothing waits for
+    /// their provider (review F1).
+    paused: HashSet<String>,
     /// The sessions a message waits for that no provider took.
     untaken: HashSet<String>,
     /// The recipients an outbox reminder or alarm waits for.
@@ -245,31 +247,34 @@ fn grouped(rows: Vec<(String, String)>) -> HashMap<String, Vec<String>> {
 
 /// The parent -> child edges: open asks, and the leads and Monos that
 /// started a watched session (one with no row runs no turn here).
-fn edges(
-    conn: &Connection,
-    asks: &[(String, String, String)],
-) -> rusqlite::Result<Vec<(String, String)>> {
-    let mut edges: Vec<(String, String)> = asks
-        .iter()
-        .map(|(_, parent, child)| (parent.clone(), child.clone()))
-        .collect();
-    edges.extend(pairs(
+fn edges(conn: &Connection, asks: &[(String, String, String)]) -> rusqlite::Result<Edges> {
+    let started = pairs(
         conn,
         "SELECT 'session:' || s.lead_session_id, 'session:' || s.id
            FROM agent_activity a JOIN sessions s ON s.id = a.session_id
-          WHERE s.lead_session_id IS NOT NULL AND s.archived = 0",
-        [],
-    )?);
-    edges.extend(pairs(
-        conn,
-        "SELECT DISTINCT 'mono:' || m.from_mono_id, 'session:' || m.to_session_id
+          WHERE s.lead_session_id IS NOT NULL AND s.archived = 0
+         UNION
+         SELECT 'mono:' || m.from_mono_id, 'session:' || m.to_session_id
            FROM agent_activity a JOIN mono_messages m ON m.to_session_id = a.session_id
           WHERE m.tool = 'start_session' AND m.status <> 'rejected'
             AND m.from_mono_id IS NOT NULL",
         [],
-    )?);
-    edges.sort();
-    edges.dedup();
+    )?;
+    let asked = asks
+        .iter()
+        .map(|(_, parent, child)| (parent.clone(), child.clone()));
+    let mut edges = Edges::new();
+    for ((parent, child), started) in started
+        .into_iter()
+        .map(|edge| (edge, true))
+        .chain(asked.map(|edge| (edge, false)))
+    {
+        let children = edges.entry(parent).or_default();
+        let edge = Edge { child, started };
+        if !children.contains(&edge) {
+            children.push(edge);
+        }
+    }
     Ok(edges)
 }
 
@@ -291,13 +296,14 @@ impl Rows {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let edges = edges(conn, &asks)?;
-        let parents = grouped(
-            edges
-                .iter()
-                .map(|(parent, child)| (child.clone(), parent.clone()))
-                .collect(),
-        );
-        let children = grouped(edges);
+        let paused = strings(
+            conn,
+            "SELECT s.id FROM agent_activity a JOIN sessions s ON s.id = a.session_id
+              WHERE s.queue_status = 'paused'",
+            [],
+        )?
+        .into_iter()
+        .collect();
         // `mono_messages::unqueued`'s rows, plus those a slot holds untaken.
         // A blocked question travels as an outbox row, not as its message.
         let untaken = strings(
@@ -314,20 +320,19 @@ impl Rows {
         let notices = grouped(pairs(
             conn,
             "SELECT json_extract(saved_json, '$.origin.monoId'),
-                    COALESCE(json_extract(saved_json, '$.notice'), request_id)
+                    CASE json_type(saved_json, '$.notice') WHEN 'text'
+                      THEN json_extract(saved_json, '$.notice') ELSE request_id END
                FROM mono_completions
-              WHERE json_valid(saved_json) AND json_extract(saved_json, '$.origin.monoId') IS NOT NULL",
+              WHERE json_valid(saved_json) AND json_type(saved_json, '$.origin.monoId') = 'text'",
             [],
         )?);
-        // A queue the user paused waits on purpose.
         let queued = grouped(pairs(
             conn,
             "SELECT s.id, json_extract(q.value, '$.id')
                FROM agent_activity a JOIN sessions s ON s.id = a.session_id,
                     json_each(s.queued_messages_json) q
               WHERE s.queued_messages_json <> '[]' AND json_valid(s.queued_messages_json)
-                AND COALESCE(s.queue_status, 'active') <> 'paused'
-                AND json_extract(q.value, '$.id') IS NOT NULL",
+                AND json_type(q.value, '$.id') = 'text'",
             [],
         )?);
         let episodes = conn
@@ -345,18 +350,12 @@ impl Rows {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
-            .filter_map(|(actor, id, cause, stalled_since)| {
-                let cause = Cause::parse(&cause)?;
-                Some((
-                    actor,
-                    (
-                        id,
-                        Episode {
-                            cause,
-                            stalled_since,
-                        },
-                    ),
-                ))
+            .map(|(actor, id, cause, stalled_since)| {
+                let episode = Episode {
+                    cause: Cause::parse(&cause),
+                    stalled_since,
+                };
+                (actor, (id, episode))
             })
             .collect();
         let stall_minutes = conn
@@ -368,8 +367,8 @@ impl Rows {
             chats,
             archived,
             asks,
-            parents,
-            children,
+            edges,
+            paused,
             untaken,
             waiting: crate::ask_scheduler::waiting_recipients(conn)?,
             notices,
@@ -429,10 +428,6 @@ pub(crate) fn outbox_key(episode: &str, level: i64) -> String {
 struct Pass<'a> {
     tx: &'a Connection,
     rows: &'a Rows,
-    /// Agents that run a turn or have a descendant that does.
-    busy: HashSet<String>,
-    /// Each idle agent's last turn end.
-    ended: HashMap<String, i64>,
     counted: HashSet<(String, String)>,
     settings: Settings,
     active: i64,
@@ -530,6 +525,9 @@ impl Pass<'_> {
     /// A notice or queue item an earlier episode listed counts no more.
     fn wakes(&self, actor: &Actor, session: &SessionId, gone: bool) -> Vec<Wake> {
         let rows = self.rows;
+        if rows.paused.contains(session.as_str()) {
+            return Vec::new();
+        }
         let own = Actor::Session(session.clone()).to_string();
         let actor_text = actor.to_string();
         let message = rows
@@ -564,29 +562,6 @@ impl Pass<'_> {
             .collect()
     }
 
-    fn children(&self, actor: &str) -> Vec<Child> {
-        self.rows
-            .children
-            .get(actor)
-            .into_iter()
-            .flatten()
-            .filter_map(|child| {
-                let state = if self.busy.contains(child) {
-                    ChildState::Busy
-                } else {
-                    self.ended.get(child)?;
-                    ChildState::Idle {
-                        ended_at: state::settled_at(child, &self.rows.children, &self.ended)?,
-                    }
-                };
-                Some(Child {
-                    actor: child.clone(),
-                    state,
-                })
-            })
-            .collect()
-    }
-
     /// The agent's own open work (section 4): its open asks and an
     /// unfinished todo list. A child's result comes from its children.
     fn own_open_work(&self, actor: &str, row: &Activity) -> Vec<OpenWork> {
@@ -600,9 +575,13 @@ impl Pass<'_> {
             .collect()
     }
 
-    /// Runs `next_state` on one agent and writes what it says.
-    fn agent(&mut self, row: &Activity, actor: &Actor) -> rusqlite::Result<()> {
-        let tx = self.tx;
+    fn limits(&self, actor: &str) -> Thresholds {
+        self.settings
+            .thresholds(self.rows.stall_minutes.get(actor).copied())
+    }
+
+    /// The agent's facts before `tree` judges its children.
+    fn facts(&self, row: &Activity, actor: &Actor) -> Facts {
         let actor_text = actor.to_string();
         let gone = self
             .rows
@@ -610,32 +589,46 @@ impl Pass<'_> {
             .get(row.session.as_str())
             .copied()
             .unwrap_or(true);
-        let episode = self.rows.episodes.get(&actor_text).cloned();
-        if gone && episode.is_none() {
-            return activity::forget(tx, &row.session);
-        }
         let wakes = self.wakes(actor, &row.session, gone);
         let wake_pending_since = match (wakes.is_empty(), row.wake_pending_since) {
             (false, Some(since)) => Some(since),
             (false, None) => Some(self.active),
             (true, _) => None,
         };
-        if wake_pending_since != row.wake_pending_since {
-            activity::set_wake_pending(tx, &row.session, wake_pending_since)?;
-        }
-        let facts = Facts {
+        Facts {
             gone,
             turn: row.turn,
             dialog: row.dialog,
             open_work: self.own_open_work(&actor_text, row),
-            children: self.children(&actor_text),
+            children: Vec::new(),
+            settled_at: None,
             wake_pending_since,
-            episode: episode.as_ref().map(|(_, episode)| *episode),
-        };
-        let limits = self
-            .settings
-            .thresholds(self.rows.stall_minutes.get(&actor_text).copied());
-        match (state::next_state(&facts, self.active, limits), &episode) {
+            episode: self
+                .rows
+                .episodes
+                .get(&actor_text)
+                .map(|(_, episode)| episode.clone()),
+        }
+    }
+
+    /// Runs `next_state` on one agent's judged facts and writes what it says.
+    fn agent(
+        &mut self,
+        row: &Activity,
+        actor: &Actor,
+        facts: &Facts,
+        limits: Thresholds,
+    ) -> rusqlite::Result<()> {
+        let tx = self.tx;
+        let actor_text = actor.to_string();
+        let episode = self.rows.episodes.get(&actor_text);
+        if facts.gone && episode.is_none() {
+            return activity::forget(tx, &row.session);
+        }
+        if facts.wake_pending_since != row.wake_pending_since {
+            activity::set_wake_pending(tx, &row.session, facts.wake_pending_since)?;
+        }
+        match (state::next_state(facts, self.active, limits), episode) {
             (Transition::Stay, _) | (Transition::Close(_), None) => Ok(()),
             (
                 Transition::Open {
@@ -643,7 +636,10 @@ impl Pass<'_> {
                     stalled_since,
                 },
                 _,
-            ) => self.open(actor, &facts, row, &wakes, (cause, stalled_since)),
+            ) => {
+                let wakes = self.wakes(actor, &row.session, facts.gone);
+                self.open(actor, facts, row, &wakes, (cause, stalled_since))
+            }
             (Transition::Close(reason), Some((id, _))) => self.close(id, reason),
         }
     }
@@ -709,19 +705,6 @@ fn pass(
         .iter()
         .map(|row| (row, rows.actor_of(&row.session)))
         .collect();
-    let running: Vec<String> = agents
-        .iter()
-        .filter(|(row, _)| matches!(row.turn, state::Turn::Running { .. }))
-        .map(|(_, actor)| actor.to_string())
-        .collect();
-    let busy = state::busy(running.iter().map(String::as_str), &rows.parents);
-    let ended: HashMap<String, i64> = agents
-        .iter()
-        .filter_map(|(row, actor)| match row.turn {
-            state::Turn::Idle { ended_at, .. } => Some((actor.to_string(), ended_at)),
-            state::Turn::Running { .. } => None,
-        })
-        .collect();
     let waiting_on: Vec<String> = agents
         .iter()
         .filter(|(row, _)| {
@@ -733,19 +716,26 @@ fn pass(
     let mut pass = Pass {
         tx: &tx,
         rows: &rows,
-        busy,
         counted: counted(&tx, &waiting_on)?,
-        ended,
         settings: Settings::load(&tx)?,
         active: active_ms,
         wall: wall_ms,
         notices: Notices::default(),
     };
+    let mut judged: Vec<tree::Agent> = agents
+        .iter()
+        .map(|(row, actor)| {
+            let key = actor.to_string();
+            let limits = pass.limits(&key);
+            (key, pass.facts(row, actor), limits)
+        })
+        .collect();
+    tree::judge(&mut judged, &rows.edges, active_ms);
     // One agent's fault must not silence the others' alarms.
     let mut fault = None;
-    for (row, actor) in &agents {
+    for ((row, actor), (_, facts, limits)) in agents.iter().zip(&judged) {
         tx.execute_batch("SAVEPOINT alarm_agent")?;
-        match pass.agent(row, actor) {
+        match pass.agent(row, actor, facts, *limits) {
             Ok(()) => tx.execute_batch("RELEASE alarm_agent")?,
             Err(error) => {
                 tx.execute_batch("ROLLBACK TO alarm_agent; RELEASE alarm_agent")?;

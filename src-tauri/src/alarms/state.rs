@@ -2,9 +2,11 @@
 //! detector pass and never stored. `next_state` says what the pass does to
 //! the agent's one open episode. Every time is active-clock time.
 
-use std::collections::{HashMap, HashSet};
-
 use serde::Serialize;
+
+/// How many stall thresholds a turn may sit silent on a background tool
+/// before it counts as hung (lead n3).
+pub(crate) const BACKGROUND_STALLS: i64 = 4;
 
 /// The thresholds of design section 3, in active milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +37,10 @@ pub(crate) enum Progress {
     Untapped,
     Tapped {
         last_at: i64,
+        /// A tool call of the turn runs.
         tool_running: bool,
+        /// A background tool (a Claude task) runs, which may outlive turns.
+        background: bool,
     },
 }
 
@@ -82,37 +87,21 @@ pub(crate) enum Wake {
     },
 }
 
-/// A child agent as its parent sees it.
+/// A child agent as its parent sees it (`tree`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChildState {
-    /// Its turn runs, or a turn of one of its own descendants does.
-    Busy,
-    /// Its branch is quiet: `ended_at` is the last turn end in it.
-    Idle { ended_at: i64 },
+    /// It runs, waits, or has open work of its own: the parent waits.
+    Unsettled,
+    /// Plain idle since its own last turn end.
+    Settled { ended_at: i64 },
 }
 
-/// A session the agent started or gave work to.
+/// A session the agent started or asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Child {
     pub actor: String,
+    pub started: bool,
     pub state: ChildState,
-}
-
-/// The agents that run a turn or have a descendant that does: WAITING is
-/// transitive (review M1). `parents` maps an agent to the agents that
-/// started it or gave it work; an agent seen twice ends a cycle.
-pub(crate) fn busy<'a>(
-    running: impl IntoIterator<Item = &'a str>,
-    parents: &HashMap<String, Vec<String>>,
-) -> HashSet<String> {
-    let mut busy = HashSet::new();
-    let mut next: Vec<String> = running.into_iter().map(str::to_string).collect();
-    while let Some(actor) = next.pop() {
-        if busy.insert(actor.clone()) {
-            next.extend(parents.get(&actor).into_iter().flatten().cloned());
-        }
-    }
-    busy
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -122,7 +111,13 @@ pub(crate) enum Cause {
     Dialog,
     Hung,
     WakeMissed,
+    /// The sleep hold's (rows H and P2); the detector never opens one.
+    HoldMissing,
 }
+
+/// An episode cause this build does not know, from a newer build's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnknownCause(pub String);
 
 impl Cause {
     pub(crate) fn as_str(self) -> &'static str {
@@ -131,25 +126,28 @@ impl Cause {
             Cause::Dialog => "dialog",
             Cause::Hung => "hung",
             Cause::WakeMissed => "wake_missed",
+            Cause::HoldMissing => "hold_missing",
         }
     }
 
-    pub(crate) fn parse(text: &str) -> Option<Self> {
+    pub(crate) fn parse(text: &str) -> Result<Self, UnknownCause> {
         [
             Cause::IdleOpenWork,
             Cause::Dialog,
             Cause::Hung,
             Cause::WakeMissed,
+            Cause::HoldMissing,
         ]
         .into_iter()
         .find(|cause| cause.as_str() == text)
+        .ok_or_else(|| UnknownCause(text.to_string()))
     }
 }
 
 /// The agent's open episode, as its row holds it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Episode {
-    pub cause: Cause,
+    pub cause: Result<Cause, UnknownCause>,
     pub stalled_since: i64,
 }
 
@@ -162,6 +160,9 @@ pub(crate) struct Facts {
     /// The agent's own open work; a child's result is added from `children`.
     pub open_work: Vec<OpenWork>,
     pub children: Vec<Child>,
+    /// The last turn end below its settled children: open work it held
+    /// while it waited on them counts from there (lead cascade rule 3).
+    pub settled_at: Option<i64>,
     /// When a wake for the agent (message, reminder, notice) was first seen
     /// waiting for its provider.
     pub wake_pending_since: Option<i64>,
@@ -206,10 +207,10 @@ pub(crate) enum Transition {
     Close(CloseReason),
 }
 
-/// When each child's result the agent has not handled came: an idle child
-/// that ended after the agent's last turn ended, so no turn of the agent
-/// has seen it (lead N4). One that ended during the agent's turn reached
-/// it as a completion notice.
+/// When each child's result the agent has not handled came: a settled
+/// child the agent started that ended after the agent's last turn ended,
+/// so no turn of the agent has seen it (lead N4). One that ended during the
+/// agent's turn reached it as a completion notice.
 fn unhandled(facts: &Facts) -> impl Iterator<Item = (&Child, i64)> {
     let ended = match facts.turn {
         Turn::Idle { ended_at, .. } => Some(ended_at),
@@ -218,32 +219,12 @@ fn unhandled(facts: &Facts) -> impl Iterator<Item = (&Child, i64)> {
     facts
         .children
         .iter()
-        .filter_map(move |child| match (child.state, ended) {
-            (ChildState::Idle { ended_at }, Some(ended)) if ended_at > ended => {
+        .filter_map(move |child| match (child.started, child.state, ended) {
+            (true, ChildState::Settled { ended_at }, Some(ended)) if ended_at > ended => {
                 Some((child, ended_at))
             }
-            (ChildState::Idle { .. } | ChildState::Busy, _) => None,
+            _ => None,
         })
-}
-
-/// When `actor`'s branch went quiet: the last turn end of it and every
-/// descendant that has one (`ended`). A lead that waited on its worker is
-/// done from the worker's end, not from its own earlier one.
-pub(crate) fn settled_at(
-    actor: &str,
-    children: &HashMap<String, Vec<String>>,
-    ended: &HashMap<String, i64>,
-) -> Option<i64> {
-    let mut seen = HashSet::new();
-    let mut next = vec![actor.to_string()];
-    let mut latest = None;
-    while let Some(actor) = next.pop() {
-        if seen.insert(actor.clone()) {
-            latest = latest.max(ended.get(&actor).copied());
-            next.extend(children.get(&actor).into_iter().flatten().cloned());
-        }
-    }
-    latest
 }
 
 /// The open work of `facts`: its own, then each child result it has not
@@ -309,11 +290,20 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 Progress::Tapped {
                     last_at,
                     tool_running: false,
+                    background,
                 },
         } => {
             let since = last_at.max(started_at);
-            if now - since >= limits.stall_ms {
+            let silent = now - since;
+            let hung_at = if background {
+                BACKGROUND_STALLS * limits.stall_ms
+            } else {
+                limits.stall_ms
+            };
+            if silent >= hung_at {
                 Status::Hung { since }
+            } else if silent >= limits.stall_ms {
+                Status::Waiting
             } else {
                 Status::Working
             }
@@ -325,7 +315,7 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
             if facts
                 .children
                 .iter()
-                .any(|child| child.state == ChildState::Busy)
+                .any(|child| child.state == ChildState::Unsettled)
             {
                 return Status::Waiting;
             }
@@ -333,7 +323,10 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 return Status::Idle;
             }
             Status::IdleOpenWork {
-                since: unhandled(facts).map(|(_, at)| at).fold(ended_at, i64::max),
+                since: unhandled(facts)
+                    .map(|(_, at)| at)
+                    .chain(facts.settled_at)
+                    .fold(ended_at, i64::max),
             }
         }
     }
@@ -369,7 +362,7 @@ impl Status {
 /// Whether the agent moved since its episode's stall began: a turn started
 /// or ended after it, a hung turn printed or ran a tool, or the dialog it
 /// was stuck on was answered or withdrawn.
-fn progressed(facts: &Facts, episode: Episode) -> bool {
+fn progressed(facts: &Facts, episode: &Episode) -> bool {
     let since = episode.stalled_since;
     let boundary = match facts.turn {
         Turn::Idle {
@@ -380,30 +373,39 @@ fn progressed(facts: &Facts, episode: Episode) -> bool {
     };
     boundary
         || match episode.cause {
-            Cause::Hung => matches!(
+            Ok(Cause::Hung) => matches!(
                 facts.turn,
                 Turn::Running {
-                    progress: Progress::Tapped { last_at, tool_running },
+                    progress: Progress::Tapped { last_at, tool_running, .. },
                     ..
                 } if tool_running || last_at > since
             ),
-            Cause::Dialog => blocking_dialog(facts).is_none_or(|dialog| dialog.since != since),
-            Cause::IdleOpenWork | Cause::WakeMissed => false,
+            Ok(Cause::Dialog) => blocking_dialog(facts).is_none_or(|dialog| dialog.since != since),
+            Ok(Cause::IdleOpenWork | Cause::WakeMissed | Cause::HoldMissing) | Err(_) => false,
         }
 }
 
 /// What this pass does to the agent's episode. A still-stalled agent keeps
-/// its episode and its first cause.
+/// its episode and its first cause. An episode the detector does not judge
+/// (the sleep hold's, or a newer build's cause) closes here only when the
+/// agent is gone.
 pub(crate) fn next_state(facts: &Facts, now: i64, limits: Thresholds) -> Transition {
     let status = status(facts, now, limits);
     let stall = status.stall(now, limits);
-    match (facts.episode, stall) {
+    match (&facts.episode, stall) {
         (None, None) => Transition::Stay,
         (None, Some((cause, stalled_since))) => Transition::Open {
             cause,
             stalled_since,
         },
         (Some(_), _) if status == Status::Gone => Transition::Close(CloseReason::AgentGone),
+        (
+            Some(Episode {
+                cause: Ok(Cause::HoldMissing) | Err(_),
+                ..
+            }),
+            _,
+        ) => Transition::Stay,
         (Some(episode), _) if progressed(facts, episode) => {
             Transition::Close(CloseReason::Progress)
         }
@@ -435,6 +437,7 @@ mod tests {
             dialog: None,
             open_work: Vec::new(),
             children: Vec::new(),
+            settled_at: None,
             wake_pending_since: None,
             episode: None,
         }
@@ -456,6 +459,7 @@ mod tests {
                 progress: Progress::Tapped {
                     last_at,
                     tool_running,
+                    background: false,
                 },
             },
             ..idle()
@@ -465,6 +469,7 @@ mod tests {
     fn child(state: ChildState) -> Child {
         Child {
             actor: "session:worker".into(),
+            started: true,
             state,
         }
     }
@@ -472,7 +477,7 @@ mod tests {
     fn after(facts: Facts, cause: Cause, stalled_since: i64) -> Facts {
         Facts {
             episode: Some(Episode {
-                cause,
+                cause: Ok(cause),
                 stalled_since,
             }),
             ..facts
@@ -518,7 +523,7 @@ mod tests {
     #[test]
     fn an_idle_agent_with_a_busy_child_is_waiting_even_with_its_own_ask() {
         let facts = Facts {
-            children: vec![child(ChildState::Busy)],
+            children: vec![child(ChildState::Unsettled)],
             ..with_ask(idle())
         };
         assert_eq!(status(&facts, ENDED + 60 * MIN, LIMITS), Status::Waiting);
@@ -553,7 +558,7 @@ mod tests {
     fn a_child_that_ended_after_the_agents_turn_ended_is_open_work_from_its_end() {
         let done = ENDED + 5 * MIN;
         let facts = Facts {
-            children: vec![child(ChildState::Idle { ended_at: done })],
+            children: vec![child(ChildState::Settled { ended_at: done })],
             ..idle()
         };
         assert_eq!(
@@ -575,7 +580,7 @@ mod tests {
             (ENDED, "with the turn"),
         ] {
             let seen = Facts {
-                children: vec![child(ChildState::Idle { ended_at })],
+                children: vec![child(ChildState::Settled { ended_at })],
                 ..idle()
             };
             assert_eq!(open_work(&seen), Vec::new(), "ended {when}");
@@ -587,54 +592,90 @@ mod tests {
         }
     }
 
-    // Defect (review M1): WAITING looks only at direct children, so a Mono
-    // whose idle lead waits on a running worker alarms at the lead's end
-    // + N; or a cycle in the started-by graph never ends.
+    // Defect (S1 r2 M1(a)): a child the agent only asked counts as a
+    // result it must handle, though no completion notice reaches an asker.
     #[test]
-    fn an_agent_is_busy_while_any_descendant_runs() {
-        let parents = HashMap::from([
-            (
-                "session:worker".to_string(),
-                vec!["session:lead".to_string()],
-            ),
-            ("session:lead".to_string(), vec!["mono:m".to_string()]),
-            ("mono:m".to_string(), vec!["mono:giga".to_string()]),
-            ("mono:giga".to_string(), vec!["mono:m".to_string()]),
-            ("session:other".to_string(), vec!["mono:x".to_string()]),
-        ]);
-        let busy = busy(["session:worker"], &parents);
-        let mut busy: Vec<&str> = busy.iter().map(String::as_str).collect();
-        busy.sort_unstable();
+    fn only_a_started_child_is_a_result() {
+        let asked = Child {
+            started: false,
+            ..child(ChildState::Settled {
+                ended_at: ENDED + 5 * MIN,
+            })
+        };
+        let facts = Facts {
+            children: vec![asked],
+            ..idle()
+        };
+        assert_eq!(open_work(&facts), Vec::new());
         assert_eq!(
-            busy,
-            ["mono:giga", "mono:m", "session:lead", "session:worker"]
+            next_state(&facts, ENDED + 600 * MIN, LIMITS),
+            Transition::Stay
         );
     }
 
-    // Defect: once a lead's worker ends, the Mono's clock on the lead's
-    // result starts at the lead's own end, before it waited on the worker,
-    // so the Mono alarms at once.
+    // Defect (lead n3): a turn silent on a background tool (a dev server,
+    // a monitor) can never be hung, or is hung at N though the turn may
+    // really wait on it.
     #[test]
-    fn a_branch_settles_at_its_last_turn_end() {
-        let children = HashMap::from([
-            (
-                "session:lead".to_string(),
-                vec!["session:worker".to_string()],
-            ),
-            (
-                "session:worker".to_string(),
-                vec!["session:lead".to_string()],
-            ),
-        ]);
-        let ended = HashMap::from([
-            ("session:lead".to_string(), ENDED),
-            ("session:worker".to_string(), ENDED + 60 * MIN),
-        ]);
+    fn a_turn_silent_on_a_background_tool_waits_until_four_n_then_is_hung() {
+        let start = ENDED + MIN;
+        let last = start + MIN;
+        let facts = Facts {
+            turn: Turn::Running {
+                started_at: start,
+                progress: Progress::Tapped {
+                    last_at: last,
+                    tool_running: false,
+                    background: true,
+                },
+            },
+            ..idle()
+        };
+        assert_eq!(status(&facts, last + 15 * MIN, LIMITS), Status::Waiting);
         assert_eq!(
-            settled_at("session:lead", &children, &ended),
-            Some(ENDED + 60 * MIN)
+            next_state(&facts, last + 4 * 15 * MIN - 1, LIMITS),
+            Transition::Stay
         );
-        assert_eq!(settled_at("session:none", &children, &ended), None);
+        assert_eq!(
+            next_state(&facts, last + 4 * 15 * MIN, LIMITS),
+            Transition::Open {
+                cause: Cause::Hung,
+                stalled_since: last
+            }
+        );
+    }
+
+    // Defect (S1 r2 F2): an episode whose cause this build does not judge
+    // (the sleep hold's, or a newer build's) is closed as work_cleared the
+    // pass after it opens, or never closes when its agent goes.
+    #[test]
+    fn an_episode_the_detector_does_not_judge_stays_until_its_agent_goes() {
+        assert_eq!(Cause::parse("hold_missing"), Ok(Cause::HoldMissing));
+        assert_eq!(Cause::parse("asleep"), Err(UnknownCause("asleep".into())));
+        for cause in [Cause::parse("hold_missing"), Cause::parse("asleep")] {
+            let open = Facts {
+                episode: Some(Episode {
+                    cause: cause.clone(),
+                    stalled_since: ENDED,
+                }),
+                turn: Turn::Running {
+                    started_at: ENDED + MIN,
+                    progress: Progress::Untapped,
+                },
+                ..idle()
+            };
+            assert_eq!(
+                next_state(&open, ENDED + 20 * MIN, LIMITS),
+                Transition::Stay,
+                "{cause:?}"
+            );
+            let gone = Facts { gone: true, ..open };
+            assert_eq!(
+                next_state(&gone, ENDED + 20 * MIN, LIMITS),
+                Transition::Close(CloseReason::AgentGone),
+                "{cause:?}"
+            );
+        }
     }
 
     // Defect: a permission dialog alarms before 3 minutes, never, or after

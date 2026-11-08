@@ -107,7 +107,8 @@ fn a_claude_plan_waits_from_exit_plan_mode_until_the_next_turn() {
 }
 
 // Defect: a Claude tool, or a background task that outlives `result`,
-// is not counted as running (frames: claudeProtocol.ts:557-892,
+// is not counted as running, or (lead n3) a background task reads as a
+// tool of the turn, so a silent turn on it is never hung (frames: claudeProtocol.ts:557-892,
 // claude.ts:1263-1300).
 #[test]
 fn claude_tools_and_background_tasks_run_until_their_end_frames() {
@@ -132,7 +133,10 @@ fn claude_tools_and_background_tasks_run_until_their_end_frames() {
         ],
     )
     .unwrap();
-    assert!(started.tool_running, "the background task still runs");
+    assert!(
+        started.background && !started.tool_running,
+        "the background task still runs, apart from the turn's tools"
+    );
     let ended = feed(
         &mut tap,
         10_000,
@@ -142,7 +146,7 @@ fn claude_tools_and_background_tasks_run_until_their_end_frames() {
         )],
     )
     .unwrap();
-    assert!(!ended.tool_running);
+    assert!(!ended.background && !ended.tool_running);
 }
 
 // Defect: a TodoWrite list with an unfinished item is not open work, or

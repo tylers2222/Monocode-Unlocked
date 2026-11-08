@@ -26,6 +26,7 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            turn_ended_active_ms    INTEGER NOT NULL,
            last_progress_active_ms INTEGER,
            tool_running            INTEGER NOT NULL DEFAULT 0 CHECK (tool_running IN (0, 1)),
+           background_running      INTEGER NOT NULL DEFAULT 0 CHECK (background_running IN (0, 1)),
            dialog_kind             TEXT CHECK (dialog_kind IN ('permission', 'question', 'plan')),
            dialog_request_id       TEXT,
            dialog_text             TEXT,
@@ -164,7 +165,7 @@ fn spawned(
            last_progress_active_ms, updated_wall_ms)
          VALUES (?1, ?2, ?3, ?3, ?4)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
-           tool_running = 0, todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL,
+           tool_running = 0, background_running = 0, todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL,
            dialog_text = NULL, dialog_since_active_ms = NULL, updated_wall_ms = ?4",
         params![session.as_str(), harness.map(Harness::as_str), at, wall],
     )?;
@@ -181,11 +182,12 @@ fn write_tap(
     conn.execute(
         "INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms,
            last_progress_active_ms, tool_running, todo_open, dialog_kind, dialog_request_id,
-           dialog_text, dialog_since_active_ms, updated_wall_ms)
-         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+           dialog_text, dialog_since_active_ms, updated_wall_ms, background_running)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
            tool_running = ?4, todo_open = ?5, dialog_kind = ?6, dialog_request_id = ?7,
-           dialog_text = ?8, dialog_since_active_ms = ?9, updated_wall_ms = ?10",
+           dialog_text = ?8, dialog_since_active_ms = ?9, updated_wall_ms = ?10,
+           background_running = ?11",
         params![
             session.as_str(),
             row.harness.as_str(),
@@ -196,7 +198,8 @@ fn write_tap(
             dialog.and_then(|dialog| dialog.request_id.as_deref()),
             dialog.map(|dialog| dialog.text.as_str()),
             dialog.map(|dialog| dialog.since),
-            wall
+            wall,
+            row.background,
         ],
     )?;
     Ok(())
@@ -236,7 +239,7 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
         .prepare(
             "SELECT session_id, harness, turn_state, turn_started_active_ms, turn_ended_active_ms,
                last_progress_active_ms, tool_running, dialog_kind, dialog_since_active_ms,
-               dialog_text, todo_open, wake_pending_since_active_ms
+               dialog_text, todo_open, wake_pending_since_active_ms, background_running
              FROM agent_activity ORDER BY session_id",
         )?
         .query_map([], |row| {
@@ -251,6 +254,7 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
                         Some(_) => Progress::Tapped {
                             last_at: row.get::<_, Option<i64>>(5)?.unwrap_or(started_at),
                             tool_running: row.get(6)?,
+                            background: row.get(12)?,
                         },
                         None => Progress::Untapped,
                     },

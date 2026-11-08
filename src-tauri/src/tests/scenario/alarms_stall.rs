@@ -75,7 +75,7 @@ fn claude_tap(world: &World, session: &SessionId) -> ChildTap {
         .unwrap()
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Episode {
     id: String,
     actor: String,
@@ -514,13 +514,212 @@ fn a_mono_and_its_idle_lead_wait_while_the_leads_worker_runs() {
         "the branch went quiet at the worker's end"
     );
     world.advance(PASS);
-    assert!(
-        episodes(&world)
-            .iter()
-            .any(|episode| episode.actor == "session:alt-lead"),
-        "{:?}",
-        episodes(&world)
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        episode,
+        idle_open_work(&episode.id, "session:alt-lead", "mono:alt-mono"),
+        "the lead's episode is the one; its Mono waits on it"
     );
+}
+
+/// A turn of `session` that takes what waits for it, as the window starts
+/// one, and ends after a minute.
+fn took_a_turn(world: &mut World, session: &SessionId) {
+    let turn_id = format!("turn-{}", world.active_ms());
+    world.start_turn(session, &turn_id);
+    turn(world, session, &turn_id, true);
+    world.advance(MINUTE);
+    world.end_turn(session, &turn_id, true);
+    turn(world, session, &turn_id, false);
+}
+
+/// `from` asks `to` with the longest deadline, and `to`'s chat takes it.
+fn ask_and_take(world: &mut World, from: &Mono, to: &Mono, key: &str) {
+    let input =
+        json!({"message": format!("Do {key}"), "send_to": to.id.as_str(), "due_minutes": 480});
+    world.tool(&mono_caller(from, key), key, "ask", input, &[&to.chat]);
+    took_a_turn(world, &to.chat);
+}
+
+const TODO_PENDING: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_t","name":"TodoWrite","input":{"todos":[{"content":"Ship","status":"pending"}]}}]}}"#;
+
+// Defect (S1 r2 M1, lead cascade ruling): one worker's stall opens an
+// episode at its lead, the lead's Mono and the Mono's Giga in the same
+// pass (the Giga's alarm skipping the ladder), as each holds the open ask
+// of the one above it, instead of one episode at the worker.
+#[test]
+fn a_stalled_worker_under_a_giga_mono_and_lead_is_one_episode() {
+    let mut world = World::new("alarm-cascade");
+    let general = world.add_mono_in("alc-general", MonoRole::Giga, &[P]);
+    let giga = world.add_mono_in("alc-giga", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alc-mono", MonoRole::Mono, &[P]);
+    align(&mut world);
+    ask_and_take(&mut world, &general, &giga, "ask-giga");
+    ask_and_take(&mut world, &giga, &mono, "ask-mono");
+    let lead = start_lead(&world, &mono, "alc-lead");
+    ran_a_turn(&mut world, &lead);
+    let worker = world.add_session("alc-worker", P, Some("alc-lead"));
+    let claude = claude_tap(&world, &worker);
+    turn(&mut world, &worker, "w1", true);
+    claude.line(Pipe::Stdout, TODO_PENDING);
+    world.advance(2 * N);
+    turn(&mut world, &worker, "w1", false);
+    align(&mut world);
+    world.advance(N - PASS);
+    assert_eq!(episodes(&world), Vec::new());
+
+    world.advance(PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        episode,
+        idle_open_work(&episode.id, "session:alc-worker", "session:alc-lead")
+    );
+    world.advance(PASS);
+    assert_eq!(episodes(&world), vec![episode.clone()], "and the next pass");
+
+    // The lead's window takes the alarm and the lead reads it; the worker
+    // stays stalled, so every agent above it still waits on its episode.
+    let key = test_taps::outbox_key(&episode.id, 1);
+    {
+        let conn = world.conn();
+        ask_scheduler::claim(&conn, &key, "main", &HashMap::new(), true)
+            .unwrap()
+            .expect("the lead's idle chat takes the alarm");
+        assert!(ask_scheduler::sent(&conn, &key, "main", world.now()).unwrap());
+    }
+    ran_a_turn(&mut world, &lead);
+    world.advance(2 * N);
+    assert_eq!(episodes(&world), vec![episode]);
+}
+
+/// Sets `session`'s queue status as the window saves it, keeping its items.
+fn set_queue_status(world: &World, session: &SessionId, status: &str) {
+    world
+        .conn()
+        .execute(
+            "UPDATE sessions SET queue_status = ?2 WHERE id = ?1",
+            rusqlite::params![session.as_str(), status],
+        )
+        .unwrap();
+}
+
+/// One wake of each kind for `mono`'s chat (design section 4).
+fn wake(world: &mut World, kind: &str, giga: &Mono, mono: &Mono) {
+    match kind {
+        "message" => {
+            let input = json!({
+                "message": "Is CI green?", "send_to": mono.id.as_str(),
+                "wanting_reply": false, "intent": "new",
+            });
+            world.call(giga, "g1", "wake-1", Tool::SendMessage, input, mono);
+        }
+        "reminder" => {
+            world
+                .conn()
+                .execute(
+                    "INSERT INTO mono_outbox (key, stage, recipient, at_active_ms, claimed_by)
+                     VALUES ('resume:alz:1', 'resume', ?1, 1, 'main')",
+                    [format!("mono:{}", mono.id.as_str())],
+                )
+                .unwrap();
+        }
+        "notice" => {
+            let saved = json!({
+                "request": {"requestId": "req-1"}, "origin": {"monoId": mono.chat.as_str()},
+                "notice": "notice-1",
+            });
+            world
+                .conn()
+                .execute(
+                    "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run)
+                     VALUES ('req-1', ?1, 'closed', 'old-run')",
+                    [saved.to_string()],
+                )
+                .unwrap();
+        }
+        "queued" => save_queue(world, &mono.chat, json!([{"id": "queued-1"}]), "active"),
+        other => panic!("{other}"),
+    }
+}
+
+// Defect (S1 r2 F1): only a paused queue's own items are exempt, so a
+// paused chat's claimed reminder, untaken message or completion result
+// still alarms its Giga as wake_missed.
+#[test]
+fn a_paused_chat_misses_no_wake_on_any_path() {
+    for kind in ["message", "reminder", "notice", "queued"] {
+        let mut world = World::new(&format!("alarm-paused-{kind}"));
+        let giga = world.add_mono_in("alz-general", MonoRole::Giga, &[P]);
+        let mono = world.add_mono_in("alz-mono", MonoRole::Mono, &[P]);
+        align(&mut world);
+        ran_a_turn(&mut world, &mono.chat);
+        wake(&mut world, kind, &giga, &mono);
+        set_queue_status(&world, &mono.chat, "paused");
+        world.advance(N);
+        assert_eq!(episodes(&world), Vec::new(), "{kind}: paused on purpose");
+
+        set_queue_status(&world, &mono.chat, "active");
+        world.advance(2 * MINUTE + 2 * PASS);
+        let causes: Vec<String> = episodes(&world)
+            .into_iter()
+            .map(|episode| episode.cause)
+            .collect();
+        assert_eq!(causes, ["wake_missed"], "{kind}: waits once resumed");
+    }
+}
+
+/// Writes an open episode of `cause` for `actor`, as another row or a
+/// newer build would.
+fn foreign_episode(world: &World, actor: &str, cause: &str) {
+    world
+        .conn()
+        .execute_batch(&format!(
+            "PRAGMA ignore_check_constraints = ON;
+             INSERT INTO alarm_episodes (id, actor, provisioner, cause, open_work_json,
+               stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms)
+             VALUES ('al_foreign', '{actor}', 'mono:x', '{cause}', '[]', 1, 1, 1, 1);
+             PRAGMA ignore_check_constraints = OFF;"
+        ))
+        .unwrap();
+}
+
+// Defect (S1 r2 F2): an open episode whose cause the detector does not
+// parse (the sleep hold's `hold_missing`, or a newer build's) is dropped
+// from the pass, so every pass tries a second open episode for the agent,
+// fails on the unique index and skips the agent; the episode never closes.
+#[test]
+fn an_episode_of_a_cause_the_detector_does_not_judge_stays_until_its_agent_goes() {
+    for cause in ["hold_missing", "a_newer_cause"] {
+        let mut world = World::new(&format!("alarm-foreign-{cause}"));
+        let mono = world.add_mono_in("alf-mono", MonoRole::Mono, &[P]);
+        let lead = start_lead(&world, &mono, "alf-lead");
+        align(&mut world);
+        ran_a_turn(&mut world, &lead);
+        foreign_episode(&world, "session:alf-lead", cause);
+        world.advance(N + PASS);
+        let open: Vec<(String, String)> = episodes(&world)
+            .into_iter()
+            .filter(|episode| episode.open)
+            .map(|episode| (episode.id, episode.cause))
+            .collect();
+        assert_eq!(open, [("al_foreign".to_string(), cause.to_string())]);
+        assert_eq!(
+            world.store().alarms.last_fault(),
+            None,
+            "{cause}: no agent skipped"
+        );
+
+        world
+            .conn()
+            .execute("UPDATE sessions SET archived = 1 WHERE id = 'alf-lead'", [])
+            .unwrap();
+        world.advance(PASS);
+        assert_eq!(
+            close_reason(&world, "al_foreign").as_deref(),
+            Some("agent_gone"),
+            "{cause}"
+        );
+    }
 }
 
 // Defect (review F4): a notice or message the window saved into the
@@ -749,4 +948,29 @@ fn clone_messages(world: &World, count: i64, digits: &str) {
         select.join(", ")
     ))
     .unwrap();
+}
+
+// Defect (lead n3): a Claude background task keeps a silent turn working
+// for ever, so a turn hung beside a dev server or a monitor never alarms;
+// or the turn is hung at N while it may really wait on that task.
+#[test]
+fn a_turn_silent_on_a_background_task_is_hung_at_four_n() {
+    let mut world = World::new("alarm-background");
+    let mono = world.add_mono_in("alb-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "alb-lead");
+    let claude = claude_tap(&world, &lead);
+    align(&mut world);
+    turn(&mut world, &lead, "t1", true);
+    claude.line(
+        Pipe::Stdout,
+        r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
+    );
+    world.advance(4 * N - PASS);
+    assert_eq!(episodes(&world), Vec::new(), "it may wait on the task");
+    world.advance(PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        (episode.actor.as_str(), episode.cause.as_str()),
+        ("session:alb-lead", "hung")
+    );
 }

@@ -464,6 +464,7 @@ pub(crate) struct Snapshot {
     pub harness: Harness,
     pub last_progress_at: i64,
     pub tool_running: bool,
+    pub background: bool,
     pub todo_open: bool,
     pub dialog: Option<TapDialog>,
 }
@@ -474,11 +475,13 @@ impl Snapshot {
         (
             self.harness,
             self.tool_running,
+            self.background,
             self.todo_open,
             &self.dialog,
         ) == (
             other.harness,
             other.tool_running,
+            other.background,
             other.todo_open,
             &other.dialog,
         )
@@ -609,7 +612,8 @@ impl Tap {
         Snapshot {
             harness: self.harness,
             last_progress_at: self.last_progress_at,
-            tool_running: !self.tools.is_empty(),
+            tool_running: self.tools.iter().any(|id| !id.starts_with(TASK)),
+            background: self.tools.iter().any(|id| id.starts_with(TASK)),
             todo_open: self.todo_open,
             dialog: self.dialogs.first().cloned().or(plan),
         }

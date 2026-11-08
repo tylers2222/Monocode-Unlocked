@@ -148,6 +148,12 @@ impl Live {
         *last = fault;
         new
     }
+
+    /// The last pass's fault, `None` when it skipped no agent.
+    #[cfg(test)]
+    pub(crate) fn last_fault(&self) -> Option<String> {
+        lock(&self.0.fault).clone()
+    }
 }
 
 /// The stall tap on one child's stdio. Its lock orders the stdout reader's

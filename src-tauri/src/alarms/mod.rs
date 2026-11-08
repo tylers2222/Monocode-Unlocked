@@ -10,6 +10,7 @@ mod provisioner;
 mod state;
 mod store;
 pub(crate) mod taps;
+mod tree;
 
 use rusqlite::Connection;
 
