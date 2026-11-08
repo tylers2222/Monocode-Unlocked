@@ -87,6 +87,8 @@ pub(crate) struct Stall {
     pub last_activity: Option<String>,
     pub dialog: Option<DialogLine>,
     pub stuck: Stuck,
+    /// Why the sleep hold is missing, for a `hold_missing` episode.
+    pub hold_missing: Option<String>,
     pub escalate_minutes: i64,
     /// The alarms for this agent held back since its last one (`limit`).
     pub held: i64,
@@ -214,6 +216,9 @@ fn framed(tag: &str, attributes: &str, body: &str) -> String {
 /// provisioner; a higher level tells the provisioner of `missed`, and its
 /// acts reach `missed`, never the agent below it.
 pub(crate) fn alarm(stall: &Stall, level: i64, missed: Option<&Missed>, next: &Next) -> String {
+    if let Some(reason) = &stall.hold_missing {
+        return hold_alarm(stall, reason, level, missed, next);
+    }
     let id = &stall.episode;
     let stalled = format!(
         "{} is stalled since {} ({} min, {}).",
@@ -286,6 +291,41 @@ pub(crate) fn alarm(stall: &Stall, level: i64, missed: Option<&Missed>, next: &N
     text
 }
 
+fn hold_line(stall: &Stall, reason: &str) -> String {
+    format!(
+        "{} runs without the sleep hold ({reason}). Its foreground waits are not held.",
+        stall.agent.named()
+    )
+}
+
+/// A `hold_missing` alarm: no stall, open work or dialog to answer.
+fn hold_alarm(
+    stall: &Stall,
+    reason: &str,
+    level: i64,
+    missed: Option<&Missed>,
+    next: &Next,
+) -> String {
+    let id = &stall.episode;
+    let acts = format!("alarms.read {id} | alarms.nudge {id} | alarms.dismiss {id} --reason ...");
+    let body = match missed {
+        None => format!("{}\nAct: {acts}", hold_line(stall, reason)),
+        Some(missed) => format!(
+            "{} did not act on {} for {} min.\nSleep hold: {}\nAct on {}: {acts}",
+            missed.who.named(),
+            missed.what,
+            stall.escalate_minutes,
+            hold_line(stall, reason),
+            missed.who.label
+        ),
+    };
+    framed(
+        "mono_alarm",
+        &format!("alarm=\"{id}\" level=\"{level}\" cause=\"hold_missing\""),
+        &format!("{body}{}", next_line(next, stall.escalate_minutes)),
+    )
+}
+
 /// Whom a nudge goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NudgeTo {
@@ -333,6 +373,12 @@ pub(crate) fn steer(episode: &str, from: &str, text: &str) -> String {
 
 /// Tyler's OS notification: its title and body.
 pub(crate) fn notification(stall: &Stall) -> (String, String) {
+    if let Some(reason) = &stall.hold_missing {
+        return (
+            format!("{} runs without the sleep hold", stall.agent.label),
+            format!("Sleep hold missing: {reason}. Its foreground waits are not held."),
+        );
+    }
     let body = match &stall.dialog {
         Some(dialog) => format!(
             "Stalled {} min, waiting on a {}: {}",
@@ -378,6 +424,7 @@ mod tests {
                     other: vec![("ask", 2), ("todo list", 1)],
                 }),
             },
+            hold_missing: None,
             escalate_minutes: 15,
             held: 0,
             turning: false,
@@ -529,6 +576,47 @@ Your provisioner nudged you: PR S1 builder (session:9f3c) is stalled since 14:05
             (
                 "PR S1 builder is stalled".into(),
                 "Stalled 17 min (no turn). Open work: ask m_tngc \"Build S1 stall detector\" (due in 12 min).".into()
+            )
+        );
+    }
+
+    // Defect: a missing sleep hold reads as a stall, hides why the hold is
+    // missing, or offers acts (answer, steer) that have nothing to act on.
+    #[test]
+    fn the_hold_missing_alarm_says_the_hold_is_off_and_why() {
+        let stall = Stall {
+            cause: "hold_missing".into(),
+            minutes: 0,
+            open_work: Vec::new(),
+            hold_missing: Some("hooks disabled".into()),
+            ..stall()
+        };
+        assert_eq!(
+            alarm(&stall, 1, None, &Next::Agent(who("Fork Orchestrator", "mono:fork"))),
+            "<mono_alarm alarm=\"al_7Q2\" level=\"1\" cause=\"hold_missing\">
+PR S1 builder (session:9f3c) runs without the sleep hold (hooks disabled). Its foreground waits are not held.
+Act: alarms.read al_7Q2 | alarms.nudge al_7Q2 | alarms.dismiss al_7Q2 --reason ...
+No act in 15 min goes to Fork Orchestrator.
+</mono_alarm>"
+        );
+        let missed = Missed {
+            who: who("Lead PR-S1", "session:51aa"),
+            what: "the level-1 alarm".into(),
+        };
+        assert_eq!(
+            alarm(&stall, 2, Some(&missed), &Next::Tyler),
+            "<mono_alarm alarm=\"al_7Q2\" level=\"2\" cause=\"hold_missing\">
+Lead PR-S1 (session:51aa) did not act on the level-1 alarm for 15 min.
+Sleep hold: PR S1 builder (session:9f3c) runs without the sleep hold (hooks disabled). Its foreground waits are not held.
+Act on Lead PR-S1: alarms.read al_7Q2 | alarms.nudge al_7Q2 | alarms.dismiss al_7Q2 --reason ...
+No act in 15 min goes to Tyler.
+</mono_alarm>"
+        );
+        assert_eq!(
+            notification(&stall),
+            (
+                "PR S1 builder runs without the sleep hold".into(),
+                "Sleep hold missing: hooks disabled. Its foreground waits are not held.".into()
             )
         );
     }

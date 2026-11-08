@@ -9,14 +9,15 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
 use super::live::Write;
-use super::state::{Background, Dialog, DialogKind, Progress, Turn};
+use super::state::{Background, Dialog, DialogKind, Hold, Progress, Turn};
 use super::taps::{Harness, Snapshot};
 use crate::mono_messages::SessionId;
 use crate::sleep_hold::install::{HoldState, PING_GRACE_MS};
 
-/// `hold_state`, `hold_missing_reason` and `hold_ping_due_active_ms` are the
-/// sleep hold's (rows H, P2): a due time is set while an omp session's
-/// extension has yet to report in.
+/// `hold_state`, `hold_missing_reason`, `hold_ping_due_active_ms` and
+/// `hold_missing_told` are the sleep hold's (rows H, P2): a due time is set
+/// while an omp session's extension has yet to report in, and `told` once
+/// this spawn's missing hold opened its episode.
 pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS agent_activity (
@@ -41,6 +42,7 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            hold_state              TEXT CHECK (hold_state IN ('installed', 'missing')),
            hold_missing_reason     TEXT,
            hold_ping_due_active_ms INTEGER,
+           hold_missing_told       INTEGER NOT NULL DEFAULT 0 CHECK (hold_missing_told IN (0, 1)),
            updated_wall_ms         INTEGER NOT NULL,
            CHECK ((dialog_kind IS NULL) = (dialog_since_active_ms IS NULL))
          );",
@@ -235,7 +237,7 @@ fn spawned(
              WHEN 1 THEN ?3 ELSE background_ended_active_ms END,
            todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL, dialog_text = NULL,
            dialog_since_active_ms = NULL, hold_state = ?6, hold_missing_reason = ?7,
-           hold_ping_due_active_ms = ?8, updated_wall_ms = ?4",
+           hold_ping_due_active_ms = ?8, hold_missing_told = 0, updated_wall_ms = ?4",
         params![
             session.as_str(),
             harness.map(Harness::as_str),
@@ -333,6 +335,7 @@ pub(crate) struct Activity {
     pub dialog_text: Option<String>,
     pub todo_open: bool,
     pub wake_pending_since: Option<i64>,
+    pub hold: Hold,
 }
 
 pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
@@ -341,7 +344,7 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
             "SELECT session_id, harness, turn_state, turn_started_active_ms, turn_ended_active_ms,
                last_progress_active_ms, tool_running, dialog_kind, dialog_since_active_ms,
                dialog_text, todo_open, wake_pending_since_active_ms, background_running,
-               background_ended_active_ms
+               background_ended_active_ms, hold_state, hold_missing_reason, hold_missing_told
              FROM agent_activity ORDER BY session_id",
         )?
         .query_map([], |row| {
@@ -382,10 +385,26 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
                 dialog_text: row.get(9)?,
                 todo_open: row.get(10)?,
                 wake_pending_since: row.get(11)?,
+                hold: match row.get::<_, Option<String>>(14)?.as_deref() {
+                    Some("missing") => Hold::Missing {
+                        reason: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
+                        told: row.get(16)?,
+                    },
+                    _ => Hold::Held,
+                },
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows.into_iter().flatten().collect())
+}
+
+/// This spawn's missing hold opened its episode: it opens no other.
+pub(crate) fn hold_told(conn: &Connection, session: &SessionId) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agent_activity SET hold_missing_told = 1 WHERE session_id = ?1",
+        [session.as_str()],
+    )?;
+    Ok(())
 }
 
 /// The detector's own column: when it first saw a wake waiting.

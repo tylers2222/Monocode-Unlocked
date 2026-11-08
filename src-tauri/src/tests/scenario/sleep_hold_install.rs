@@ -10,6 +10,7 @@ use crate::mono_messages::SessionId;
 use crate::sleep_hold::install::{HoldState, PING_GRACE_MS};
 
 const SECOND: i64 = 1_000;
+const MINUTE: i64 = 60 * SECOND;
 
 const SILENT: &str = "the omp hold extension did not report in";
 
@@ -107,5 +108,134 @@ fn a_spawn_records_how_its_hold_went_in() {
         hold_state_of(&world, &chain.worker),
         (None, None),
         "no hold for this harness"
+    );
+}
+
+/// Each `hold_missing` episode of `session`, oldest first: its close reason.
+fn hold_episodes(world: &World, session: &SessionId) -> Vec<Option<String>> {
+    world
+        .conn()
+        .prepare(
+            "SELECT close_reason FROM alarm_episodes
+              WHERE actor = ?1 AND cause = 'hold_missing' ORDER BY opened_active_ms, id",
+        )
+        .unwrap()
+        .query_map([format!("session:{}", session.as_str())], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+// Defect: a session whose hold did not go in is never reported, is
+// reported again each pass, or its alarm outlives the hold going in.
+#[test]
+fn a_missing_hold_alarms_its_provisioner_once_per_spawn() {
+    let mut world = World::new("hold-missing-alarm");
+    let chain = chain(&world, "hm");
+    let disabled = || Some(HoldState::Missing("hooks disabled".into()));
+    spawn(&world, &chain.worker, "claude", disabled());
+    world.advance(10 * PASS);
+    assert_eq!(hold_episodes(&world, &chain.worker), vec![None]);
+    let text: String = world
+        .conn()
+        .query_row(
+            "SELECT p.text FROM alarm_prompts p JOIN alarm_episodes e ON e.id = p.episode_id
+              WHERE e.actor = ?1",
+            [format!("session:{}", chain.worker.as_str())],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        text.contains(
+            "runs without the sleep hold (hooks disabled). Its foreground waits are not held."
+        ),
+        "{text}"
+    );
+
+    spawn(&world, &chain.worker, "claude", Some(HoldState::Installed));
+    world.advance(PASS);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker),
+        vec![Some("work_cleared".into())],
+        "closed once the hold is in"
+    );
+    world.advance(10 * PASS);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker).len(),
+        1,
+        "none while installed"
+    );
+
+    spawn(&world, &chain.worker, "claude", disabled());
+    world.advance(10 * PASS);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker),
+        vec![Some("work_cleared".into()), None],
+        "the next spawn without the hold is told again, once"
+    );
+}
+
+// Defect: an omp session whose extension never reports in is not
+// reported, or one that reports in late keeps its alarm.
+#[test]
+fn a_silent_omp_extension_alarms_and_its_late_ping_closes_the_alarm() {
+    let mut world = World::new("hold-missing-omp");
+    let chain = chain(&world, "ho");
+    spawn(&world, &chain.worker, "omp", Some(HoldState::AwaitingPing));
+    world.alarm_turn_started(&chain.worker, "turn-1");
+    world.advance(PING_GRACE_MS - PASS);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker),
+        Vec::<Option<String>>::new()
+    );
+    world.advance(3 * PASS);
+    assert_eq!(hold_episodes(&world, &chain.worker), vec![None]);
+    assert_eq!(
+        ping(&world, &chain.worker),
+        json!({"ok": true, "recorded": true})
+    );
+    world.advance(2 * PASS);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker),
+        vec![Some("work_cleared".into())]
+    );
+}
+
+// Defect: a hold_missing episode holds the agent's one episode while it
+// really stalls, or the spawn's missing hold is told again once the stall
+// it gave way to is over.
+#[test]
+fn a_stall_supersedes_the_missing_hold_alarm_and_the_spawn_is_not_told_again() {
+    let mut world = World::new("hold-missing-stall");
+    let chain = chain(&world, "hx");
+    spawn(
+        &world,
+        &chain.worker,
+        "codex",
+        Some(HoldState::Missing("flags refused".into())),
+    );
+    world.advance(PASS);
+    assert_eq!(hold_episodes(&world, &chain.worker), vec![None]);
+    // The worker holds its lead's open ask: idle with open work for N.
+    world.advance(15 * MINUTE);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker),
+        vec![Some("superseded".into())]
+    );
+    let open: String = world
+        .conn()
+        .query_row(
+            "SELECT cause FROM alarm_episodes WHERE actor = ?1 AND closed_active_ms IS NULL",
+            [format!("session:{}", chain.worker.as_str())],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, "idle_open_work");
+    world.alarm_turn_started(&chain.worker, "turn-1");
+    world.advance(4 * PASS);
+    assert_eq!(
+        hold_episodes(&world, &chain.worker),
+        vec![Some("superseded".into())],
+        "the stall is over; this spawn was told already"
     );
 }

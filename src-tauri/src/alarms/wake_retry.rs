@@ -442,6 +442,7 @@ fn moved(
         children: Vec::new(),
         settled_at: None,
         wake_pending_since: row.wake_pending_since,
+        hold: row.hold,
         episode: None,
     };
     Ok(state::progressed(

@@ -120,7 +120,8 @@ pub(crate) enum Cause {
     Dialog,
     Hung,
     WakeMissed,
-    /// The sleep hold's (rows H and P2); the detector never opens one.
+    /// The session's sleep hold did not go in (design 11): told once per
+    /// spawn, at once, not after a stall clock.
     HoldMissing,
 }
 
@@ -176,7 +177,17 @@ pub(crate) struct Facts {
     /// When a wake for the agent (message, reminder, notice) was first seen
     /// waiting for its provider.
     pub wake_pending_since: Option<i64>,
+    pub hold: Hold,
     pub episode: Option<Episode>,
+}
+
+/// The session's sleep hold as its row holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// Installed, waiting for the omp extension's ping, or none for the harness.
+    Held,
+    /// `told`: this spawn's missing hold has opened its episode already.
+    Missing { reason: String, told: bool },
 }
 
 /// The states of design section 2 before an episode opens. `since` is when
@@ -198,6 +209,8 @@ pub(crate) enum CloseReason {
     Progress,
     WorkCleared,
     AgentGone,
+    /// A stall replaced the agent's `hold_missing` episode.
+    Superseded,
 }
 
 impl CloseReason {
@@ -206,6 +219,7 @@ impl CloseReason {
             CloseReason::Progress => "progress",
             CloseReason::WorkCleared => "work_cleared",
             CloseReason::AgentGone => "agent_gone",
+            CloseReason::Superseded => "superseded",
         }
     }
 }
@@ -404,26 +418,33 @@ pub(crate) fn progressed(facts: &Facts, episode: &Episode) -> bool {
 }
 
 /// What this pass does to the agent's episode. A still-stalled agent keeps
-/// its episode and its first cause. An episode the detector does not judge
-/// (the sleep hold's, or a newer build's cause) closes here only when the
-/// agent is gone.
+/// its episode and its first cause. The sleep hold's episode has its own
+/// rule (`hold_missing`). An episode of a newer build's cause closes here
+/// only when the agent is gone.
 pub(crate) fn next_state(facts: &Facts, now: i64, limits: Thresholds) -> Transition {
     let status = status(facts, now, limits);
     let stall = status.stall(now, limits);
+    if facts
+        .episode
+        .as_ref()
+        .is_some_and(|episode| episode.cause == Ok(Cause::HoldMissing))
+    {
+        return hold_missing(facts, status, stall.is_some());
+    }
     match (&facts.episode, stall) {
+        (None, None) if matches!(facts.hold, Hold::Missing { told: false, .. }) => {
+            Transition::Open {
+                cause: Cause::HoldMissing,
+                stalled_since: now,
+            }
+        }
         (None, None) => Transition::Stay,
         (None, Some((cause, stalled_since))) => Transition::Open {
             cause,
             stalled_since,
         },
         (Some(_), _) if status == Status::Gone => Transition::Close(CloseReason::AgentGone),
-        (
-            Some(Episode {
-                cause: Ok(Cause::HoldMissing) | Err(_),
-                ..
-            }),
-            _,
-        ) => Transition::Stay,
+        (Some(Episode { cause: Err(_), .. }), _) => Transition::Stay,
         (Some(episode), _) if progressed(facts, episode) => {
             Transition::Close(CloseReason::Progress)
         }
@@ -432,6 +453,18 @@ pub(crate) fn next_state(facts: &Facts, now: i64, limits: Thresholds) -> Transit
         // ruling b): the episode stands until progress or the work goes.
         (Some(_), None) if !matches!(status, Status::Idle | Status::Waiting) => Transition::Stay,
         (Some(_), None) => Transition::Close(CloseReason::WorkCleared),
+    }
+}
+
+/// An open `hold_missing` episode stands until the hold is in or the agent
+/// is gone. A stall comes first: it closes the episode, and the told spawn
+/// does not open another.
+fn hold_missing(facts: &Facts, status: Status, stalled: bool) -> Transition {
+    match (status, stalled, &facts.hold) {
+        (Status::Gone, _, _) => Transition::Close(CloseReason::AgentGone),
+        (_, true, _) => Transition::Close(CloseReason::Superseded),
+        (_, false, Hold::Missing { .. }) => Transition::Stay,
+        (_, false, Hold::Held) => Transition::Close(CloseReason::WorkCleared),
     }
 }
 
@@ -461,6 +494,7 @@ mod tests {
             children: Vec::new(),
             settled_at: None,
             wake_pending_since: None,
+            hold: Hold::Held,
             episode: None,
         }
     }
@@ -714,36 +748,33 @@ mod tests {
     }
 
     // Defect (S1 r2 F2): an episode whose cause this build does not judge
-    // (the sleep hold's, or a newer build's) is closed as work_cleared the
-    // pass after it opens, or never closes when its agent goes.
+    // (a newer build's) is closed as work_cleared the pass after it opens,
+    // or never closes when its agent goes.
     #[test]
     fn an_episode_the_detector_does_not_judge_stays_until_its_agent_goes() {
         assert_eq!(Cause::parse("hold_missing"), Ok(Cause::HoldMissing));
-        assert_eq!(Cause::parse("asleep"), Err(UnknownCause("asleep".into())));
-        for cause in [Cause::parse("hold_missing"), Cause::parse("asleep")] {
-            let open = Facts {
-                episode: Some(Episode {
-                    cause: cause.clone(),
-                    stalled_since: ENDED,
-                }),
-                turn: Turn::Running {
-                    started_at: ENDED + MIN,
-                    progress: Progress::Untapped,
-                },
-                ..idle()
-            };
-            assert_eq!(
-                next_state(&open, ENDED + 20 * MIN, LIMITS),
-                Transition::Stay,
-                "{cause:?}"
-            );
-            let gone = Facts { gone: true, ..open };
-            assert_eq!(
-                next_state(&gone, ENDED + 20 * MIN, LIMITS),
-                Transition::Close(CloseReason::AgentGone),
-                "{cause:?}"
-            );
-        }
+        let cause = Cause::parse("asleep");
+        assert_eq!(cause, Err(UnknownCause("asleep".into())));
+        let open = Facts {
+            episode: Some(Episode {
+                cause,
+                stalled_since: ENDED,
+            }),
+            turn: Turn::Running {
+                started_at: ENDED + MIN,
+                progress: Progress::Untapped,
+            },
+            ..idle()
+        };
+        assert_eq!(
+            next_state(&open, ENDED + 20 * MIN, LIMITS),
+            Transition::Stay
+        );
+        let gone = Facts { gone: true, ..open };
+        assert_eq!(
+            next_state(&gone, ENDED + 20 * MIN, LIMITS),
+            Transition::Close(CloseReason::AgentGone)
+        );
     }
 
     // Defect: a permission dialog alarms before 3 minutes, never, or after
@@ -990,6 +1021,71 @@ mod tests {
             next_state(&gone_fresh, ENDED + 20 * MIN, LIMITS),
             Transition::Stay,
             "a gone agent opens nothing"
+        );
+    }
+
+    fn missing(told: bool) -> Facts {
+        Facts {
+            hold: Hold::Missing {
+                reason: "hooks disabled".into(),
+                told,
+            },
+            ..idle()
+        }
+    }
+
+    // Defect: a missing sleep hold waits out a stall clock before anyone
+    // hears, or opens again for a spawn already told.
+    #[test]
+    fn a_missing_hold_opens_at_once_and_once_per_spawn() {
+        let now = ENDED + MIN;
+        assert_eq!(
+            next_state(&missing(false), now, LIMITS),
+            Transition::Open {
+                cause: Cause::HoldMissing,
+                stalled_since: now
+            }
+        );
+        assert_eq!(next_state(&missing(true), now, LIMITS), Transition::Stay);
+        assert_eq!(
+            next_state(&idle(), now, LIMITS),
+            Transition::Stay,
+            "installed"
+        );
+    }
+
+    // Defect: the hold_missing episode closes at the agent's next turn
+    // (as a stall's would), stays open after the hold is in, or holds the
+    // agent's one episode while it really stalls.
+    #[test]
+    fn a_hold_missing_episode_stands_until_the_hold_is_in_or_a_stall_comes() {
+        let now = ENDED + 20 * MIN;
+        let open = |facts: Facts| after(facts, Cause::HoldMissing, ENDED + MIN);
+        let turned = Facts {
+            turn: Turn::Running {
+                started_at: ENDED + 2 * MIN,
+                progress: Progress::Untapped,
+            },
+            ..open(missing(true))
+        };
+        assert_eq!(next_state(&turned, now, LIMITS), Transition::Stay);
+        assert_eq!(
+            next_state(&open(idle()), now, LIMITS),
+            Transition::Close(CloseReason::WorkCleared),
+            "the hold went in"
+        );
+        assert_eq!(
+            next_state(&open(with_ask(missing(true))), now, LIMITS),
+            Transition::Close(CloseReason::Superseded),
+            "idle with open work past N"
+        );
+        let gone = Facts {
+            gone: true,
+            ..open(missing(true))
+        };
+        assert_eq!(
+            next_state(&gone, now, LIMITS),
+            Transition::Close(CloseReason::AgentGone)
         );
     }
 }

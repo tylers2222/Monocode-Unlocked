@@ -10,7 +10,7 @@ use super::activity::{self, Activity};
 use super::live::{Live, Taken, Write};
 use super::provisioner;
 use super::state::{
-    self, Cause, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition, Wake,
+    self, Cause, CloseReason, Episode, Facts, Hold, OpenWork, Thresholds, Transition, Wake,
 };
 use super::tree::{self, Edge, Edges};
 use super::unseen;
@@ -57,7 +57,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            closed_active_ms        INTEGER,
            closed_wall_ms          INTEGER,
            close_reason            TEXT CHECK (close_reason IN
-                                     ('progress', 'work_cleared', 'agent_gone', 'act_no_effect')),
+                                     ('progress', 'work_cleared', 'agent_gone', 'act_no_effect',
+                                      'superseded')),
            CHECK ((closed_active_ms IS NULL) = (close_reason IS NULL))
          );
          CREATE UNIQUE INDEX IF NOT EXISTS alarm_episodes_open
@@ -487,6 +488,16 @@ pub(crate) fn outbox_key(episode: &str, level: i64) -> String {
     format!("alarm-{episode}-{level}")
 }
 
+/// The text an episode of `cause` quotes: the dialog's, or why the sleep
+/// hold is missing.
+fn quoted(cause: Cause, row: &Activity) -> Option<&str> {
+    match (cause, &row.hold) {
+        (Cause::Dialog, _) => row.dialog_text.as_deref(),
+        (Cause::HoldMissing, Hold::Missing { reason, .. }) => Some(reason),
+        _ => None,
+    }
+}
+
 /// One pass: its transaction, settings and time, and the chats it names.
 struct Pass<'a> {
     tx: &'a Connection,
@@ -537,9 +548,7 @@ impl Pass<'_> {
                 to.stored(),
                 cause.as_str(),
                 serde_json::to_string(&listed).unwrap_or_default(),
-                (cause == Cause::Dialog)
-                    .then_some(row.dialog_text.as_deref())
-                    .flatten(),
+                quoted(cause, row),
                 stalled_since,
                 crate::active_clock::wall_at(tx, stalled_since, (self.active, self.wall))?,
                 self.active,
@@ -547,6 +556,9 @@ impl Pass<'_> {
                 self.active + self.settings.escalate_minutes * MINUTE_MS,
             ],
         )?;
+        if cause == Cause::HoldMissing {
+            activity::hold_told(tx, &row.session)?;
+        }
         super::route::opened(tx, &mut self.notices, &id, &self.settings, self.active)
     }
 
@@ -649,6 +661,7 @@ impl Pass<'_> {
             children: Vec::new(),
             settled_at: None,
             wake_pending_since,
+            hold: row.hold.clone(),
             episode: self
                 .rows
                 .episodes
