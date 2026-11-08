@@ -15,7 +15,9 @@
 // app. A string argument "$card:<heading>" is the id of the card that an
 // earlier logged call filed or updated under that heading, "$prev.<field>" is
 // that field of the previous call's answer, "$<name>" is attribute <name>
-// of the prompt's first <mono_message> (else of its <mono_reminder>), and "$<name>@<text>" is attribute
+// of the prompt's first <mono_message> (else of its <mono_reminder>,
+// <mono_alarm> or <mono_sleep_hold>), "$model:<harness>[:<part>]" is a model
+// id models.list lists for that harness, and "$<name>@<text>" is attribute
 // <name> of the <mono_message> whose body starts with <text> (a turn can take
 // several messages, in either order). log.jsonl gets
 // one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
@@ -136,9 +138,11 @@ function fill(input, text, prev) {
     )?.[1];
   // A <mono_reminder> has no message, so its attributes come second (R11 `why`).
   const attribute = (name, body) =>
-    tagged("mono_message", name, body) ?? tagged("mono_reminder", name, body);
+    ["mono_message", "mono_reminder", "mono_alarm", "mono_sleep_hold"]
+      .map((tag) => tagged(tag, name, body))
+      .find((found) => found !== undefined);
   const value = (raw) => {
-    if (typeof raw !== "string" || !raw.startsWith("$") || raw.startsWith("$card:")) return raw;
+    if (typeof raw !== "string" || !/^\$(?!card:|model:)/.test(raw)) return raw;
     if (raw.startsWith("$prev.")) return payload(prev)?.[raw.slice(6)];
     const at = raw.indexOf("@");
     return at < 0 ? attribute(raw.slice(1)) : attribute(raw.slice(1, at), raw.slice(at + 1));
@@ -211,6 +215,23 @@ function heldOpen(rule) {
   return turns <= rule.hold ? new Promise(() => {}) : undefined;
 }
 
+/** "$model:<harness>[:<part>]": the first model id models.list lists for that
+ * harness, one containing <part> if any, since a probed catalog replaces the
+ * fallback one. */
+async function withModels(app, input) {
+  const isModel = (value) => typeof value === "string" && value.startsWith("$model:");
+  if (!Object.values(input).some(isModel)) return input;
+  const harnesses = payload(await cli(app, "models.list", {}))?.harnesses ?? [];
+  const pick = (raw) => {
+    const [, harness, part = ""] = raw.split(":");
+    const ids = harnesses.find((entry) => entry.id === harness)?.models.map((model) => model.id) ?? [];
+    return ids.find((id) => id.includes(part)) ?? ids[0] ?? raw;
+  };
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [key, isModel(value) ? pick(value) : value]),
+  );
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
@@ -225,7 +246,7 @@ async function runTurn(text, steer) {
   runExecs(rule?.exec ?? []);
   let prev;
   for (const call of rule?.calls ?? []) {
-    const input = fill(withCardIds(call.arguments), text, prev);
+    const input = await withModels(script.app, fill(withCardIds(call.arguments), text, prev));
     prev = call.action
       ? await act(script.app, call.action, input, call.request_id)
       : await server.call(call.tool, input);

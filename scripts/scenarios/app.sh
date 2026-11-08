@@ -35,6 +35,9 @@
 #                             turn ends with Claude Code's exit (app.test.sh)
 #   app.sh spaces [part]      ADE-182: Spaces end to end (spaces.sh), every
 #                             part or one of login, checkout, messages, grants
+#   app.sh alarms PART        ADE-260: alarms and sleep holds end to end
+#                             (tests/scenarios/alarms.sh), PART one of
+#                             stall, dialog, hold, omp
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps are never used; `approvals`
@@ -746,6 +749,7 @@ run_ceiling() {
 source "$SCENARIOS/approvals.sh"
 # ADE-89: run_ade89 and its helpers.
 source "$SCENARIOS/../../tests/scenarios/ade89.sh"
+source "$SCENARIOS/../../tests/scenarios/alarms.sh"
 
 [[ "${1:-}" != approvals* || "$EVAL_OS" == macos ]] || die "approvals is macOS only (GIGA_EVAL_SANDBOX, sandbox-exec)"
 
@@ -782,6 +786,7 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
+  alarms) run_alarms "${2:-}" ;;
   ade89-run) run_ade89 "$2" "$3" ;;
   ade89)
     [[ "${2:-}" =~ ^(kill|term|two)$ ]] || die "usage: app.sh ade89 kill|term|two [runs]"
@@ -789,5 +794,5 @@ case "${1:-}" in
     for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
     log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,41p' "$0"; exit 2 ;;
+  *) sed -n '2,44p' "$0"; exit 2 ;;
 esac
