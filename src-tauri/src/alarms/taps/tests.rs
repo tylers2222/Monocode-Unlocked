@@ -252,6 +252,30 @@ fn a_claude_task_list_is_open_while_a_created_task_is_not_done() {
     assert!(!done.todo_open, "#1 completed and #2 deleted");
 }
 
+// Defect (S1 r5 n3): a TaskUpdate of a task this child never saw created
+// (one from before a resume) rewrites the open-work flag from the task
+// list alone, so an unfinished TodoWrite list reads done.
+#[test]
+fn an_update_of_an_unseen_task_leaves_the_todo_list_open() {
+    let mut tap = Tap::new(Harness::Claude);
+    let todo = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_t","name":"TodoWrite","input":{"todos":[{"content":"B","status":"pending"}]}}]}}"#;
+    assert!(
+        feed(&mut tap, 0, &[(Pipe::Stdout, todo)])
+            .unwrap()
+            .todo_open
+    );
+    for (id, status) in [("toolu_u1", "completed"), ("toolu_u2", "deleted")] {
+        let input = format!(r#"{{"taskId":"9","status":"{status}"}}"#);
+        let [call, result] = task_tool(id, "TaskUpdate", &input, "Updated task #9");
+        feed(
+            &mut tap,
+            10_000,
+            &[(call.0, &call.1), (result.0, &result.1)],
+        );
+        assert!(tap.snapshot().todo_open, "{status}");
+    }
+}
+
 // Defect (review m1): Claude's keep_alive, which the front end drops
 // (claude.ts:644), moves the progress time, so a turn stalled on its API
 // stream is never hung.

@@ -43,14 +43,23 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The clock's launch, in the lease holder only: no turn outlives the app,
-/// so a turn the last run left running ended by `active_ms`, the stored
-/// active time, which a restart does not move. A process without the lease
-/// shares the holder's live rows and must leave them.
+/// The clock's launch, in the lease holder only: no turn or child outlives
+/// the app, so a turn the last run left running ended by `active_ms`, the
+/// stored active time, which a restart does not move, and so did every
+/// child's tools and background tasks: their exits died with the hub (S1
+/// r5 m2). A process without the lease shares the holder's live rows and
+/// must leave them.
 pub(crate) fn end_all_running(conn: &Connection, active_ms: i64) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE agent_activity SET turn_state = 'idle', turn_ended_active_ms = ?1
          WHERE turn_state = 'running'",
+        [active_ms],
+    )?;
+    conn.execute(
+        "UPDATE agent_activity SET tool_running = 0, background_running = 0,
+           background_ended_active_ms = CASE background_running
+             WHEN 1 THEN ?1 ELSE background_ended_active_ms END
+         WHERE tool_running = 1 OR background_running = 1",
         [active_ms],
     )?;
     Ok(())

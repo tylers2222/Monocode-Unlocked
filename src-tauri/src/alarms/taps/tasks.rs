@@ -36,7 +36,7 @@ impl TaskList {
     }
 
     /// Folds in the result of call `id`; whether a task is open after it,
-    /// when the call was one of the list's and named a task.
+    /// when the call was one of the list's and changed a task it knows.
     pub(super) fn result(&mut self, id: &str, result: &str) -> Option<bool> {
         let (tool, input) = self.calls.remove(id)?;
         let task = task_id(tool, &input, result)?;
@@ -48,12 +48,10 @@ impl TaskList {
                 self.open.insert(task, true);
             }
             (TaskTool::Update, Some("deleted")) => {
-                self.open.remove(&task);
+                self.open.remove(&task)?;
             }
             (TaskTool::Update, Some(status)) => {
-                if let Some(open) = self.open.get_mut(&task) {
-                    *open = super::status_open(status);
-                }
+                *self.open.get_mut(&task)? = super::status_open(status);
             }
             (TaskTool::Update, None) => return None,
         }

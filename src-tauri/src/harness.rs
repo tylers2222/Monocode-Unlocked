@@ -1175,7 +1175,7 @@ pub fn harness_spawn<R: Runtime>(
         return Err(SPAWN_CANCELLED.to_string());
     }
     if helper.is_none() {
-        alarms.spawned(&session_id, binary_provider.as_deref());
+        alarms.spawned(&session_id, tap.as_deref());
     }
 
     let stdout_app = app.clone();
@@ -3439,6 +3439,7 @@ pub(crate) mod tests {
             .unwrap();
         store.alarms.set_now(7_000);
         let tap = store.alarms.tap("s-1", Some("claude")).unwrap();
+        store.alarms.spawned("s-1", Some(&tap));
         (store, tap)
     }
 
@@ -3514,6 +3515,45 @@ pub(crate) mod tests {
                 .unwrap();
             let ended = (!running).then_some(7_000);
             assert_eq!(row, (running, ended), "forwarded: {forwarded}");
+        }
+    }
+
+    // Defect (S1 r5 m1): a replaced child's stdout ends after its successor
+    // was spawned, and its exit snapshot (its harness, its old progress, no
+    // tool running) is written over the successor's row, so an untapped
+    // successor reads as a frozen Claude tap, or a tapped one's silent tool
+    // as not running: hung at N either way.
+    #[test]
+    fn a_replaced_childs_exit_leaves_its_successors_row() {
+        for tapped in [false, true] {
+            let (store, old) = tapped_store();
+            old.line(
+                Pipe::Stdout,
+                r#"{"type":"system","subtype":"task_started","task_id":"bg1"}"#,
+            );
+            detector_pass(&store);
+            let new = tapped.then(|| store.alarms.tap("s-1", Some("claude")).unwrap());
+            store.alarms.spawned("s-1", new.as_ref());
+            if let Some(new) = &new {
+                new.line(
+                    Pipe::Stdout,
+                    r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"Bash"}}}"#,
+                );
+            }
+            read_stdout(&b""[..], Some(&old), |_| true);
+            detector_pass(&store);
+            let row: (Option<String>, bool, bool, Option<i64>) = store
+                .lock_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT harness, tool_running, background_running, background_ended_active_ms
+                       FROM agent_activity WHERE session_id = 's-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            let harness = tapped.then(|| "claude".to_string());
+            assert_eq!(row, (harness, tapped, false, None), "tapped: {tapped}");
         }
     }
 

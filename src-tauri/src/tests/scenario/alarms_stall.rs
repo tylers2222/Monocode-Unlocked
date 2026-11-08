@@ -15,7 +15,7 @@ use crate::mono_messages::{SessionId, Tool};
 use crate::mono_roster::MonoRole;
 
 pub(super) const P: &str = "/p/alarms";
-const SECOND: i64 = 1_000;
+pub(super) const SECOND: i64 = 1_000;
 pub(super) const MINUTE: i64 = 60 * SECOND;
 const HOUR: i64 = 60 * MINUTE;
 /// The default stall threshold N (design section 3).
@@ -66,13 +66,13 @@ pub(super) fn ran_a_turn(world: &mut World, session: &SessionId) {
     turn(world, session, &turn_id, false);
 }
 
-/// The stdio tap `harness_spawn` gives a Claude child of `session`.
+/// The stdio tap `harness_spawn` gives a Claude child of `session`, which
+/// it spawned now.
 pub(super) fn claude_tap(world: &World, session: &SessionId) -> ChildTap {
-    world
-        .store()
-        .alarms
-        .tap(session.as_str(), Some("claude"))
-        .unwrap()
+    let alarms = &world.store().alarms;
+    let tap = alarms.tap(session.as_str(), Some("claude")).unwrap();
+    alarms.spawned(session.as_str(), Some(&tap));
+    tap
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

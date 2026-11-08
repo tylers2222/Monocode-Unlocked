@@ -5,7 +5,7 @@
 //! takes the records and writes them in its own transaction.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::taps::{Harness, Pipe, Snapshot, Tap};
@@ -39,11 +39,33 @@ pub(crate) enum Edge {
 
 pub(crate) type Taken = HashMap<SessionId, Vec<Write>>;
 
+#[derive(Default)]
+struct Pending {
+    writes: Taken,
+    /// The tap of each session's current child; none while that child is
+    /// untapped. A replaced child's reader writes nothing more (S1 r5 m1).
+    current: HashMap<SessionId, u64>,
+}
+
+impl Pending {
+    fn push(&mut self, session: &SessionId, write: Write) {
+        let writes = self.writes.entry(session.clone()).or_default();
+        // A newer snapshot of the tap holds everything the older one did.
+        if let (Write::Tap(snapshot), Some(Write::Tap(last))) = (&write, writes.last_mut()) {
+            last.clone_from(snapshot);
+            return;
+        }
+        writes.push(write);
+    }
+}
+
 struct Hub {
     /// The active time of this process's clock at its last tick; -1 while
     /// no clock runs here (another process holds the lease and the rows).
     now: AtomicI64,
-    pending: Mutex<Taken>,
+    /// The id of the last tap made.
+    taps: AtomicU64,
+    pending: Mutex<Pending>,
     /// The detector fault logged last, so a lasting one logs once.
     fault: Mutex<Option<String>>,
 }
@@ -56,6 +78,7 @@ impl Default for Live {
     fn default() -> Self {
         Self(Arc::new(Hub {
             now: AtomicI64::new(-1),
+            taps: AtomicU64::new(0),
             pending: Mutex::default(),
             fault: Mutex::default(),
         }))
@@ -80,14 +103,18 @@ impl Live {
     }
 
     fn record(&self, session: &SessionId, write: Write) {
+        lock(&self.0.pending).push(session, write);
+    }
+
+    /// Records `snapshot` of tap `tap` when it reads `session`'s current
+    /// child; whether it did.
+    fn record_tap(&self, session: &SessionId, tap: u64, snapshot: Snapshot) -> bool {
         let mut pending = lock(&self.0.pending);
-        let writes = pending.entry(session.clone()).or_default();
-        // A newer snapshot of the tap holds everything the older one did.
-        if let (Write::Tap(snapshot), Some(Write::Tap(last))) = (&write, writes.last_mut()) {
-            last.clone_from(snapshot);
-            return;
+        let current = pending.current.get(session) == Some(&tap);
+        if current {
+            pending.push(session, Write::Tap(snapshot));
         }
-        writes.push(write);
+        current
     }
 
     /// Turn `turn_id` of `session` started or ended now.
@@ -105,35 +132,46 @@ impl Live {
         );
     }
 
-    /// A child of `session` by `provider` was spawned. Recorded for every
+    /// `session`'s child is now the one `tap` reads (`None`: one no tap
+    /// reads), and only `tap` writes its row from now on. Recorded for every
     /// harness, so a session that moves to one no tap reads is not judged
     /// by the last tap's row.
-    pub(crate) fn spawned(&self, session: &str, provider: Option<&str>) {
-        let (Some(session), Some(at)) = (SessionId::parse(session), self.now()) else {
+    pub(crate) fn spawned(&self, session: &str, tap: Option<&ChildTap>) {
+        let Some(session) = SessionId::parse(session) else {
             return;
         };
-        let harness = provider.and_then(Harness::parse);
-        self.record(&session, Write::Spawned { harness, at });
+        let mut pending = lock(&self.0.pending);
+        match tap {
+            Some(tap) => pending.current.insert(session.clone(), tap.id),
+            None => pending.current.remove(&session),
+        };
+        if let Some(at) = self.now() {
+            let harness = tap.map(|tap| tap.harness);
+            pending.push(&session, Write::Spawned { harness, at });
+        }
     }
 
     /// The tap for a child of `session` by `provider`, when this build
-    /// reads that harness.
+    /// reads that harness. It writes once `spawned` names it.
     pub(crate) fn tap(&self, session: &str, provider: Option<&str>) -> Option<ChildTap> {
+        let harness = provider.and_then(Harness::parse)?;
         Some(ChildTap {
             live: self.clone(),
             session: SessionId::parse(session)?,
-            tap: Mutex::new(Tap::new(provider.and_then(Harness::parse)?)),
+            id: self.0.taps.fetch_add(1, Ordering::Relaxed) + 1,
+            harness,
+            tap: Mutex::new(Tap::new(harness)),
         })
     }
 
     /// Everything recorded since the last take.
     pub(crate) fn take(&self) -> Taken {
-        std::mem::take(&mut *lock(&self.0.pending))
+        std::mem::take(&mut lock(&self.0.pending).writes)
     }
 
     /// A take whose writes did not commit goes back before what came since.
     pub(crate) fn put_back(&self, taken: Taken) {
-        let mut pending = lock(&self.0.pending);
+        let pending = &mut lock(&self.0.pending).writes;
         for (session, mut writes) in taken {
             let later = pending.remove(&session).unwrap_or_default();
             writes.extend(later);
@@ -161,6 +199,8 @@ impl Live {
 pub(crate) struct ChildTap {
     live: Live,
     session: SessionId,
+    id: u64,
+    harness: Harness,
     tap: Mutex<Tap>,
 }
 
@@ -180,8 +220,9 @@ impl ChildTap {
         };
         let mut tap = lock(&self.tap);
         if let Some(row) = read(&mut tap, now) {
-            tap.wrote(row.clone(), now);
-            self.live.record(&self.session, Write::Tap(row));
+            if self.live.record_tap(&self.session, self.id, row.clone()) {
+                tap.wrote(row, now);
+            }
         }
     }
 }
@@ -200,10 +241,11 @@ mod tests {
     #[test]
     fn records_wait_for_the_clock_and_a_newer_snapshot_replaces_the_last() {
         let live = Live::default();
+        let tap = live.tap("s-1", Some("claude")).unwrap();
+        live.spawned("s-1", Some(&tap));
         live.turn("s-1", "t1", Edge::Started);
         assert!(live.take().is_empty(), "no clock runs here");
         live.set_now(7);
-        let tap = live.tap("s-1", Some("claude")).unwrap();
         live.turn("s-1", "t1", Edge::Started);
         tap.line(Pipe::Stdout, r#"{"type":"system","subtype":"init"}"#);
         live.set_now(20_000);

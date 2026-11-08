@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::alarms_stall::{
     align, claude_tap, episodes, idle_open_work, ran_a_turn, start_lead, turn, Episode, MINUTE, N,
-    P, PASS, PERMISSION,
+    P, PASS, PERMISSION, SECOND,
 };
 use super::world::World;
 use crate::alarms::taps::Pipe;
@@ -73,7 +73,7 @@ fn a_turn_row_no_live_turn_holds_is_idle_by_the_next_pass() {
     let mut world = World::new("alarm-stale-turn");
     let mono = world.add_mono_in("als-mono", MonoRole::Mono, &[P]);
     let lead = start_lead(&world, &mono, "als-lead");
-    world.store().alarms.spawned(lead.as_str(), Some("claude"));
+    claude_tap(&world, &lead);
     // Past the launch's first pass, so each slice's pass is on its edge.
     world.advance(PASS);
     align(&mut world);
@@ -134,16 +134,25 @@ enum Finish {
     TaskEnds,
     /// The child is killed at 2N: its stdout ends (S1 r4 F2).
     ChildExits,
+    /// The app quits at 2N with the child, and starts again an hour later
+    /// (S1 r5 m2).
+    AppRestarts,
 }
 
 // Defect (S1 r3 M2, lead ruling b): a lead that backgrounds a wait and
 // ends its turn with its Mono's ask open alarms at N while the job runs;
 // or once the job ends, its clock does not restart from that end; or
-// (S1 r4 F2) a killed child's task reads as running, so the lead with
-// open work alarms at 4N instead of N after the kill.
+// (S1 r4 F2, r5 m2) a task of a child killed alone or with the app reads
+// as running, so the lead with open work alarms at 4N instead of N after
+// the kill or the relaunch.
 #[test]
 fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
-    for finish in [Finish::Never, Finish::TaskEnds, Finish::ChildExits] {
+    for finish in [
+        Finish::Never,
+        Finish::TaskEnds,
+        Finish::ChildExits,
+        Finish::AppRestarts,
+    ] {
         let mut world = World::new(&format!("alarm-idle-background-{finish:?}"));
         let mono = world.add_mono_in("aib-mono", MonoRole::Mono, &[P]);
         let lead = start_lead(&world, &mono, "aib-lead");
@@ -173,6 +182,11 @@ fn an_idle_lead_on_a_background_task_alarms_at_four_n_or_n_after_it_ends() {
             Finish::ChildExits => {
                 world.advance(N);
                 claude.exited();
+                (world.active_ms(), world.active_ms() + N)
+            }
+            Finish::AppRestarts => {
+                world.advance(N);
+                world.down(60 * MINUTE);
                 (world.active_ms(), world.active_ms() + N)
             }
         };
@@ -262,4 +276,34 @@ fn a_stall_that_began_before_an_eight_hour_sleep_keeps_its_wall_time() {
             assert_eq!(progress, Some(quiet_from), "{cause}");
         }
     }
+}
+
+// Defect (S2 r4 n1, S1 r5 m2): a progress line the tap's 5 s throttle held
+// is written only after an 8 h sleep, and its wall time is read at the
+// write, so the row's last progress reads 8 h late.
+#[test]
+fn progress_the_throttle_held_across_a_sleep_keeps_its_wall_time() {
+    let mut world = World::new("alarm-sleep-throttle");
+    let mono = world.add_mono_in("ast-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "ast-lead");
+    let claude = claude_tap(&world, &lead);
+    align(&mut world);
+    claude.line(Pipe::Stdout, r#"{"type":"assistant"}"#);
+    world.advance(SECOND);
+    claude.line(Pipe::Stdout, r#"{"type":"assistant"}"#);
+    let held = (Some(world.active_ms()), Some(world.now()));
+    world.sleep(8 * 60 * MINUTE);
+    world.advance(PASS);
+    claude.line(Pipe::Stdout, r#"{"type":"keep_alive"}"#);
+    world.advance(PASS);
+    let progress: (Option<i64>, Option<i64>) = world
+        .conn()
+        .query_row(
+            "SELECT last_progress_active_ms, last_progress_wall_ms FROM agent_activity
+              WHERE session_id = ?1",
+            [lead.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(progress, held);
 }
