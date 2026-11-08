@@ -8,3 +8,5 @@ ADE-29
 ADE-32
 ADE-33
 ADE-35
+# Alarms (ADE-260), approved by Tyler on card APR-99: exempt until the alarms work is done; remove in the alarms cleanup PR.
+ADE-260
