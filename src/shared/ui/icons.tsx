@@ -29,7 +29,10 @@ import ChartBreakoutSquareIcon from "@hugeicons/core-free-icons/ChartBreakoutSqu
 import CircleDashedIcon from "@hugeicons/core-free-icons/CircleDashedIcon";
 import CircleDotIcon from "@hugeicons/core-free-icons/CircleDotIcon";
 import CloudUploadIcon from "@hugeicons/core-free-icons/CloudUploadIcon";
+import AlarmClockIcon from "@hugeicons/core-free-icons/AlarmClockIcon";
 import Clock01Icon from "@hugeicons/core-free-icons/Clock01Icon";
+import HourglassIcon from "@hugeicons/core-free-icons/HourglassIcon";
+import MessageQuestionIcon from "@hugeicons/core-free-icons/MessageQuestionIcon";
 import ColorPickerIcon from "@hugeicons/core-free-icons/ColorPickerIcon";
 import Comment01Icon from "@hugeicons/core-free-icons/Comment01Icon";
 import CommentAdd01Icon from "@hugeicons/core-free-icons/CommentAdd01Icon";
@@ -193,7 +196,10 @@ export const CircleDot = wrap(CircleDotIcon, "CircleDot");
 export const CircleHelp = wrap(HelpCircleIcon, "CircleHelp");
 export const CircleX = wrap(CancelCircleIcon, "CircleX");
 export const CloudUpload = wrap(CloudUploadIcon, "CloudUpload");
+export const AlarmClock = wrap(AlarmClockIcon, "AlarmClock");
 export const Clock = wrap(Clock01Icon, "Clock");
+export const Hourglass = wrap(HourglassIcon, "Hourglass");
+export const MessageQuestion = wrap(MessageQuestionIcon, "MessageQuestion");
 export const Code = wrap(SourceCodeIcon, "Code");
 export const Copy = wrap(Copy01Icon, "Copy");
 export const CursorMagicSelection = wrap(

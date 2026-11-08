@@ -252,10 +252,17 @@ export function ExplorerMenu({
           ) : null}
         </span>
         {hasSubmenu ? (
-          <ChevronRight
-            className="size-3.5 shrink-0 text-content/50"
-            strokeWidth={1.75}
-          />
+          <>
+            {item.shortcut ? (
+              <span className="shrink-0 text-[11px] text-content/40">
+                {item.shortcut}
+              </span>
+            ) : null}
+            <ChevronRight
+              className={`size-3.5 shrink-0 text-content/50 ${item.shortcut ? "-ml-2" : ""}`}
+              strokeWidth={1.75}
+            />
+          </>
         ) : item.checked ? (
           <Check className="size-3.5 shrink-0" strokeWidth={2.25} />
         ) : item.shortcut ? (

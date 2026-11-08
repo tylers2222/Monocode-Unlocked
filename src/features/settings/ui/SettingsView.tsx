@@ -465,6 +465,11 @@ import {
   type RemoveWorktree,
 } from "../../source-control/model/worktrees";
 import type { Session } from "../../sessions/model/session";
+import {
+  stallMinuteChoices,
+  stallMinutesLabel,
+  type AlarmSettingsView,
+} from "../../alarms/model/alarmViews";
 
 /**
  * The `data-setting-id` Settings should reveal when it opens: one of the ids in
@@ -516,6 +521,8 @@ type Props = {
   monoStates?: ReadonlyMap<string, MonoState>;
   /** Unseen replies by Mono id, for the Spaces page's badges. */
   monoUnseenCounts?: ReadonlyMap<string, number>;
+  /** The Alarms page's starting values; without them the page shows nothing. */
+  alarmSettings?: AlarmSettingsView;
 };
 
 const NO_MONO_STATES: ReadonlyMap<string, MonoState> = new Map();
@@ -546,6 +553,7 @@ export function SettingsView({
   onCollapsedProjectRailModeChange,
   monoStates = NO_MONO_STATES,
   monoUnseenCounts,
+  alarmSettings,
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const [revealed, setRevealed] = useState<string | null>(anchor);
@@ -702,6 +710,9 @@ export function SettingsView({
                 />
               ) : null}
               {section === "monos" ? <MonosPage /> : null}
+              {section === "alarms" && alarmSettings ? (
+                <AlarmsPage initial={alarmSettings} />
+              ) : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
@@ -4702,6 +4713,99 @@ function formatDate(value: number): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * Frame 5: who hears about a stalled or sleeping agent, and how fast. Changes
+ * stay on the page until row U2 saves them to `alarm_settings`.
+ */
+function AlarmsPage({ initial }: { initial: AlarmSettingsView }) {
+  const [settings, setSettings] = useState(initial);
+  const set = (next: Partial<AlarmSettingsView>) =>
+    setSettings((current) => ({ ...current, ...next }));
+  return (
+    <>
+      <Group
+        title="Stall alarm"
+        description="An agent with open work and no progress for this long is stalled, and the one who gave it the work gets an alarm."
+      >
+        <Row
+          label="Stall after"
+          description="Default for every agent, 5 to 240 minutes. A session can set its own from its menu, and a lead can set its workers' with alarms.set. Dialogs alarm after 3 min, an untaken message after 2, and each level goes up after 15 min with no act."
+        >
+          <Select
+            label="Stall after"
+            value={String(settings.stallMinutes)}
+            options={stallMinuteChoices(settings.stallMinutes).map(
+              (minutes) => ({
+                value: String(minutes),
+                label: stallMinutesLabel(minutes),
+              }),
+            )}
+            onChange={(value) => set({ stallMinutes: Number(value) })}
+          />
+        </Row>
+        <Row
+          label="Root Giga"
+          description="Where a Mono's alarm goes when no Giga ask names who gave it the work."
+        >
+          <Select
+            label="Root Giga"
+            value={settings.rootGiga}
+            options={settings.gigas.map((giga) => ({
+              value: giga,
+              label: giga,
+            }))}
+            onChange={(rootGiga) => set({ rootGiga })}
+          />
+        </Row>
+      </Group>
+      <Group
+        title="Sleep hold"
+        description="Before an agent waits inside its turn (sleep, --watch, wait, a polling loop), whoever gave it the work must allow it. No answer in 2 min = refused."
+      >
+        <Row
+          label="Hold foreground waits"
+          description="Workers ask their lead, leads ask their Mono, Monos ask their Giga. Background starts never ask."
+        >
+          <Toggle
+            label="Hold foreground waits"
+            on={settings.holdForegroundWaits}
+            onChange={(holdForegroundWaits) => set({ holdForegroundWaits })}
+          />
+        </Row>
+        <Row
+          label="Hold Tyler's agents' sleeps"
+          description="Sessions you start and Gigas ask you, in the session and as a notification with Allow / Deny. Off: they sleep unasked."
+        >
+          <Toggle
+            label="Hold Tyler's agents' sleeps"
+            on={settings.holdTylerSleeps}
+            onChange={(holdTylerSleeps) => set({ holdTylerSleeps })}
+          />
+        </Row>
+        <ShortSleepRow seconds={settings.shortSleepSkipSeconds} />
+      </Group>
+    </>
+  );
+}
+
+/** Closed by Tyler (card #87), so a fact on the page, not a setting. */
+function ShortSleepRow({ seconds }: { seconds: number }) {
+  return (
+    <Row
+      label={<span className="opacity-60">Skip short sleeps</span>}
+      description={
+        <span className="opacity-60">
+          {`Let a sleep under ${seconds} s run without asking. A sleep in a loop, or repeated in one command, always asks, and waits with no bound never skip.`}
+        </span>
+      }
+    >
+      <span className="rounded-md border border-content/10 bg-content/5 px-2 py-1 text-[12px] text-content opacity-40">
+        {seconds} s
+      </span>
+    </Row>
+  );
 }
 
 /** Monos on or off, and each Mono the user has. */

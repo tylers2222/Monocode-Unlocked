@@ -18,7 +18,7 @@ export function SecondaryButton({
         danger
           ? "text-red-400 hover:border-red-400/40 hover:bg-red-400/10"
           : "text-content/70 hover:bg-content/10 hover:text-content"
-      } focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent`}
+      } focus-visible:outline-2 focus-visible:outline-accent aria-expanded:bg-selection aria-expanded:text-content disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent`}
     >
       {children}
     </button>

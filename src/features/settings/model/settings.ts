@@ -28,6 +28,7 @@ export type SettingsSectionId =
   | "mcp"
   | "skills"
   | "monos"
+  | "alarms"
   | "inbox"
   | "worktrees"
   | "archive";
@@ -48,6 +49,8 @@ export type SettingsSection = {
   description: string;
   /** Extra words search matches the section on, beyond its label. */
   keywords?: string;
+  /** Off the rail and out of search: its page has no data to show yet. */
+  unlisted?: boolean;
 };
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
@@ -136,6 +139,16 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "mono resident agent mascot claim project title bar",
   },
   {
+    id: "alarms",
+    group: "agents",
+    label: "Alarms",
+    description:
+      "Who hears about an agent that sits idle, hung, or asleep with work open, and how fast. Times count only while the Mac is awake.",
+    keywords: "stall idle hung sleep wait hold escalate notify",
+    // Row U2 lists it once the page reads and writes alarm_settings.
+    unlisted: true,
+  },
+  {
     id: "inbox",
     group: "workspace",
     label: "Inbox",
@@ -167,7 +180,9 @@ export function settingsSectionsByGroup(): {
 }[] {
   return SETTINGS_GROUPS.map((group) => ({
     ...group,
-    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id),
+    sections: SETTINGS_SECTIONS.filter(
+      (section) => section.group === group.id && !section.unlisted,
+    ),
   })).filter((group) => group.sections.length > 0);
 }
 
@@ -607,6 +622,7 @@ export function searchSettings(
   }
 
   for (const section of SETTINGS_SECTIONS) {
+    if (section.unlisted) continue;
     const score = matchScore(
       needle,
       section.label,
@@ -638,7 +654,9 @@ export const SETTINGS_SECTION_DEFAULT: SettingsSectionId = "general";
 export function isSettingsSectionId(
   value: unknown,
 ): value is SettingsSectionId {
-  return SETTINGS_SECTIONS.some((section) => section.id === value);
+  return SETTINGS_SECTIONS.some(
+    (section) => section.id === value && !section.unlisted,
+  );
 }
 
 export function settingsSectionLabel(id: SettingsSectionId): string {

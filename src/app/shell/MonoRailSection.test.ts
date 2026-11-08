@@ -9,6 +9,10 @@ import {
   saveMonoGiga,
 } from "../../features/monos/model/mono";
 import { loadMonosEnabled } from "../../features/settings/model/settings";
+import {
+  focusStallRow,
+  hoverStallMarker,
+} from "../../features/alarms/test/stallProbe";
 import { MonoRailSection } from "./MonoRailSection";
 
 let root: Root;
@@ -127,4 +131,48 @@ it("shows no Giga Monos section while there are none", () => {
   expect(
     container.querySelector('[role="group"][aria-label="Monos"]'),
   ).not.toBeNull();
+});
+
+it("marks a stalled mono with its minutes only when it has an episode", async () => {
+  // Defect: the rail marker shows before row U2 passes data, hides a stalled Mono, or hides on hover so its card never opens.
+  const mono = createMono();
+  render();
+  expect(container.querySelector('[aria-label="Stalled 22m"]')).toBeNull();
+
+  render({
+    stalls: new Map([
+      [
+        mono.id,
+        {
+          id: "al_9",
+          cause: "idle_open_work",
+          stalled: {
+            name: "Mono Reviewer",
+            actor: `mono:${mono.id}`,
+            role: "mono",
+          },
+          stalledSince: "13:58",
+          minutes: 22,
+          openWork: [],
+          sends: [],
+        },
+      ],
+    ]),
+  });
+  expect(
+    container.querySelector('[role="img"][aria-label="Stalled 22m"]')
+      ?.textContent,
+  ).toBe("22m");
+  expect(
+    container.querySelector('button[aria-label*="Stalled 22m"]'),
+  ).not.toBeNull();
+  // Defect: from the keyboard the row gives "Stalled 22m" but never why, or who was told, or Escape cannot close it.
+  expect(await focusStallRow(container, "Stalled 22m")).toEqual({
+    card: expect.stringMatching(/Cause.*No turn for 22 min.*Told/),
+    stallCards: 1,
+    closesOnEscape: true,
+  });
+  expect(await hoverStallMarker(container, "Stalled 22m")).toEqual({
+    card: expect.stringContaining("Mono Reviewer is stalled since 13:58"),
+  });
 });
