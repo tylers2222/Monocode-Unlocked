@@ -30,16 +30,22 @@ pub(crate) fn overlay(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
         Err(e) => return Err(format!("{}: {e}", real.join(CONFIG).display())),
     };
+    if hooks_off(&config) {
+        return Err(format!(
+            "codex hooks disabled in {}",
+            real.join(CONFIG).display()
+        ));
+    }
+    let canonical = real.canonicalize().unwrap_or_else(|_| real.to_path_buf());
     let mut name = DefaultHasher::new();
-    real.canonicalize()
-        .unwrap_or_else(|_| real.to_path_buf())
-        .hash(&mut name);
+    canonical.hash(&mut name);
     let dir = root.join(format!("{:016x}", name.finish()));
     crate::mono_home::Dir::create(&dir, &[])?;
     // Codex keys a hook's trust by its file's path as it resolves it.
     let dir = dir
         .canonicalize()
         .map_err(|e| format!("{}: {e}", dir.display()))?;
+    carry_trust(&mut config, &[&canonical, real], &dir)?;
     trust(&mut config, &dir.join(CONFIG), command, timeout_s)?;
     link_entries(real, &dir)?;
     super::install::write_if_changed(
@@ -47,6 +53,47 @@ pub(crate) fn overlay(
         &toml::to_string(&config).map_err(|e| e.to_string())?,
     )?;
     Ok(dir)
+}
+
+/// Whether `config` turns Codex hooks off: `features.hooks`, else its
+/// legacy name `features.codex_hooks`, is `false` (codex-cli 0.165.0).
+fn hooks_off(config: &toml::Table) -> bool {
+    let Some(features) = config.get("features").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    let flag = features
+        .get("hooks")
+        .or_else(|| features.get("codex_hooks"));
+    flag.and_then(toml::Value::as_bool) == Some(false)
+}
+
+/// The user's trust records for the home's own `config.toml` and
+/// `hooks.json`, each copied to the key of the same hook in `dir`, which
+/// links that `hooks.json` and holds that config. Only records the user
+/// already has are copied; a group keeps its index, since the hold's is
+/// appended after them.
+fn carry_trust(config: &mut toml::Table, homes: &[&Path], dir: &Path) -> Result<(), String> {
+    let Some(state) = config
+        .get("hooks")
+        .and_then(|hooks| hooks.get("state"))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(());
+    };
+    let mut carried = Vec::new();
+    for file in [CONFIG, "hooks.json"] {
+        let to = format!("{}:", dir.join(file).display());
+        for home in homes {
+            let from = format!("{}:", home.join(file).display());
+            for (key, entry) in state {
+                if let Some(hook) = key.strip_prefix(&from) {
+                    carried.push((format!("{to}{hook}"), entry.clone()));
+                }
+            }
+        }
+    }
+    table(table(config, "hooks")?, "state")?.extend(carried);
+    Ok(())
 }
 
 /// `config` with the hook appended to its `hooks.PreToolUse` groups and
@@ -211,6 +258,87 @@ mod tests {
         );
         for name in ["sessions", "auth.json"] {
             assert_eq!(std::fs::read_link(dir.join(name)).unwrap(), real.join(name));
+        }
+    }
+
+    // Defect: the overlay moves the user's config.toml and hooks.json to its
+    // own path, and Codex keys trust by that path, so every hook the user
+    // trusted turns untrusted and silently stops in app-spawned sessions.
+    #[test]
+    fn the_users_trusted_hooks_stay_trusted_in_the_overlay() {
+        let base = folder();
+        let real = base.join("codex");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
+        let at = |file: &str, group: u32| {
+            format!("{}:pre_tool_use:{group}:0", real.join(file).display())
+        };
+        let user = format!(
+            "[[hooks.PreToolUse]]\nmatcher = \"Bash\"\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"guard\"\n\n\
+             [[hooks.PreToolUse]]\nmatcher = \"Edit\"\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"lint\"\n\n\
+             [hooks.state.\"{}\"]\ntrusted_hash = \"sha256:guard\"\n\n\
+             [hooks.state.\"{}\"]\ntrusted_hash = \"sha256:json\"\n\n\
+             [hooks.state.\"/elsewhere/.codex/config.toml:pre_tool_use:0:0\"]\ntrusted_hash = \"sha256:project\"\n",
+            at("config.toml", 0),
+            at("hooks.json", 0),
+        );
+        std::fs::write(real.join(CONFIG), &user).unwrap();
+
+        let dir = overlay(&real, &base.join("overlays"), "hold", 150).unwrap();
+
+        let state = config_of(&dir)["hooks"]["state"]
+            .as_table()
+            .unwrap()
+            .clone();
+        let mine =
+            |file: &str, group: u32| format!("{}:pre_tool_use:{group}:0", dir.join(file).display());
+        let hash = |key: &str| {
+            state
+                .get(key)
+                .and_then(|entry| entry["trusted_hash"].as_str())
+        };
+        assert_eq!(hash(&mine("config.toml", 0)), Some("sha256:guard"));
+        assert_eq!(hash(&mine("hooks.json", 0)), Some("sha256:json"));
+        assert_eq!(
+            hash(&mine("config.toml", 1)),
+            None,
+            "the untrusted lint hook stays untrusted"
+        );
+        assert_eq!(
+            hash("/elsewhere/.codex/config.toml:pre_tool_use:0:0"),
+            Some("sha256:project")
+        );
+        assert_eq!(
+            hash(&mine("config.toml", 2)),
+            Some(trust_hash("hold", 150).as_str())
+        );
+        assert_eq!(
+            std::fs::read_link(dir.join("hooks.json")).unwrap(),
+            real.join("hooks.json")
+        );
+        assert_eq!(std::fs::read_to_string(real.join(CONFIG)).unwrap(), user);
+    }
+
+    // Defect: with Codex hooks turned off in the home's config, Codex loads
+    // no hook at all, yet the hold reads as installed (codex-cli 0.165.0:
+    // `hooks` wins over its legacy name `codex_hooks` when both are set).
+    #[test]
+    fn a_home_with_codex_hooks_off_is_an_error_naming_its_config() {
+        for (features, off) in [
+            ("[features]\nhooks = false", true),
+            ("[features]\ncodex_hooks = false", true),
+            ("[features]\nhooks = false\ncodex_hooks = true", true),
+            ("[features]\nhooks = true\ncodex_hooks = false", false),
+            ("[features]\nhooks = true", false),
+            ("model = \"gpt-5\"", false),
+        ] {
+            let base = folder();
+            let real = base.join("codex");
+            std::fs::create_dir_all(&real).unwrap();
+            std::fs::write(real.join(CONFIG), features).unwrap();
+            let made = overlay(&real, &base.join("o"), "hold", 150);
+            let want = format!("codex hooks disabled in {}", real.join(CONFIG).display());
+            assert_eq!(made.err(), off.then_some(want), "{features}");
         }
     }
 

@@ -579,6 +579,33 @@ mod tests {
         }
     }
 
+    // Defect: a Codex home with hooks turned off loads no hook, ours too,
+    // and the hold reads as installed.
+    #[test]
+    fn codex_hooks_turned_off_leave_the_hold_missing() {
+        for (config, off) in [
+            ("[features]\nhooks = false\n", true),
+            ("[features]\nhooks = true\n", false),
+            ("model = \"gpt-5\"\n", false),
+        ] {
+            let dir = folder();
+            let real = dir.join("codex");
+            std::fs::create_dir_all(&real).unwrap();
+            std::fs::write(real.join("config.toml"), config).unwrap();
+            let install = codex_at(EXE, &real, &dir.join("overlays"), args(&["app-server"]));
+            let want = if off {
+                HoldState::Missing(format!(
+                    "codex hooks disabled in {}",
+                    real.join("config.toml").display()
+                ))
+            } else {
+                HoldState::Installed
+            };
+            assert_eq!(install.state, want, "{config}");
+            assert_eq!(install.codex_home.is_some(), !off, "{config}");
+        }
+    }
+
     // Defect: omp gets no extension, keeps its 30 s handler timeout (which
     // cuts a hold short), or never learns where MonoCode is.
     #[test]
