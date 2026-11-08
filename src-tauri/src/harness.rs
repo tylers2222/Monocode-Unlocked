@@ -1072,6 +1072,17 @@ pub fn harness_spawn<R: Runtime>(
         }
         _ => args,
     };
+    // The sleep hold goes in a session's own child, not a helper's.
+    let (args, hold) = match binary_provider
+        .as_deref()
+        .and_then(crate::sleep_hold::Harness::parse)
+    {
+        Some(harness) if helper.is_none() => {
+            let install = crate::sleep_hold::install::for_spawn(&app, harness, args);
+            (install.args, Some((install.env, install.state)))
+        }
+        _ => (args, None),
+    };
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
     let devin_config = match devin_ask_edits {
@@ -1109,6 +1120,9 @@ pub fn harness_spawn<R: Runtime>(
     // the disk throttles (ADE-259).
     crate::background_work::configure_child(&mut cmd);
     apply_provider_account(&mut cmd, login.as_ref());
+    if let Some((env, _)) = &hold {
+        cmd.envs(env.iter().cloned());
+    }
     if let Some(store) = &codex_store {
         let private_path = serde_json::to_string(&store.home).map_err(|e| e.to_string())?;
         // Explicit config takes precedence over CODEX_SQLITE_HOME. Override
@@ -1179,7 +1193,7 @@ pub fn harness_spawn<R: Runtime>(
         return Err(SPAWN_CANCELLED.to_string());
     }
     if helper.is_none() {
-        alarms.spawned(&session_id, tap.as_deref());
+        alarms.spawned(&session_id, tap.as_deref(), hold.map(|(_, state)| state));
     }
 
     let stdout_app = app.clone();
@@ -3447,7 +3461,7 @@ pub(crate) mod tests {
             .unwrap();
         store.alarms.set_now(7_000);
         let tap = store.alarms.tap("s-1", Some("claude")).unwrap();
-        store.alarms.spawned("s-1", Some(&tap));
+        store.alarms.spawned("s-1", Some(&tap), None);
         (store, tap)
     }
 
@@ -3542,7 +3556,7 @@ pub(crate) mod tests {
             );
             detector_pass(&store);
             let new = tapped.then(|| store.alarms.tap("s-1", Some("claude")).unwrap());
-            store.alarms.spawned("s-1", new.as_ref());
+            store.alarms.spawned("s-1", new.as_ref(), None);
             if let Some(new) = &new {
                 new.line(
                     Pipe::Stdout,

@@ -12,8 +12,11 @@ use super::live::Write;
 use super::state::{Background, Dialog, DialogKind, Progress, Turn};
 use super::taps::{Harness, Snapshot};
 use crate::mono_messages::SessionId;
+use crate::sleep_hold::install::{HoldState, PING_GRACE_MS};
 
-/// `hold_state` and `hold_missing_reason` are the sleep hold's (row H).
+/// `hold_state`, `hold_missing_reason` and `hold_ping_due_active_ms` are the
+/// sleep hold's (rows H, P2): a due time is set while an omp session's
+/// extension has yet to report in.
 pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS agent_activity (
@@ -37,6 +40,7 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            wake_pending_since_active_ms INTEGER,
            hold_state              TEXT CHECK (hold_state IN ('installed', 'missing')),
            hold_missing_reason     TEXT,
+           hold_ping_due_active_ms INTEGER,
            updated_wall_ms         INTEGER NOT NULL,
            CHECK ((dialog_kind IS NULL) = (dialog_since_active_ms IS NULL))
          );",
@@ -129,9 +133,15 @@ pub(crate) fn apply(
     match write {
         Write::TurnStarted { turn_id, at } => turn_started(conn, session, turn_id, *at, wall),
         Write::TurnEnded { turn_id, at } => turn_ended(conn, session, turn_id, *at, wall),
-        Write::Spawned { harness, at } => {
-            spawned(conn, session, *harness, (*at, wall_at(*at)?), wall)
-        }
+        Write::Spawned { harness, hold, at } => spawned(
+            conn,
+            session,
+            *harness,
+            hold.as_ref(),
+            (*at, wall_at(*at)?),
+            wall,
+        ),
+        Write::HoldPinged => hold_pinged(conn, session, wall),
         Write::Tap(row) => write_tap(conn, session, row, wall_at(row.last_progress_at)?, wall),
         Write::PlanAnswered => plan_answered(conn, session, wall),
     }
@@ -197,31 +207,56 @@ fn turn_ended(
 
 /// A new child of `session` was spawned at `at`: what its tap knows starts
 /// over, and `harness` names the tap that reads it (`None`: no tap). A
-/// background task the old child was running ends at `at` (S1 r6 m1).
+/// background task the old child was running ends at `at` (S1 r6 m1). Its
+/// sleep hold starts over too (H risk 3): a respawn keeps no ping of the
+/// child before it.
 fn spawned(
     conn: &Connection,
     session: &SessionId,
     harness: Option<Harness>,
+    hold: Option<&HoldState>,
     (at, at_wall): (i64, i64),
     wall: i64,
 ) -> rusqlite::Result<()> {
+    let (state, reason, due) = match hold {
+        Some(HoldState::Installed) => (Some("installed"), None, None),
+        Some(HoldState::Missing(reason)) => (Some("missing"), Some(reason.as_str()), None),
+        Some(HoldState::AwaitingPing) => (None, None, Some(at + PING_GRACE_MS)),
+        None => (None, None, None),
+    };
     conn.execute(
         "INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms,
-           last_progress_active_ms, last_progress_wall_ms, updated_wall_ms)
-         VALUES (?1, ?2, ?3, ?3, ?5, ?4)
+           last_progress_active_ms, last_progress_wall_ms, hold_state, hold_missing_reason,
+           hold_ping_due_active_ms, updated_wall_ms)
+         VALUES (?1, ?2, ?3, ?3, ?5, ?6, ?7, ?8, ?4)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
            last_progress_wall_ms = ?5, tool_running = 0, background_running = 0,
            background_ended_active_ms = CASE background_running
              WHEN 1 THEN ?3 ELSE background_ended_active_ms END,
            todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL, dialog_text = NULL,
-           dialog_since_active_ms = NULL, updated_wall_ms = ?4",
+           dialog_since_active_ms = NULL, hold_state = ?6, hold_missing_reason = ?7,
+           hold_ping_due_active_ms = ?8, updated_wall_ms = ?4",
         params![
             session.as_str(),
             harness.map(Harness::as_str),
             at,
             wall,
-            at_wall
+            at_wall,
+            state,
+            reason,
+            due
         ],
+    )?;
+    Ok(())
+}
+
+/// The child's hold client reported in: its hook is installed.
+fn hold_pinged(conn: &Connection, session: &SessionId, wall: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agent_activity SET hold_state = 'installed', hold_missing_reason = NULL,
+           hold_ping_due_active_ms = NULL, updated_wall_ms = ?2
+         WHERE session_id = ?1",
+        params![session.as_str(), wall],
     )?;
     Ok(())
 }

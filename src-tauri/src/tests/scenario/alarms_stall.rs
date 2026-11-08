@@ -74,7 +74,7 @@ pub(super) fn ran_a_turn(world: &mut World, session: &SessionId) {
 pub(super) fn claude_tap(world: &World, session: &SessionId) -> ChildTap {
     let alarms = &world.store().alarms;
     let tap = alarms.tap(session.as_str(), Some("claude")).unwrap();
-    alarms.spawned(session.as_str(), Some(&tap));
+    alarms.spawned(session.as_str(), Some(&tap), None);
     tap
 }
 

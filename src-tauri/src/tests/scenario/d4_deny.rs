@@ -874,7 +874,19 @@ fn harness_spawn_child() {
             .collect::<Vec<_>>()
     };
 
-    assert_eq!(spawn("off", None), spawn_args("{}"), "off: args unchanged");
+    let mut off = spawn("off", None);
+    let settings: serde_json::Value = serde_json::from_str(&off[2]).unwrap();
+    off[2] = "{}".into();
+    assert_eq!(
+        off,
+        spawn_args("{}"),
+        "off: args unchanged but the settings"
+    );
+    assert_eq!(
+        settings.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["hooks"],
+        "off: no rules, only the sleep hold's hook (alarms P2)"
+    );
     turn_on(&data);
     assert!(has_rules(&spawn("on", None)), "on: rules and sandbox block");
     std::fs::write(data.join("agent-sandbox-on"), "").unwrap();

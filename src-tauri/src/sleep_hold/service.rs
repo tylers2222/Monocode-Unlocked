@@ -471,12 +471,14 @@ fn reply(row: &HoldRow) -> HoldWaitReply {
     }
 }
 
-/// Holds past their deadline with no decision become `timeout`. The
+/// Holds past their deadline with no decision become `timeout`, and an omp
+/// session whose extension stayed silent is missing its hold. The
 /// active clock's tick runs it; a read or an answer that finds its hold
 /// due runs it first, so no one sees a decision the log does not have.
 pub(crate) fn sweep(conn: &Connection, now: (i64, i64)) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let expired = store::expire(&tx, now)?;
+    super::install::mark_silent(&tx, now.0)?;
     tx.commit()?;
     if expired > 0 {
         changed();
@@ -621,16 +623,11 @@ pub(crate) fn call(
             })
             .map(|(hold, notices)| (json!({"ok": true, "hold": hold}), notices)),
         "wait" => wait(store, session, input, now, caller).map(|reply| (reply, Notices::default())),
-        "ping" => store
-            .lock_conn()
-            .map_err(Refusal::from)
-            .and_then(|conn| Ok(store::ping(&conn, session, now(&conn)?.wall)?))
-            .map(|recorded| {
-                (
-                    json!({"ok": true, "recorded": recorded}),
-                    Notices::default(),
-                )
-            }),
+        // Through the taps' queue, behind the spawn that resets the hold.
+        "ping" => Ok((
+            json!({"ok": true, "recorded": store.alarms.hold_pinged(session)}),
+            Notices::default(),
+        )),
         _ => Err(Refusal::InvalidInput(
             "Unknown hold action. The hold namespace takes request, wait and ping.".into(),
         )),

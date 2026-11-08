@@ -46,6 +46,7 @@ fn harness_spawn_starts_omp_without_mcp_servers_only_when_asked() {
 [ "$1" = --help ] && {{ echo '--mode=<value> text, json, rpc'; exit 0; }}
 [ "$1 $2" = "config get" ] && {{ echo '{{"key":"disabledExtensions","value":["skill:made-up","mcp:beta"],"type":"array"}}'; exit 0; }}
 [ "$1 $2" = "config path" ] && {{ echo '{}'; exit 0; }}
+printf '%s\n' "$MONOCODE_HOLD_EXE" "$MONOCODE_SHORT_SLEEP_SKIP_S" > env
 printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
             agent.display()
         ),
@@ -80,12 +81,27 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
         .map(|_| workdir)
     };
     let today = ["--mode", "rpc", "--resume", "abc"];
+    // The sleep hold's extension and timeout overlay (alarms P2) come first.
+    let hold = |argv: &[String]| {
+        assert_eq!(
+            (argv[0].as_str(), argv[2].as_str()),
+            ("-e", "--config"),
+            "{argv:?}"
+        );
+        argv[4..].to_vec()
+    };
 
-    assert_eq!(argv(&spawn("default", None).unwrap()), today);
+    let default = spawn("default", None).unwrap();
+    assert_eq!(hold(&argv(&default)), today);
+    assert_eq!(
+        std::fs::read_to_string(default.join("env")).unwrap(),
+        format!("{}\n10\n", std::env::current_exe().unwrap().display()),
+        "the extension finds MonoCode, the client the short-sleep setting"
+    );
 
     let none = argv(&spawn("none", Some("none")).unwrap());
     assert_eq!(none[0], "--config");
-    assert_eq!(none[2..], today);
+    assert_eq!(hold(&none[2..]), today);
     let overlay: Value = serde_json::from_str(&std::fs::read_to_string(&none[1]).unwrap()).unwrap();
     assert_eq!(
         overlay,
