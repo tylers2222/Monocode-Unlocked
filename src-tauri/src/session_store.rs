@@ -39,6 +39,8 @@ pub struct SessionStore {
     restorer: OnceLock<String>,
     /// Each window's Space, by window label (ADE-209): `spaces::window_space`.
     pub(crate) window_spaces: Mutex<HashMap<String, String>>,
+    /// What the stall taps saw since the last detector pass.
+    pub(crate) alarms: crate::alarms::Live,
 }
 
 impl SessionStore {
@@ -77,6 +79,7 @@ impl SessionStore {
             run_id: uuid::Uuid::new_v4().simple().to_string(),
             restorer: OnceLock::new(),
             window_spaces: Mutex::default(),
+            alarms: crate::alarms::Live::default(),
         })
     }
 
@@ -92,6 +95,7 @@ impl SessionStore {
             run_id: uuid::Uuid::new_v4().simple().to_string(),
             restorer: OnceLock::new(),
             window_spaces: Mutex::default(),
+            alarms: crate::alarms::Live::default(),
         })
     }
 

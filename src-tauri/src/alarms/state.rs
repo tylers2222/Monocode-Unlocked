@@ -2,6 +2,8 @@
 //! detector pass and never stored. `next_state` says what the pass does to
 //! the agent's one open episode. Every time is active-clock time.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::Serialize;
 
 /// The thresholds of design section 3, in active milliseconds.
@@ -24,15 +26,6 @@ pub(crate) enum Turn {
         started_at: i64,
         progress: Progress,
     },
-}
-
-impl Turn {
-    fn started_at(self) -> Option<i64> {
-        match self {
-            Turn::Idle { started_at, .. } => started_at,
-            Turn::Running { started_at, .. } => Some(started_at),
-        }
-    }
 }
 
 /// What the stdio taps saw of a running turn.
@@ -71,11 +64,55 @@ pub(crate) enum OpenWork {
     Todo,
 }
 
+/// What waits for the agent's provider to take it (section 4). An episode
+/// lists them beside its open work; a notice or queued item counts toward
+/// one episode only (lead N5).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Wake {
+    Message,
+    Reminder,
+    /// A Mono completion result not yet in its chat.
+    Notice {
+        id: String,
+    },
+    /// An item the chat's saved queue holds that no turn took.
+    Queued {
+        id: String,
+    },
+}
+
+/// A child agent as its parent sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildState {
+    /// Its turn runs, or a turn of one of its own descendants does.
+    Busy,
+    /// Its branch is quiet: `ended_at` is the last turn end in it.
+    Idle { ended_at: i64 },
+}
+
 /// A session the agent started or gave work to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Child {
     pub actor: String,
-    pub turn: Turn,
+    pub state: ChildState,
+}
+
+/// The agents that run a turn or have a descendant that does: WAITING is
+/// transitive (review M1). `parents` maps an agent to the agents that
+/// started it or gave it work; an agent seen twice ends a cycle.
+pub(crate) fn busy<'a>(
+    running: impl IntoIterator<Item = &'a str>,
+    parents: &HashMap<String, Vec<String>>,
+) -> HashSet<String> {
+    let mut busy = HashSet::new();
+    let mut next: Vec<String> = running.into_iter().map(str::to_string).collect();
+    while let Some(actor) = next.pop() {
+        if busy.insert(actor.clone()) {
+            next.extend(parents.get(&actor).into_iter().flatten().cloned());
+        }
+    }
+    busy
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -169,19 +206,53 @@ pub(crate) enum Transition {
     Close(CloseReason),
 }
 
-/// The open work of `facts`: its own, then each child whose turn ended
-/// after the agent's last turn started, so the agent has not seen it.
-pub(crate) fn open_work(facts: &Facts) -> Vec<OpenWork> {
-    let started = facts.turn.started_at();
-    let unhandled = facts.children.iter().filter_map(|child| match child.turn {
-        Turn::Idle { ended_at, .. } if started.is_none_or(|started| ended_at > started) => {
-            Some(OpenWork::ChildResult {
-                child: child.actor.clone(),
-            })
+/// When each child's result the agent has not handled came: an idle child
+/// that ended after the agent's last turn ended, so no turn of the agent
+/// has seen it (lead N4). One that ended during the agent's turn reached
+/// it as a completion notice.
+fn unhandled(facts: &Facts) -> impl Iterator<Item = (&Child, i64)> {
+    let ended = match facts.turn {
+        Turn::Idle { ended_at, .. } => Some(ended_at),
+        Turn::Running { .. } => None,
+    };
+    facts
+        .children
+        .iter()
+        .filter_map(move |child| match (child.state, ended) {
+            (ChildState::Idle { ended_at }, Some(ended)) if ended_at > ended => {
+                Some((child, ended_at))
+            }
+            (ChildState::Idle { .. } | ChildState::Busy, _) => None,
+        })
+}
+
+/// When `actor`'s branch went quiet: the last turn end of it and every
+/// descendant that has one (`ended`). A lead that waited on its worker is
+/// done from the worker's end, not from its own earlier one.
+pub(crate) fn settled_at(
+    actor: &str,
+    children: &HashMap<String, Vec<String>>,
+    ended: &HashMap<String, i64>,
+) -> Option<i64> {
+    let mut seen = HashSet::new();
+    let mut next = vec![actor.to_string()];
+    let mut latest = None;
+    while let Some(actor) = next.pop() {
+        if seen.insert(actor.clone()) {
+            latest = latest.max(ended.get(&actor).copied());
+            next.extend(children.get(&actor).into_iter().flatten().cloned());
         }
-        Turn::Idle { .. } | Turn::Running { .. } => None,
+    }
+    latest
+}
+
+/// The open work of `facts`: its own, then each child result it has not
+/// handled.
+pub(crate) fn open_work(facts: &Facts) -> Vec<OpenWork> {
+    let children = unhandled(facts).map(|(child, _)| OpenWork::ChildResult {
+        child: child.actor.clone(),
     });
-    facts.open_work.iter().cloned().chain(unhandled).collect()
+    facts.open_work.iter().cloned().chain(children).collect()
 }
 
 /// The dialog that blocks the agent now. A permission or question lives
@@ -254,19 +325,15 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
             if facts
                 .children
                 .iter()
-                .any(|child| matches!(child.turn, Turn::Running { .. }))
+                .any(|child| child.state == ChildState::Busy)
             {
                 return Status::Waiting;
             }
             if open_work(facts).is_empty() {
                 return Status::Idle;
             }
-            let child_ended = facts.children.iter().filter_map(|child| match child.turn {
-                Turn::Idle { ended_at, .. } => Some(ended_at),
-                Turn::Running { .. } => None,
-            });
             Status::IdleOpenWork {
-                since: child_ended.fold(ended_at, i64::max),
+                since: unhandled(facts).map(|(_, at)| at).fold(ended_at, i64::max),
             }
         }
     }
@@ -395,10 +462,10 @@ mod tests {
         }
     }
 
-    fn child(turn: Turn) -> Child {
+    fn child(state: ChildState) -> Child {
         Child {
             actor: "session:worker".into(),
-            turn,
+            state,
         }
     }
 
@@ -449,12 +516,9 @@ mod tests {
 
     // Defect: a lead waiting on its running worker alarms at N.
     #[test]
-    fn an_idle_agent_with_a_running_child_is_waiting_even_with_its_own_ask() {
+    fn an_idle_agent_with_a_busy_child_is_waiting_even_with_its_own_ask() {
         let facts = Facts {
-            children: vec![child(Turn::Running {
-                started_at: ENDED - MIN,
-                progress: Progress::Untapped,
-            })],
+            children: vec![child(ChildState::Busy)],
             ..with_ask(idle())
         };
         assert_eq!(status(&facts, ENDED + 60 * MIN, LIMITS), Status::Waiting);
@@ -482,15 +546,14 @@ mod tests {
     }
 
     // Defect: a worker's result the lead never saw is not open work, or the
-    // lead's clock starts at its own turn end, before the worker finished.
+    // lead's clock starts at its own turn end, before the worker finished;
+    // or (lead N4) a result that came during the lead's last turn, as a
+    // completion notice that turn took, alarms at N.
     #[test]
-    fn a_child_that_ended_after_the_agents_turn_started_is_open_work_from_its_end() {
+    fn a_child_that_ended_after_the_agents_turn_ended_is_open_work_from_its_end() {
         let done = ENDED + 5 * MIN;
         let facts = Facts {
-            children: vec![child(Turn::Idle {
-                started_at: Some(ENDED - 5 * MIN),
-                ended_at: done,
-            })],
+            children: vec![child(ChildState::Idle { ended_at: done })],
             ..idle()
         };
         assert_eq!(
@@ -506,14 +569,72 @@ mod tests {
                 stalled_since: done
             }
         );
-        let seen = Facts {
-            children: vec![child(Turn::Idle {
-                started_at: Some(ENDED - 30 * MIN),
-                ended_at: ENDED - 20 * MIN,
-            })],
-            ..idle()
-        };
-        assert_eq!(open_work(&seen), Vec::new(), "ended before the turn");
+        for (ended_at, when) in [
+            (ENDED - 20 * MIN, "before the turn"),
+            (ENDED - MIN, "during the turn"),
+            (ENDED, "with the turn"),
+        ] {
+            let seen = Facts {
+                children: vec![child(ChildState::Idle { ended_at })],
+                ..idle()
+            };
+            assert_eq!(open_work(&seen), Vec::new(), "ended {when}");
+            assert_eq!(
+                next_state(&seen, ENDED + 600 * MIN, LIMITS),
+                Transition::Stay,
+                "ended {when}"
+            );
+        }
+    }
+
+    // Defect (review M1): WAITING looks only at direct children, so a Mono
+    // whose idle lead waits on a running worker alarms at the lead's end
+    // + N; or a cycle in the started-by graph never ends.
+    #[test]
+    fn an_agent_is_busy_while_any_descendant_runs() {
+        let parents = HashMap::from([
+            (
+                "session:worker".to_string(),
+                vec!["session:lead".to_string()],
+            ),
+            ("session:lead".to_string(), vec!["mono:m".to_string()]),
+            ("mono:m".to_string(), vec!["mono:giga".to_string()]),
+            ("mono:giga".to_string(), vec!["mono:m".to_string()]),
+            ("session:other".to_string(), vec!["mono:x".to_string()]),
+        ]);
+        let busy = busy(["session:worker"], &parents);
+        let mut busy: Vec<&str> = busy.iter().map(String::as_str).collect();
+        busy.sort_unstable();
+        assert_eq!(
+            busy,
+            ["mono:giga", "mono:m", "session:lead", "session:worker"]
+        );
+    }
+
+    // Defect: once a lead's worker ends, the Mono's clock on the lead's
+    // result starts at the lead's own end, before it waited on the worker,
+    // so the Mono alarms at once.
+    #[test]
+    fn a_branch_settles_at_its_last_turn_end() {
+        let children = HashMap::from([
+            (
+                "session:lead".to_string(),
+                vec!["session:worker".to_string()],
+            ),
+            (
+                "session:worker".to_string(),
+                vec!["session:lead".to_string()],
+            ),
+        ]);
+        let ended = HashMap::from([
+            ("session:lead".to_string(), ENDED),
+            ("session:worker".to_string(), ENDED + 60 * MIN),
+        ]);
+        assert_eq!(
+            settled_at("session:lead", &children, &ended),
+            Some(ENDED + 60 * MIN)
+        );
+        assert_eq!(settled_at("session:none", &children, &ended), None);
     }
 
     // Defect: a permission dialog alarms before 3 minutes, never, or after

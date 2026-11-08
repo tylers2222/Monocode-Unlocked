@@ -1,11 +1,14 @@
 //! `agent_activity` (design section 8): one row per session that ran a turn
-//! or a tapped child on this build. Three writers own disjoint columns, so
-//! none overwrites another: the turn taps in `control.rs` (`turn_*`), the
-//! stdio tap in `harness.rs` (progress, tools, dialog, todo list) and the
-//! detector (`wake_pending_since_active_ms`).
+//! or a tapped child on this build. Only the detector pass writes it: the
+//! turn and stdio taps' records (`live`) own disjoint columns, so none
+//! overwrites another: turns (`turn_*`), the stdio tap (progress, tools,
+//! dialog, todo list) and the detector's own `wake_pending_since_active_ms`.
+
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection};
 
+use super::live::Write;
 use super::state::{Dialog, DialogKind, Progress, Turn};
 use super::taps::{Harness, Snapshot};
 use crate::mono_messages::SessionId;
@@ -34,21 +37,75 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            updated_wall_ms         INTEGER NOT NULL,
            CHECK ((dialog_kind IS NULL) = (dialog_since_active_ms IS NULL))
          );",
-    )?;
-    // No turn outlives the app, so a turn the last run left running ended
-    // by the stored active time, which a restart does not move.
+    )
+}
+
+/// The clock's launch, in the lease holder only: no turn outlives the app,
+/// so a turn the last run left running ended by `active_ms`, the stored
+/// active time, which a restart does not move. A process without the lease
+/// shares the holder's live rows and must leave them.
+pub(crate) fn end_all_running(conn: &Connection, active_ms: i64) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE agent_activity SET turn_state = 'idle',
-           turn_ended_active_ms = COALESCE((SELECT active_ms FROM mono_clock WHERE id = 1), 0)
+        "UPDATE agent_activity SET turn_state = 'idle', turn_ended_active_ms = ?1
          WHERE turn_state = 'running'",
-        [],
+        [active_ms],
     )?;
     Ok(())
 }
 
+/// Each pass, after it wrote the taps' records: a row still running a
+/// turn that `running` (`ControlHost`'s turns, read before the store lock)
+/// does not hold ended by `at`, however its end was lost (review M2). Its
+/// start was recorded in an earlier pass, while the turn was in `running`,
+/// so the turn is over. `recorded` names the sessions to leave: a turn
+/// record of theirs came after `running` was read.
+pub(crate) fn end_unless_running(
+    conn: &Connection,
+    running: &HashMap<String, String>,
+    recorded: &HashSet<&str>,
+    at: i64,
+    wall: i64,
+) -> rusqlite::Result<()> {
+    let rows = conn
+        .prepare("SELECT session_id, turn_id FROM agent_activity WHERE turn_state = 'running'")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (session, turn_id) in rows {
+        let live = turn_id.is_some() && running.get(&session) == turn_id.as_ref();
+        if live || recorded.contains(session.as_str()) {
+            continue;
+        }
+        conn.execute(
+            "UPDATE agent_activity SET turn_state = 'idle', turn_ended_active_ms = ?2,
+               updated_wall_ms = ?3
+             WHERE session_id = ?1 AND turn_state = 'running'",
+            params![session, at, wall],
+        )?;
+    }
+    Ok(())
+}
+
+/// One record of the taps, in the order they saw it.
+pub(crate) fn apply(
+    conn: &Connection,
+    session: &SessionId,
+    write: &Write,
+    wall: i64,
+) -> rusqlite::Result<()> {
+    match write {
+        Write::TurnStarted { turn_id, at } => turn_started(conn, session, turn_id, *at, wall),
+        Write::TurnEnded { turn_id, at } => turn_ended(conn, session, turn_id, *at, wall),
+        Write::Spawned { harness, at } => spawned(conn, session, *harness, *at, wall),
+        Write::Tap(row) => write_tap(conn, session, row, wall),
+    }
+}
+
 /// Turn `turn_id` of `session` was authorized at active time `at`. Each
-/// turn starts once, so a repeat of the same authorize moves nothing.
-pub(crate) fn turn_started(
+/// turn starts once, so a repeat of the same authorize moves nothing, nor
+/// does a start that lands after its own turn's end.
+fn turn_started(
     conn: &Connection,
     session: &SessionId,
     turn_id: &str,
@@ -69,8 +126,10 @@ pub(crate) fn turn_started(
 
 /// Turn `turn_id` of `session` ended at `at`. Only that turn's end counts:
 /// a kill's end that lands after the next turn started changes nothing,
-/// and a second end of one turn keeps the first.
-pub(crate) fn turn_ended(
+/// and a second end of one turn keeps the first. An idle row takes the id,
+/// so the start of a turn a kill ended before its start landed (review
+/// M2) finds its id ended and moves nothing.
+fn turn_ended(
     conn: &Connection,
     session: &SessionId,
     turn_id: &str,
@@ -81,9 +140,11 @@ pub(crate) fn turn_ended(
         "INSERT INTO agent_activity (session_id, turn_state, turn_id, turn_ended_active_ms,
            updated_wall_ms)
          VALUES (?1, 'idle', ?2, ?3, ?4)
-         ON CONFLICT (session_id) DO UPDATE SET turn_state = 'idle',
-           turn_ended_active_ms = ?3, updated_wall_ms = ?4
-         WHERE turn_state = 'running' AND turn_id = ?2",
+         ON CONFLICT (session_id) DO UPDATE SET turn_state = 'idle', turn_id = ?2,
+           turn_ended_active_ms = CASE WHEN turn_state = 'running' THEN ?3
+                                       ELSE turn_ended_active_ms END,
+           updated_wall_ms = ?4
+         WHERE (turn_state = 'running' AND turn_id = ?2) OR turn_state = 'idle'",
         params![session.as_str(), turn_id, at, wall],
     )?;
     Ok(())
@@ -91,7 +152,7 @@ pub(crate) fn turn_ended(
 
 /// A new child of `session` was spawned at `at`: what its tap knows starts
 /// over, and `harness` names the tap that reads it (`None`: no tap).
-pub(crate) fn spawned(
+fn spawned(
     conn: &Connection,
     session: &SessionId,
     harness: Option<Harness>,
@@ -110,7 +171,7 @@ pub(crate) fn spawned(
     Ok(())
 }
 
-pub(crate) fn write_tap(
+fn write_tap(
     conn: &Connection,
     session: &SessionId,
     row: &Snapshot,
@@ -235,4 +296,48 @@ pub(crate) fn forget(conn: &Connection, session: &SessionId) -> rusqlite::Result
         [session.as_str()],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn_of(conn: &Connection) -> Turn {
+        all(conn).unwrap().remove(0).turn
+    }
+
+    // Defect (review M2): a kill whose end is written before its turn's
+    // start leaves the row running for a turn that is over; or a late end
+    // of an old turn idles the turn that replaced it.
+    #[test]
+    fn a_start_after_its_own_turns_end_moves_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_table(&conn).unwrap();
+        let session = SessionId::parse("s-1").unwrap();
+        turn_started(&conn, &session, "t1", 10, 0).unwrap();
+        turn_ended(&conn, &session, "t1", 20, 0).unwrap();
+        turn_ended(&conn, &session, "t2", 30, 0).unwrap();
+        turn_started(&conn, &session, "t2", 31, 0).unwrap();
+        assert_eq!(
+            turn_of(&conn),
+            Turn::Idle {
+                started_at: Some(10),
+                ended_at: 20
+            }
+        );
+        turn_started(&conn, &session, "t3", 40, 0).unwrap();
+        turn_ended(&conn, &session, "t2", 50, 0).unwrap();
+        assert!(matches!(
+            turn_of(&conn),
+            Turn::Running { started_at: 40, .. }
+        ));
+        turn_ended(&conn, &session, "t3", 60, 0).unwrap();
+        assert_eq!(
+            turn_of(&conn),
+            Turn::Idle {
+                started_at: Some(40),
+                ended_at: 60
+            }
+        );
+    }
 }

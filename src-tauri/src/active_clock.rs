@@ -9,7 +9,6 @@
 
 use std::fs::{File, TryLockError};
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -49,17 +48,6 @@ const PERSIST_EVERY_NS: u64 = 5_000_000_000;
 const SLEEP_MIN_NS: u64 = 2_000_000_000;
 
 const NS_PER_MS: u64 = 1_000_000;
-
-/// The active time of this process's clock at its last tick, for the
-/// alarm taps on threads that hold no clock; -1 while no clock runs here.
-static LATEST_ACTIVE_MS: AtomicI64 = AtomicI64::new(-1);
-
-/// `None` when another process holds the lease: it runs the detector, and
-/// this one's taps would measure against no clock.
-pub(crate) fn latest_active_ms() -> Option<i64> {
-    let latest = LATEST_ACTIVE_MS.load(Ordering::Relaxed);
-    (latest >= 0).then_some(latest)
-}
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -123,6 +111,7 @@ impl<C: Clock> ActiveClock<C> {
             }
             None => 0,
         };
+        crate::alarms::end_all_running(&tx, active_ms)?;
         tx.execute(
             "INSERT INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms)
              VALUES (1, ?1, ?2, ?3)
@@ -131,7 +120,6 @@ impl<C: Clock> ActiveClock<C> {
         )?;
         tx.commit()?;
         let active_ns = u64::try_from(active_ms).unwrap_or(0) * NS_PER_MS;
-        LATEST_ACTIVE_MS.store(active_ms, Ordering::Relaxed);
         Ok(Self {
             _lease: lease,
             uptime_ns: now.uptime_ns,
@@ -147,8 +135,12 @@ impl<C: Clock> ActiveClock<C> {
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep. Then it enqueues the reminders
     /// that fell due (`ask_scheduler::run`), runs the stall detector once
-    /// per 5 s of active time, and names the chats of both.
-    pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<Notices> {
+    /// per 5 s of active time on `alarms`, and names the chats of both.
+    pub(crate) fn tick(
+        &mut self,
+        conn: &Connection,
+        alarms: &crate::alarms::Sources,
+    ) -> rusqlite::Result<Notices> {
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
@@ -174,15 +166,20 @@ impl<C: Clock> ActiveClock<C> {
             self.persisted_ns = self.active_ns;
         }
         let active = self.active_ms();
-        LATEST_ACTIVE_MS.store(active, Ordering::Relaxed);
+        alarms.live.set_now(active);
         let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
         let slice = active / crate::alarms::PASS_MS;
         if self.alarm_slice != Some(slice) {
             self.alarm_slice = Some(slice);
             // A detector fault must not stop the reminders or the clock.
-            match crate::alarms::run(conn, active, now.wall_ms) {
+            match crate::alarms::run(conn, active, now.wall_ms, alarms) {
                 Ok(alarms) => notices.merge(alarms),
-                Err(error) => eprintln!("Could not run the stall detector: {error}"),
+                Err(error) => {
+                    let error = error.to_string();
+                    if alarms.live.new_fault(Some(error.clone())) {
+                        eprintln!("Could not run the stall detector: {error}");
+                    }
+                }
             }
         }
         Ok(notices)
@@ -242,13 +239,27 @@ pub(crate) fn init<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
         eprintln!("Another MonoCode process runs the active clock for this data folder");
         return Ok(());
     };
+    // Taps record from launch, not from the first tick.
+    app.state::<SessionStore>()
+        .alarms
+        .set_now(clock.active_ms());
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
-        let ticked = app
-            .state::<SessionStore>()
-            .lock_conn()
-            .and_then(|conn| clock.tick(&conn).map_err(|error| error.to_string()));
+        // Before the store lock (design 5.3 lock order).
+        let running = app
+            .try_state::<crate::control::ControlHost>()
+            .and_then(|host| host.active_turns());
+        let store = app.state::<SessionStore>();
+        let alarms = crate::alarms::Sources {
+            live: &store.alarms,
+            running: running.as_ref(),
+        };
+        let ticked = store.lock_conn().and_then(|conn| {
+            clock
+                .tick(&conn, &alarms)
+                .map_err(|error| error.to_string())
+        });
         // After the store lock is let go, as every command emits (design 5.3).
         match ticked {
             Ok(notices) => notices.emit(&app),

@@ -130,6 +130,17 @@ fn newest_asker(conn: &Connection, child: &Actor, level: i64) -> rusqlite::Resul
     Ok(mono_actor(parent))
 }
 
+fn archived(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
+    let archived: Option<bool> = conn
+        .query_row(
+            "SELECT archived FROM sessions WHERE id = ?1",
+            [session.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(archived.unwrap_or(true))
+}
+
 pub(crate) fn lineage(
     conn: &Connection,
     actor: &Actor,
@@ -137,6 +148,10 @@ pub(crate) fn lineage(
 ) -> rusqlite::Result<Lineage> {
     Ok(match actor {
         Actor::Session(session) => match mono_messages::session_level(conn, session)? {
+            // An archived lead hears nothing, so its own provisioner does.
+            Some(SessionLevel::Worker { lead }) if archived(conn, &lead)? => {
+                return lineage(conn, &Actor::Session(lead), root_setting);
+            }
             Some(SessionLevel::Worker { lead }) => Lineage::Worker { lead },
             Some(SessionLevel::Lead) | None => Lineage::Lead {
                 starter: starter(conn, session)?,

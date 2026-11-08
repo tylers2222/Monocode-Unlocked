@@ -458,7 +458,7 @@ text_enum!(all RejectCode {
 macro_rules! text_id {
     ($(#[$meta:meta])* $name:ident, $valid:expr) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
         impl $name {
@@ -1498,6 +1498,20 @@ fn texts<'a>(data: &'a Value, key: &str) -> impl Iterator<Item = &'a str> {
 /// `data_json.sessionId`, a Mono's current chat.
 fn chat_of(data: &Value) -> Option<SessionId> {
     data.get("sessionId")?.as_str().and_then(SessionId::parse)
+}
+
+/// Every Mono with a current chat, and that chat.
+pub(crate) fn mono_chats(conn: &Connection) -> rusqlite::Result<Vec<(MonoId, SessionId)>> {
+    let monos = conn
+        .prepare("SELECT id, data_json FROM monos")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(monos
+        .into_iter()
+        .filter_map(|(id, data)| Some((MonoId::parse(&id)?, chat_of(&json_of(&data))?)))
+        .collect())
 }
 
 /// The Mono whose current chat is `chat`.

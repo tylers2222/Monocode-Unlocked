@@ -2,14 +2,16 @@
 //! the detector pass that turns each agent's rows into `Facts`, runs
 //! `next_state` and writes what it says in one transaction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
 use super::activity::{self, Activity};
+use super::live::{Live, Taken, Write};
 use super::provisioner::{self, Provisioner};
 use super::state::{
-    self, Cause, Child, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition,
+    self, Cause, Child, ChildState, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition,
+    Wake,
 };
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
@@ -50,6 +52,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            ON alarm_episodes (actor) WHERE closed_active_ms IS NULL;
          CREATE INDEX IF NOT EXISTS alarm_episodes_stalled
            ON alarm_episodes (stalled_since_wall_ms);
+         CREATE INDEX IF NOT EXISTS alarm_episodes_actor
+           ON alarm_episodes (actor, closed_active_ms);
          CREATE TABLE IF NOT EXISTS alarm_sends (
            episode_id        TEXT NOT NULL REFERENCES alarm_episodes(id),
            level             INTEGER NOT NULL CHECK (level >= 1),
@@ -68,6 +72,22 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            actor         TEXT PRIMARY KEY,
            stall_minutes INTEGER NOT NULL CHECK (stall_minutes BETWEEN 5 AND 240)
          );",
+    )
+}
+
+/// The indexes the pass's queries on other modules' tables use, so a pass
+/// reads the few rows that wait, not every sent or answered one. After
+/// those tables, and after a rebuild of any of them.
+pub(crate) fn ensure_indexes(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS mono_outbox_unsent
+           ON mono_outbox (recipient) WHERE sent_at IS NULL;
+         CREATE INDEX IF NOT EXISTS mono_messages_untaken
+           ON mono_messages (handled_by_session)
+           WHERE delivered_at IS NULL AND status IN ('open', 'delivered');
+         CREATE INDEX IF NOT EXISTS mono_messages_started
+           ON mono_messages (to_session_id, from_mono_id)
+           WHERE tool = 'start_session' AND status <> 'rejected';",
     )
 }
 
@@ -170,41 +190,29 @@ impl Settings {
     }
 }
 
-fn agent_stall_minutes(conn: &Connection, actor: &Actor) -> rusqlite::Result<Option<i64>> {
-    conn.query_row(
-        "SELECT stall_minutes FROM agent_alarm_settings WHERE actor = ?1",
-        [actor.to_string()],
-        |row| row.get(0),
-    )
-    .optional()
-}
-
-/// Each Mono's current chat, so a pass resolves every session once.
-fn mono_chats(conn: &Connection) -> rusqlite::Result<HashMap<String, MonoId>> {
-    let rows = conn
-        .prepare("SELECT id FROM monos")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut chats = HashMap::new();
-    for mono in rows.iter().filter_map(|id| MonoId::parse(id)) {
-        if let Some(chat) = mono_messages::mono_row(conn, &mono)?.and_then(|row| row.chat) {
-            chats.insert(chat.as_str().to_string(), mono);
-        }
-    }
-    Ok(chats)
-}
-
-/// The session was archived or deleted. A Mono's current chat is a session
-/// row too.
-fn gone(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
-    let archived: Option<bool> = conn
-        .query_row(
-            "SELECT archived FROM sessions WHERE id = ?1",
-            [session.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(archived.unwrap_or(true))
+/// What one pass reads: one query per fact type (lead decision M3/F3), not
+/// one per agent.
+struct Rows {
+    activity: Vec<Activity>,
+    /// Each Mono's current chat session, and the Mono.
+    chats: HashMap<String, MonoId>,
+    /// Each watched session that has a row, and whether it is archived.
+    archived: HashMap<String, bool>,
+    /// The open asks: (id, parent actor, child actor).
+    asks: Vec<(String, String, String)>,
+    /// Who started each agent or gave it work, and whom each did.
+    parents: HashMap<String, Vec<String>>,
+    children: HashMap<String, Vec<String>>,
+    /// The sessions a message waits for that no provider took.
+    untaken: HashSet<String>,
+    /// The recipients an outbox reminder or alarm waits for.
+    waiting: HashSet<String>,
+    /// Mono completion results not yet in a chat, by chat session.
+    notices: HashMap<String, Vec<String>>,
+    /// The items each watched session's saved queue holds.
+    queued: HashMap<String, Vec<String>>,
+    episodes: HashMap<String, (String, Episode)>,
+    stall_minutes: HashMap<String, i64>,
 }
 
 fn strings(
@@ -217,111 +225,193 @@ fn strings(
         .collect()
 }
 
-/// The agent's own open work (section 4) that its rows hold: its open asks
-/// and an unfinished todo list. A child's result comes from its children.
-fn own_open_work(
+fn pairs(
     conn: &Connection,
-    actor: &Actor,
-    row: &Activity,
-) -> rusqlite::Result<Vec<OpenWork>> {
-    let asks = strings(
-        conn,
-        "SELECT id FROM mono_asks WHERE child_actor = ?1 AND state = 'open' ORDER BY id",
-        [actor.to_string()],
-    )?;
-    let mut work: Vec<OpenWork> = asks.into_iter().map(|id| OpenWork::Ask { id }).collect();
-    if row.todo_open {
-        work.push(OpenWork::Todo);
-    }
-    Ok(work)
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    conn.prepare(sql)?
+        .query_map(params, |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
 }
 
-/// The sessions and Monos `actor` started or gave an open ask to.
-fn child_actors(conn: &Connection, actor: &Actor) -> rusqlite::Result<Vec<String>> {
-    let mut children = strings(
+fn grouped(rows: Vec<(String, String)>) -> HashMap<String, Vec<String>> {
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for (key, value) in rows {
+        groups.entry(key).or_default().push(value);
+    }
+    groups
+}
+
+/// The parent -> child edges: open asks, and the leads and Monos that
+/// started a watched session (one with no row runs no turn here).
+fn edges(
+    conn: &Connection,
+    asks: &[(String, String, String)],
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut edges: Vec<(String, String)> = asks
+        .iter()
+        .map(|(_, parent, child)| (parent.clone(), child.clone()))
+        .collect();
+    edges.extend(pairs(
         conn,
-        "SELECT child_actor FROM mono_asks WHERE parent_actor = ?1 AND state = 'open'",
-        [actor.to_string()],
-    )?;
-    let started = match actor {
-        Actor::Session(session) => strings(
-            conn,
-            "SELECT id FROM sessions WHERE lead_session_id = ?1 AND archived = 0",
-            [session.as_str()],
-        )?,
-        Actor::Mono(mono) => strings(
-            conn,
-            "SELECT DISTINCT to_session_id FROM mono_messages
-              WHERE tool = 'start_session' AND status <> 'rejected'
-                AND from_mono_id = ?1 AND to_session_id IS NOT NULL",
-            [mono.as_str()],
-        )?,
-    };
-    children.extend(
-        started
+        "SELECT 'session:' || s.lead_session_id, 'session:' || s.id
+           FROM agent_activity a JOIN sessions s ON s.id = a.session_id
+          WHERE s.lead_session_id IS NOT NULL AND s.archived = 0",
+        [],
+    )?);
+    edges.extend(pairs(
+        conn,
+        "SELECT DISTINCT 'mono:' || m.from_mono_id, 'session:' || m.to_session_id
+           FROM agent_activity a JOIN mono_messages m ON m.to_session_id = a.session_id
+          WHERE m.tool = 'start_session' AND m.status <> 'rejected'
+            AND m.from_mono_id IS NOT NULL",
+        [],
+    )?);
+    edges.sort();
+    edges.dedup();
+    Ok(edges)
+}
+
+impl Rows {
+    fn load(conn: &Connection) -> rusqlite::Result<Self> {
+        let chats = mono_messages::mono_chats(conn)?
             .into_iter()
-            .map(|session| format!("session:{session}")),
-    );
-    children.sort();
-    children.dedup();
-    Ok(children)
-}
-
-/// Whether a wake for the agent waits for its provider (section 4): a
-/// message no provider took, or an outbox reminder or alarm, or a Mono's
-/// completion result not yet in its chat.
-fn wake_pending(conn: &Connection, actor: &Actor, chat: &SessionId) -> rusqlite::Result<bool> {
-    // `mono_messages::unqueued`'s rows, plus those a slot holds untaken. A
-    // blocked question travels as an outbox row, not as its message.
-    let message: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM mono_messages m
-           WHERE m.handled_by_session = ?1 AND m.status IN ('open', 'delivered')
-             AND m.delivered_at IS NULL AND m.tool IN ('send_message', 'reply')
-             AND NOT EXISTS (SELECT 1 FROM mono_ask_events e WHERE e.message_id = m.id
-                              AND e.kind = 'question' AND e.blocked = 1))",
-        [chat.as_str()],
-        |row| row.get(0),
-    )?;
-    if message || crate::ask_scheduler::waits(conn, chat)? {
-        return Ok(true);
-    }
-    let claimed: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM mono_outbox
-           WHERE recipient IN (?1, ?2) AND sent_at IS NULL AND claimed_by IS NOT NULL)",
-        params![actor.to_string(), Actor::Session(chat.clone()).to_string()],
-        |row| row.get(0),
-    )?;
-    if claimed {
-        return Ok(true);
-    }
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM mono_completions
-           WHERE json_extract(saved_json, '$.origin.monoId') = ?1)",
-        [chat.as_str()],
-        |row| row.get(0),
-    )
-}
-
-fn open_episode(conn: &Connection, actor: &Actor) -> rusqlite::Result<Option<(String, Episode)>> {
-    let row: Option<(String, String, i64)> = conn
-        .query_row(
-            "SELECT id, cause, stalled_since_active_ms FROM alarm_episodes
-              WHERE actor = ?1 AND closed_active_ms IS NULL",
-            [actor.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    Ok(row.and_then(|(id, cause, stalled_since)| {
-        Cause::parse(&cause).map(|cause| {
-            (
-                id,
-                Episode {
-                    cause,
-                    stalled_since,
-                },
-            )
+            .map(|(mono, chat)| (chat.as_str().to_string(), mono))
+            .collect();
+        let archived = conn
+            .prepare(
+                "SELECT a.session_id, COALESCE(s.archived, 1) FROM agent_activity a
+                   LEFT JOIN sessions s ON s.id = a.session_id",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let asks: Vec<(String, String, String)> = conn
+            .prepare("SELECT id, parent_actor, child_actor FROM mono_asks WHERE state = 'open' ORDER BY id")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let edges = edges(conn, &asks)?;
+        let parents = grouped(
+            edges
+                .iter()
+                .map(|(parent, child)| (child.clone(), parent.clone()))
+                .collect(),
+        );
+        let children = grouped(edges);
+        // `mono_messages::unqueued`'s rows, plus those a slot holds untaken.
+        // A blocked question travels as an outbox row, not as its message.
+        let untaken = strings(
+            conn,
+            "SELECT DISTINCT m.handled_by_session FROM mono_messages m
+              WHERE m.delivered_at IS NULL AND m.status IN ('open', 'delivered')
+                AND m.handled_by_session IS NOT NULL AND m.tool IN ('send_message', 'reply')
+                AND NOT EXISTS (SELECT 1 FROM mono_ask_events e WHERE e.message_id = m.id
+                                 AND e.kind = 'question' AND e.blocked = 1)",
+            [],
+        )?
+        .into_iter()
+        .collect();
+        let notices = grouped(pairs(
+            conn,
+            "SELECT json_extract(saved_json, '$.origin.monoId'),
+                    COALESCE(json_extract(saved_json, '$.notice'), request_id)
+               FROM mono_completions
+              WHERE json_valid(saved_json) AND json_extract(saved_json, '$.origin.monoId') IS NOT NULL",
+            [],
+        )?);
+        // A queue the user paused waits on purpose.
+        let queued = grouped(pairs(
+            conn,
+            "SELECT s.id, json_extract(q.value, '$.id')
+               FROM agent_activity a JOIN sessions s ON s.id = a.session_id,
+                    json_each(s.queued_messages_json) q
+              WHERE s.queued_messages_json <> '[]' AND json_valid(s.queued_messages_json)
+                AND COALESCE(s.queue_status, 'active') <> 'paused'
+                AND json_extract(q.value, '$.id') IS NOT NULL",
+            [],
+        )?);
+        let episodes = conn
+            .prepare(
+                "SELECT actor, id, cause, stalled_since_active_ms FROM alarm_episodes
+                  WHERE closed_active_ms IS NULL",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(actor, id, cause, stalled_since)| {
+                let cause = Cause::parse(&cause)?;
+                Some((
+                    actor,
+                    (
+                        id,
+                        Episode {
+                            cause,
+                            stalled_since,
+                        },
+                    ),
+                ))
+            })
+            .collect();
+        let stall_minutes = conn
+            .prepare("SELECT actor, stall_minutes FROM agent_alarm_settings")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Self {
+            activity: activity::all(conn)?,
+            chats,
+            archived,
+            asks,
+            parents,
+            children,
+            untaken,
+            waiting: crate::ask_scheduler::waiting_recipients(conn)?,
+            notices,
+            queued,
+            episodes,
+            stall_minutes,
         })
-    }))
+    }
+
+    fn actor_of(&self, session: &SessionId) -> Actor {
+        match self.chats.get(session.as_str()) {
+            Some(mono) => Actor::Mono(mono.clone()),
+            None => Actor::Session(session.clone()),
+        }
+    }
+}
+
+/// The notice and queue items earlier episodes of `actors` already
+/// listed: each counts toward one episode only (lead N5).
+fn counted(conn: &Connection, actors: &[String]) -> rusqlite::Result<HashSet<(String, String)>> {
+    if actors.is_empty() {
+        return Ok(HashSet::new());
+    }
+    Ok(pairs(
+        conn,
+        "SELECT e.actor, json_extract(w.value, '$.id')
+           FROM alarm_episodes e, json_each(e.open_work_json) w
+          WHERE e.actor IN (SELECT value FROM json_each(?1))
+            AND e.closed_active_ms IS NOT NULL AND json_valid(e.open_work_json)
+            AND json_extract(w.value, '$.kind') IN ('notice', 'queued')",
+        [serde_json::to_string(actors).unwrap_or_default()],
+    )?
+    .into_iter()
+    .collect())
+}
+
+/// What an episode lists: its open work, then what waits for a provider.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum Listed<'a> {
+    Work(&'a OpenWork),
+    Wake(&'a Wake),
 }
 
 fn new_episode_id() -> String {
@@ -337,6 +427,12 @@ pub(crate) fn outbox_key(episode: &str, level: i64) -> String {
 /// One pass: its transaction, settings and time, and the chats it names.
 struct Pass<'a> {
     tx: &'a Connection,
+    rows: &'a Rows,
+    /// Agents that run a turn or have a descendant that does.
+    busy: HashSet<String>,
+    /// Each idle agent's last turn end.
+    ended: HashMap<String, i64>,
+    counted: HashSet<(String, String)>,
     settings: Settings,
     active: i64,
     wall: i64,
@@ -344,13 +440,14 @@ struct Pass<'a> {
 }
 
 impl Pass<'_> {
-    /// Opens the agent's episode and its level-1 send, unless one is open
-    /// (the partial unique index): a second pass writes nothing.
+    /// Opens the agent's episode and its level-1 send. The pass read no
+    /// open episode for it in this transaction, so the insert is the one.
     fn open(
         &mut self,
         actor: &Actor,
         facts: &Facts,
         row: &Activity,
+        wakes: &[Wake],
         (cause, stalled_since): (Cause, i64),
     ) -> rusqlite::Result<()> {
         let tx = self.tx;
@@ -360,9 +457,14 @@ impl Pass<'_> {
             actor,
             self.settings.root_giga.as_deref(),
         )?);
-        let open_work = serde_json::to_string(&state::open_work(facts)).unwrap_or_default();
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO alarm_episodes (id, actor, mono_id, provisioner, cause,
+        let work = state::open_work(facts);
+        let listed: Vec<Listed> = work
+            .iter()
+            .map(Listed::Work)
+            .chain(wakes.iter().map(Listed::Wake))
+            .collect();
+        tx.execute(
+            "INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause,
                open_work_json, dialog_text, stalled_since_active_ms, stalled_since_wall_ms,
                opened_active_ms, opened_wall_ms, level, next_escalate_active_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)",
@@ -374,7 +476,7 @@ impl Pass<'_> {
                     .map(MonoId::as_str),
                 to.stored(),
                 cause.as_str(),
-                open_work,
+                serde_json::to_string(&listed).unwrap_or_default(),
                 (cause == Cause::Dialog)
                     .then_some(row.dialog_text.as_deref())
                     .flatten(),
@@ -384,10 +486,7 @@ impl Pass<'_> {
                 self.wall,
                 self.active + self.settings.escalate_minutes * MINUTE_MS,
             ],
-        )? == 1;
-        if !inserted {
-            return Ok(());
-        }
+        )?;
         let key = match &to {
             Provisioner::Agent(_) => Some(outbox_key(&id, 1)),
             Provisioner::Tyler => None,
@@ -424,45 +523,117 @@ impl Pass<'_> {
         Ok(())
     }
 
+    /// What waits for the agent's provider (section 4): a message no
+    /// provider took, an outbox reminder or alarm, a completion result not
+    /// yet in its live chat, or an item its saved queue holds (review F4).
+    /// A notice or queue item an earlier episode listed counts no more.
+    fn wakes(&self, actor: &Actor, session: &SessionId, gone: bool) -> Vec<Wake> {
+        let rows = self.rows;
+        let own = Actor::Session(session.clone()).to_string();
+        let actor_text = actor.to_string();
+        let message = rows
+            .untaken
+            .contains(session.as_str())
+            .then_some(Wake::Message);
+        let reminder = (rows.waiting.contains(&actor_text) || rows.waiting.contains(&own))
+            .then_some(Wake::Reminder);
+        let fresh = |id: &&String| !self.counted.contains(&(actor_text.clone(), (*id).clone()));
+        // A result counts only for a Mono chat that is live (lead N5).
+        let live_chat = !gone && rows.chats.contains_key(session.as_str());
+        let notices = rows
+            .notices
+            .get(session.as_str())
+            .filter(|_| live_chat)
+            .into_iter()
+            .flatten()
+            .filter(fresh)
+            .map(|id| Wake::Notice { id: id.clone() });
+        let queued = rows
+            .queued
+            .get(session.as_str())
+            .into_iter()
+            .flatten()
+            .filter(fresh)
+            .map(|id| Wake::Queued { id: id.clone() });
+        message
+            .into_iter()
+            .chain(reminder)
+            .chain(notices)
+            .chain(queued)
+            .collect()
+    }
+
+    fn children(&self, actor: &str) -> Vec<Child> {
+        self.rows
+            .children
+            .get(actor)
+            .into_iter()
+            .flatten()
+            .filter_map(|child| {
+                let state = if self.busy.contains(child) {
+                    ChildState::Busy
+                } else {
+                    self.ended.get(child)?;
+                    ChildState::Idle {
+                        ended_at: state::settled_at(child, &self.rows.children, &self.ended)?,
+                    }
+                };
+                Some(Child {
+                    actor: child.clone(),
+                    state,
+                })
+            })
+            .collect()
+    }
+
+    /// The agent's own open work (section 4): its open asks and an
+    /// unfinished todo list. A child's result comes from its children.
+    fn own_open_work(&self, actor: &str, row: &Activity) -> Vec<OpenWork> {
+        let asks = self
+            .rows
+            .asks
+            .iter()
+            .filter(|(_, _, child)| child == actor)
+            .map(|(id, _, _)| OpenWork::Ask { id: id.clone() });
+        asks.chain(row.todo_open.then_some(OpenWork::Todo))
+            .collect()
+    }
+
     /// Runs `next_state` on one agent and writes what it says.
-    fn agent(
-        &mut self,
-        row: &Activity,
-        actor: &Actor,
-        turns: &HashMap<String, state::Turn>,
-    ) -> rusqlite::Result<()> {
+    fn agent(&mut self, row: &Activity, actor: &Actor) -> rusqlite::Result<()> {
         let tx = self.tx;
-        let gone = gone(tx, &row.session)?;
-        let episode = open_episode(tx, actor)?;
+        let actor_text = actor.to_string();
+        let gone = self
+            .rows
+            .archived
+            .get(row.session.as_str())
+            .copied()
+            .unwrap_or(true);
+        let episode = self.rows.episodes.get(&actor_text).cloned();
         if gone && episode.is_none() {
             return activity::forget(tx, &row.session);
         }
-        let pending = wake_pending(tx, actor, &row.session)?;
-        let wake_pending_since = match (pending, row.wake_pending_since) {
-            (true, Some(since)) => Some(since),
-            (true, None) => Some(self.active),
-            (false, _) => None,
+        let wakes = self.wakes(actor, &row.session, gone);
+        let wake_pending_since = match (wakes.is_empty(), row.wake_pending_since) {
+            (false, Some(since)) => Some(since),
+            (false, None) => Some(self.active),
+            (true, _) => None,
         };
         if wake_pending_since != row.wake_pending_since {
             activity::set_wake_pending(tx, &row.session, wake_pending_since)?;
         }
-        let children = child_actors(tx, actor)?
-            .into_iter()
-            .filter_map(|child| {
-                let turn = *turns.get(&child)?;
-                Some(Child { actor: child, turn })
-            })
-            .collect();
         let facts = Facts {
             gone,
             turn: row.turn,
             dialog: row.dialog,
-            open_work: own_open_work(tx, actor, row)?,
-            children,
+            open_work: self.own_open_work(&actor_text, row),
+            children: self.children(&actor_text),
             wake_pending_since,
             episode: episode.as_ref().map(|(_, episode)| *episode),
         };
-        let limits = self.settings.thresholds(agent_stall_minutes(tx, actor)?);
+        let limits = self
+            .settings
+            .thresholds(self.rows.stall_minutes.get(&actor_text).copied());
         match (state::next_state(&facts, self.active, limits), &episode) {
             (Transition::Stay, _) | (Transition::Close(_), None) => Ok(()),
             (
@@ -471,36 +642,129 @@ impl Pass<'_> {
                     stalled_since,
                 },
                 _,
-            ) => self.open(actor, &facts, row, (cause, stalled_since)),
+            ) => self.open(actor, &facts, row, &wakes, (cause, stalled_since)),
             (Transition::Close(reason), Some((id, _))) => self.close(id, reason),
         }
     }
 }
 
+/// The inputs of one pass beside the store: the taps' records, and the
+/// turns `ControlHost` runs, read before the store lock (`None` when no
+/// control host runs, so no row can be judged against it).
+pub(crate) struct Sources<'a> {
+    pub live: &'a Live,
+    pub running: Option<&'a HashMap<String, String>>,
+}
+
 /// One detector pass at active time `active_ms`. Every effect is a
 /// function of the rows, so a second pass, or one after a restart, writes
-/// nothing new. Names the chat of each provisioner told.
-pub(crate) fn run(conn: &Connection, active_ms: i64, wall_ms: i64) -> rusqlite::Result<Notices> {
+/// nothing new. Names the chat of each provisioner told. The taps' records
+/// go back to the hub when the pass does not commit.
+pub(crate) fn run(
+    conn: &Connection,
+    active_ms: i64,
+    wall_ms: i64,
+    sources: &Sources,
+) -> rusqlite::Result<Notices> {
+    let taken = sources.live.take();
+    let passed = pass(conn, active_ms, wall_ms, &taken, sources);
+    if passed.is_err() {
+        sources.live.put_back(taken);
+    }
+    passed
+}
+
+fn pass(
+    conn: &Connection,
+    active_ms: i64,
+    wall_ms: i64,
+    taken: &Taken,
+    sources: &Sources,
+) -> rusqlite::Result<Notices> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let chats = mono_chats(&tx)?;
-    let rows = activity::all(&tx)?;
-    let actor_of = |session: &SessionId| match chats.get(session.as_str()) {
-        Some(mono) => Actor::Mono(mono.clone()),
-        None => Actor::Session(session.clone()),
-    };
-    let turns: HashMap<String, state::Turn> = rows
+    for (session, writes) in taken {
+        for write in writes {
+            activity::apply(&tx, session, write, wall_ms)?;
+        }
+    }
+    if let Some(running) = sources.running {
+        // A session with a turn record in this take is left to the next
+        // pass: its start may be newer than the running set, or its end
+        // the better time.
+        let recorded: HashSet<&str> = taken
+            .iter()
+            .filter(|(_, writes)| {
+                writes.iter().any(|write| {
+                    matches!(write, Write::TurnStarted { .. } | Write::TurnEnded { .. })
+                })
+            })
+            .map(|(session, _)| session.as_str())
+            .collect();
+        activity::end_unless_running(&tx, running, &recorded, active_ms, wall_ms)?;
+    }
+    let rows = Rows::load(&tx)?;
+    let agents: Vec<(&Activity, Actor)> = rows
+        .activity
         .iter()
-        .map(|row| (actor_of(&row.session).to_string(), row.turn))
+        .map(|row| (row, rows.actor_of(&row.session)))
+        .collect();
+    let running: Vec<String> = agents
+        .iter()
+        .filter(|(row, _)| matches!(row.turn, state::Turn::Running { .. }))
+        .map(|(_, actor)| actor.to_string())
+        .collect();
+    let busy = state::busy(running.iter().map(String::as_str), &rows.parents);
+    let ended: HashMap<String, i64> = agents
+        .iter()
+        .filter_map(|(row, actor)| match row.turn {
+            state::Turn::Idle { ended_at, .. } => Some((actor.to_string(), ended_at)),
+            state::Turn::Running { .. } => None,
+        })
+        .collect();
+    let waiting_on: Vec<String> = agents
+        .iter()
+        .filter(|(row, _)| {
+            rows.notices.contains_key(row.session.as_str())
+                || rows.queued.contains_key(row.session.as_str())
+        })
+        .map(|(_, actor)| actor.to_string())
         .collect();
     let mut pass = Pass {
         tx: &tx,
+        rows: &rows,
+        busy,
+        counted: counted(&tx, &waiting_on)?,
+        ended,
         settings: Settings::load(&tx)?,
         active: active_ms,
         wall: wall_ms,
         notices: Notices::default(),
     };
-    for row in &rows {
-        pass.agent(row, &actor_of(&row.session), &turns)?;
+    // One agent's fault must not silence the others' alarms.
+    let mut fault = None;
+    for (row, actor) in &agents {
+        tx.execute_batch("SAVEPOINT alarm_agent")?;
+        match pass.agent(row, actor) {
+            Ok(()) => tx.execute_batch("RELEASE alarm_agent")?,
+            Err(error) => {
+                tx.execute_batch("ROLLBACK TO alarm_agent; RELEASE alarm_agent")?;
+                fault.get_or_insert_with(|| format!("{actor}: {error}"));
+            }
+        }
+    }
+    // An episode whose agent no row resolves to any more (its Mono was
+    // deleted or its chat reset) is gone.
+    let visited: HashSet<String> = agents.iter().map(|(_, actor)| actor.to_string()).collect();
+    for (actor, (id, _)) in &rows.episodes {
+        if !visited.contains(actor) {
+            pass.close(id, CloseReason::AgentGone)?;
+        }
+    }
+    if sources.live.new_fault(fault.clone()) {
+        eprintln!(
+            "The stall detector skipped an agent: {}",
+            fault.unwrap_or_default()
+        );
     }
     let notices = pass.notices;
     tx.commit()?;

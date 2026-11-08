@@ -1,6 +1,6 @@
 //! Alarms S1: the stall detector runs on the active clock's own tick over
-//! real rows. The turn and stdio taps are driven at the World's active
-//! time, as `control.rs` and `harness.rs` drive them in the app.
+//! real rows. The turn and stdio taps record into the store's hub as
+//! `control.rs` and `harness.rs` do in the app, and the next pass writes.
 
 use std::collections::HashMap;
 
@@ -8,8 +8,8 @@ use serde_json::json;
 
 use super::agents::{mono_caller, Mono};
 use super::world::World;
-use crate::alarms::taps::{Harness, Pipe, Tap};
-use crate::alarms::test_taps;
+use crate::alarms::taps::Pipe;
+use crate::alarms::{test_taps, ChildTap};
 use crate::ask_scheduler;
 use crate::mono_messages::{SessionId, Tool};
 use crate::mono_roster::MonoRole;
@@ -50,13 +50,11 @@ fn align(world: &mut World) {
     }
 }
 
-fn turn(world: &World, session: &SessionId, turn_id: &str, started: bool) {
-    let conn = world.conn();
-    let (at, wall) = (world.active_ms(), world.now());
+fn turn(world: &mut World, session: &SessionId, turn_id: &str, started: bool) {
     if started {
-        test_taps::turn_started(&conn, session, turn_id, at, wall).unwrap();
+        world.alarm_turn_started(session, turn_id);
     } else {
-        test_taps::turn_ended(&conn, session, turn_id, at, wall).unwrap();
+        world.alarm_turn_ended(session, turn_id);
     }
 }
 
@@ -68,14 +66,13 @@ fn ran_a_turn(world: &mut World, session: &SessionId) {
     turn(world, session, &turn_id, false);
 }
 
-/// Line `line` reaches `session`'s tap at the World's active time, and the
-/// row it hands back is written, as `alarms::tap_line` does.
-fn tap(world: &World, session: &SessionId, tap: &mut Tap, pipe: Pipe, line: &str) {
-    let now = world.active_ms();
-    if let Some(row) = tap.line(pipe, line, now) {
-        test_taps::write_tap(&world.conn(), session, &row, world.now()).unwrap();
-        tap.wrote(row, now);
-    }
+/// The stdio tap `harness_spawn` gives a Claude child of `session`.
+fn claude_tap(world: &World, session: &SessionId) -> ChildTap {
+    world
+        .store()
+        .alarms
+        .tap(session.as_str(), Some("claude"))
+        .unwrap()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -209,15 +206,15 @@ fn no_open_work_and_a_running_worker_raise_no_alarm() {
     let worker = world.add_session("alw-worker", P, Some("alw-lead"));
     align(&mut world);
     ran_a_turn(&mut world, &solo);
-    turn(&world, &lead, "t1", true);
-    turn(&world, &worker, "t1", true);
+    turn(&mut world, &lead, "t1", true);
+    turn(&mut world, &worker, "t1", true);
     world.advance(MINUTE);
-    turn(&world, &lead, "t1", false);
+    turn(&mut world, &lead, "t1", false);
 
     world.advance(4 * N);
     assert_eq!(episodes(&world), Vec::new());
 
-    turn(&world, &worker, "t1", false);
+    turn(&mut world, &worker, "t1", false);
     world.advance(N - PASS);
     assert_eq!(
         episodes(&world),
@@ -243,17 +240,17 @@ fn a_dialog_alarms_at_three_minutes_and_not_when_answered_at_two_fifty_nine() {
     let mut world = World::new("alarm-dialog");
     let mono = world.add_mono_in("ald-mono", MonoRole::Mono, &[P]);
     let lead = start_lead(&world, &mono, "ald-lead");
-    let mut claude = Tap::new(Harness::Claude);
+    let claude = claude_tap(&world, &lead);
     align(&mut world);
-    turn(&world, &lead, "t1", true);
-    tap(&world, &lead, &mut claude, Pipe::Stdout, PERMISSION);
+    turn(&mut world, &lead, "t1", true);
+    claude.line(Pipe::Stdout, PERMISSION);
     world.advance(3 * MINUTE - SECOND);
-    tap(&world, &lead, &mut claude, Pipe::Stdin, ANSWER);
+    claude.line(Pipe::Stdin, ANSWER);
     world.advance(2 * MINUTE);
     assert_eq!(episodes(&world), Vec::new(), "answered at 2:59");
 
     align(&mut world);
-    tap(&world, &lead, &mut claude, Pipe::Stdout, PERMISSION_2);
+    claude.line(Pipe::Stdout, PERMISSION_2);
     world.advance(3 * MINUTE - PASS);
     assert_eq!(episodes(&world), Vec::new());
     world.advance(PASS);
@@ -311,18 +308,12 @@ fn a_restart_mid_episode_keeps_its_rows_and_ends_the_turn_it_left_running() {
     let mono = world.add_mono_in("alr-mono", MonoRole::Mono, &[P]);
     let lead = start_lead(&world, &mono, "alr-lead");
     let worker = world.add_session("alr-worker", P, None);
-    let mut claude = Tap::new(Harness::Claude);
+    let claude = claude_tap(&world, &worker);
     align(&mut world);
     ran_a_turn(&mut world, &lead);
     world.advance(N - 5 * MINUTE);
-    turn(&world, &worker, "t1", true);
-    tap(
-        &world,
-        &worker,
-        &mut claude,
-        Pipe::Stdout,
-        r#"{"type":"system","subtype":"init"}"#,
-    );
+    turn(&mut world, &worker, "t1", true);
+    claude.line(Pipe::Stdout, r#"{"type":"system","subtype":"init"}"#);
     world.advance(5 * MINUTE);
     let before = episodes(&world);
     assert_eq!(before.len(), 1);
@@ -420,19 +411,342 @@ fn a_late_end_of_an_old_turn_leaves_the_next_turn_running() {
     let mono = world.add_mono_in("all-mono", MonoRole::Mono, &[P]);
     let lead = start_lead(&world, &mono, "all-lead");
     align(&mut world);
-    turn(&world, &lead, "turn-4", true);
+    turn(&mut world, &lead, "turn-4", true);
     world.advance(MINUTE);
-    turn(&world, &lead, "turn-5", true);
-    turn(&world, &lead, "turn-4", false);
+    turn(&mut world, &lead, "turn-5", true);
+    turn(&mut world, &lead, "turn-4", false);
     world.advance(N);
-    turn(&world, &lead, "turn-5", true);
+    turn(&mut world, &lead, "turn-5", true);
     world.advance(N);
     assert_eq!(episodes(&world), Vec::new(), "turn-5 runs, untapped");
-    turn(&world, &lead, "turn-5", false);
+    turn(&mut world, &lead, "turn-5", false);
     world.advance(N);
     assert_eq!(
         episodes(&world).len(),
         1,
         "idle with its ask from turn-5's end"
     );
+}
+
+/// `episode`'s close reason, `None` while it is open.
+fn close_reason(world: &World, episode: &str) -> Option<String> {
+    world
+        .conn()
+        .query_row(
+            "SELECT close_reason FROM alarm_episodes WHERE id = ?1",
+            [episode],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// The window saves `items` as `session`'s queue, as its session save does.
+fn save_queue(world: &World, session: &SessionId, items: serde_json::Value, status: &str) {
+    world
+        .conn()
+        .execute(
+            "UPDATE sessions SET queued_messages_json = ?2, queue_status = ?3 WHERE id = ?1",
+            rusqlite::params![session.as_str(), items.to_string(), status],
+        )
+        .unwrap();
+}
+
+// Defect (review M2/F2): a kill that lands between a turn's authorize and
+// its start record leaves the row running for a dead turn. A tapped
+// session then reads as hung at N, an untapped one as working, so its
+// real stall is missed. Generic: no pass heals a row whose turn
+// ControlHost no longer holds.
+#[test]
+fn a_turn_row_no_live_turn_holds_is_idle_by_the_next_pass() {
+    let mut world = World::new("alarm-stale-turn");
+    let mono = world.add_mono_in("als-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "als-lead");
+    world.store().alarms.spawned(lead.as_str(), Some("claude"));
+    // Past the launch's first pass, so each slice's pass is on its edge.
+    world.advance(PASS);
+    align(&mut world);
+    // The kill took turn t1 before its start was recorded: no turn runs.
+    world
+        .store()
+        .alarms
+        .turn(lead.as_str(), "t1", crate::alarms::Edge::Started);
+    world.advance(2 * PASS);
+    let row = test_taps::row(&world.conn(), lead.as_str()).unwrap();
+    assert_eq!(row.0, "idle", "{row:?}");
+
+    world.advance(N - PASS);
+    assert_eq!(
+        episodes(&world),
+        Vec::new(),
+        "not hung at N after the start"
+    );
+    world.advance(PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        episode,
+        idle_open_work(&episode.id, "session:als-lead", "mono:als-mono"),
+        "the stall from the healed end is not missed"
+    );
+}
+
+// Defect (review M1): WAITING looks only at direct children, so a Mono
+// whose lead ended its turn and waits on a running worker alarms at the
+// lead's end + N while the worker builds.
+#[test]
+fn a_mono_and_its_idle_lead_wait_while_the_leads_worker_runs() {
+    let mut world = World::new("alarm-transitive");
+    world.add_mono_in("alt-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alt-mono", MonoRole::Mono, &[P]);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    let lead = start_lead(&world, &mono, "alt-lead");
+    let worker = world.add_session("alt-worker", P, Some("alt-lead"));
+    ran_a_turn(&mut world, &lead);
+    turn(&mut world, &worker, "w1", true);
+    world.advance(4 * N);
+    assert_eq!(episodes(&world), Vec::new(), "the Mono and the lead wait");
+
+    turn(&mut world, &worker, "w1", false);
+    world.advance(N - PASS);
+    assert_eq!(
+        episodes(&world),
+        Vec::new(),
+        "the branch went quiet at the worker's end"
+    );
+    world.advance(PASS);
+    assert!(
+        episodes(&world)
+            .iter()
+            .any(|episode| episode.actor == "session:alt-lead"),
+        "{:?}",
+        episodes(&world)
+    );
+}
+
+// Defect (review F4): a notice or message the window saved into the
+// chat's queue and no turn took never alarms; or (lead N5) the same item
+// alarms again after every turn of its chat; or a queue the user paused
+// alarms.
+#[test]
+fn a_queued_item_no_turn_took_is_wake_missed_once() {
+    let mut world = World::new("alarm-queued");
+    world.add_mono_in("alq-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alq-mono", MonoRole::Mono, &[P]);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(
+        &world,
+        &mono.chat,
+        json!([{"id": "notice-1", "text": "The lead finished"}]),
+        "active",
+    );
+    world.advance(2 * MINUTE);
+    assert_eq!(episodes(&world), Vec::new());
+    world.advance(PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        (
+            episode.actor.as_str(),
+            episode.provisioner.as_str(),
+            episode.cause.as_str()
+        ),
+        ("mono:alq-mono", "mono:alq-general", "wake_missed")
+    );
+
+    ran_a_turn(&mut world, &mono.chat);
+    world.advance(N);
+    assert_eq!(
+        close_reason(&world, &episode.id).as_deref(),
+        Some("progress")
+    );
+    assert_eq!(episodes(&world).len(), 1, "notice-1 alarmed once");
+
+    save_queue(&world, &mono.chat, json!([{"id": "queued-2"}]), "paused");
+    world.advance(N);
+    assert_eq!(episodes(&world).len(), 1, "a paused queue waits on purpose");
+}
+
+// Defect (lead N5): a completion result that no window delivers alarms the
+// Giga again after every turn of the Mono, or counts for a session that is
+// no live Mono's chat.
+#[test]
+fn a_completion_result_alarms_once_and_only_for_a_live_mono_chat() {
+    let mut world = World::new("alarm-notice");
+    world.add_mono_in("aln-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("aln-mono", MonoRole::Mono, &[P]);
+    let solo = world.add_session("aln-solo", P, None);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    ran_a_turn(&mut world, &solo);
+    for (request, chat) in [("req-1", mono.chat.as_str()), ("req-2", solo.as_str())] {
+        let saved = json!({
+            "request": {"requestId": request}, "origin": {"monoId": chat},
+            "notice": format!("notice-{request}"),
+        });
+        world
+            .conn()
+            .execute(
+                "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run)
+                 VALUES (?1, ?2, 'closed', 'old-run')",
+                rusqlite::params![request, saved.to_string()],
+            )
+            .unwrap();
+    }
+    world.advance(2 * MINUTE + PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        (episode.actor.as_str(), episode.cause.as_str()),
+        ("mono:aln-mono", "wake_missed")
+    );
+    for _ in 0..3 {
+        ran_a_turn(&mut world, &mono.chat);
+        world.advance(N);
+    }
+    assert_eq!(episodes(&world).len(), 1, "one alarm for the notice");
+}
+
+// Defect (review F5): a second process on the data folder runs migrate and
+// idles the lease holder's running turns, so a working lead with an open
+// ask alarms its Mono at N.
+#[test]
+fn a_second_process_leaves_the_lease_holders_running_turns() {
+    let mut world = World::new("alarm-second");
+    let mono = world.add_mono_in("al2-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "al2-lead");
+    align(&mut world);
+    turn(&mut world, &lead, "t1", true);
+    world.advance(PASS);
+    assert!(!world.second_launch(), "the World holds the lease");
+    let row = test_taps::row(&world.conn(), lead.as_str()).unwrap();
+    assert_eq!(row.0, "running", "{row:?}");
+    world.advance(2 * N);
+    assert_eq!(episodes(&world), Vec::new());
+}
+
+// Defect (review F6): an episode under a Mono that no row resolves to any
+// more (its chat was reset) stays open forever, and its unsent alarm keeps
+// waiting for the Giga.
+#[test]
+fn an_episode_whose_mono_chat_was_reset_closes_as_agent_gone() {
+    let mut world = World::new("alarm-gone");
+    world.add_mono_in("alg-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alg-mono", MonoRole::Mono, &[P]);
+    let claude = claude_tap(&world, &mono.chat);
+    align(&mut world);
+    turn(&mut world, &mono.chat, "t1", true);
+    claude.line(
+        Pipe::Stdout,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_t","name":"TodoWrite","input":{"todos":[{"content":"Ship","status":"pending"}]}}]}}"#,
+    );
+    world.advance(MINUTE);
+    turn(&mut world, &mono.chat, "t1", false);
+    world.advance(N + PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(episode.actor, "mono:alg-mono");
+    assert_eq!(alarm_rows(&world).0.len(), 1);
+
+    world.reset_mono_chat(&mono, "alg-mono-chat-2");
+    world.advance(PASS);
+    assert_eq!(
+        close_reason(&world, &episode.id).as_deref(),
+        Some("agent_gone")
+    );
+    assert_eq!(alarm_rows(&world).0, Vec::new(), "its unsent alarm goes");
+}
+
+// Defect (review M3): the pass scans per agent, so hundreds of watched
+// sessions and a long sent history hold the store lock for much of every
+// 5 s tick. Bounds: watched rows, open asks, unsent outbox rows, untaken
+// messages; the sent outbox and message history are not read.
+#[test]
+fn a_pass_over_300_watched_sessions_stays_well_under_the_tick() {
+    let mut world = World::new("alarm-perf");
+    world.add_mono_in("alp-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alp-mono", MonoRole::Mono, &[P]);
+    align(&mut world);
+    let mut sessions = Vec::new();
+    for lead in 0..30 {
+        let lead = start_lead(&world, &mono, &format!("alp-lead-{lead}"));
+        for worker in 0..9 {
+            let id = format!("{}-w{worker}", lead.as_str());
+            sessions.push(world.add_session(&id, P, Some(lead.as_str())));
+        }
+        sessions.push(lead);
+    }
+    assert_eq!(sessions.len(), 300);
+    for (n, session) in sessions.iter().enumerate() {
+        let turn_id = format!("t{n}");
+        turn(&mut world, session, &turn_id, true);
+        if n % 3 != 0 {
+            turn(&mut world, session, &turn_id, false);
+        }
+    }
+    // A long history: sent outbox rows, acked asks and old start rows.
+    let digits = "replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+          printf('%012d', n), '0', 'a'), '1', 'b'), '2', 'c'), '3', 'd'), '4', 'e'), '5', 'f'),
+          '6', 'g'), '7', 'h'), '8', 'i'), '9', 'j')";
+    world
+        .conn()
+        .execute_batch(
+            "WITH RECURSIVE k(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM k WHERE n < 30000)
+             INSERT INTO mono_outbox (key, stage, recipient, at_active_ms, claimed_by, sent_at)
+               SELECT 'resume:old:' || n, 'resume', 'session:alp-lead-' || (n % 30), n, 'main', n FROM k;
+             WITH RECURSIVE k(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM k WHERE n < 8000)
+             INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level, child_level, state,
+                 due_active_ms, stage, created_wall_ms)
+               SELECT 'old-ask-' || n, parent_actor, child_actor, parent_level, child_level, 'acked',
+                 due_active_ms, stage, created_wall_ms
+               FROM mono_asks, k WHERE mono_asks.id = (SELECT min(id) FROM mono_asks);",
+        )
+        .unwrap();
+    clone_messages(&world, 60_000, digits);
+    world.advance(PASS);
+
+    let mut slowest = std::time::Duration::ZERO;
+    let running = world.running();
+    for _ in 0..3 {
+        let conn = world.conn();
+        let sources = crate::alarms::Sources {
+            live: &world.store().alarms,
+            running: Some(&running),
+        };
+        let started = std::time::Instant::now();
+        crate::alarms::run(&conn, world.active_ms(), world.now(), &sources).unwrap();
+        slowest = slowest.max(started.elapsed());
+    }
+    eprintln!("alarm pass at 300 watched sessions: slowest of 3 {slowest:?}");
+    assert!(
+        slowest < std::time::Duration::from_millis(500),
+        "{slowest:?} of a 5 s tick"
+    );
+}
+
+/// Copies the oldest start row `count` times under new ids, as a long
+/// message history.
+fn clone_messages(world: &World, count: i64, digits: &str) {
+    let conn = world.conn();
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('mono_messages')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let select: Vec<String> = columns
+        .iter()
+        .map(|column| match column.as_str() {
+            "id" => format!("'m_' || {digits}"),
+            "request_id" => "'old-' || n".to_string(),
+            other => format!("m.{other}"),
+        })
+        .collect();
+    conn.execute_batch(&format!(
+        "WITH RECURSIVE k(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM k WHERE n < {count})
+         INSERT INTO mono_messages ({}) SELECT {} FROM mono_messages m, k
+          WHERE m.id = (SELECT id FROM mono_messages WHERE tool = 'start_session'
+                         ORDER BY created_at LIMIT 1)",
+        columns.join(", "),
+        select.join(", ")
+    ))
+    .unwrap();
 }

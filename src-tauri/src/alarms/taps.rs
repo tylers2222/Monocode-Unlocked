@@ -4,7 +4,7 @@
 //! lines and write the `Snapshot` it hands back. The frames are the ones
 //! the front end parses (`src/integrations/harness/providers/*`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -71,6 +71,20 @@ impl Harness {
             ],
         }
     }
+
+    /// A frame the front end drops as noise, so it is not progress either:
+    /// Claude's `keep_alive` (claude.ts:644) can keep coming while its API
+    /// stream is stalled.
+    fn is_noise(self, line: &str) -> bool {
+        match self {
+            Harness::Claude => {
+                line.contains("\"keep_alive\"")
+                    && serde_json::from_str::<Value>(line)
+                        .is_ok_and(|frame| text(&frame, "/type") == Some("keep_alive"))
+            }
+            Harness::Codex | Harness::Pi => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +102,35 @@ enum Event {
     Todos {
         open: bool,
     },
+    /// A Claude TaskCreate/TaskUpdate call; its result folds it in.
+    TaskCall {
+        id: String,
+        tool: TaskTool,
+        input: Value,
+    },
+    TaskResult {
+        id: String,
+        text: String,
+    },
     PlanProposed,
+}
+
+/// Newer Claude Code builds replace TodoWrite with tools that change one
+/// item (claudeProtocol.ts `isClaudeTaskTool`, `applyClaudeTaskTool`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskTool {
+    Create,
+    Update,
+}
+
+impl TaskTool {
+    fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "TaskCreate" => Some(TaskTool::Create),
+            "TaskUpdate" => Some(TaskTool::Update),
+            _ => None,
+        }
+    }
 }
 
 fn text<'a>(frame: &'a Value, path: &str) -> Option<&'a str> {
@@ -128,19 +170,59 @@ fn is_todo_tool(name: &str) -> bool {
     )
 }
 
+fn status_open(status: &str) -> bool {
+    !matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "complete" | "done" | "cancelled" | "canceled" | "skipped"
+    )
+}
+
 fn todos_open(input: Option<&Value>) -> Option<Event> {
     let todos = input?.get("todos")?.as_array()?;
     let open = todos.iter().any(|todo| {
-        !matches!(
+        status_open(
             todo.get("status")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_ascii_lowercase()
-                .as_str(),
-            "completed" | "complete" | "done" | "cancelled" | "canceled" | "skipped"
+                .unwrap_or_default(),
         )
     });
     Some(Event::Todos { open })
+}
+
+/// A tool_result's text: a string, or its text blocks.
+fn result_text(block: &Value) -> String {
+    match block.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| text(part, "/text"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// `applyClaudeTaskTool`: TaskCreate learns its id from the result text
+/// ("Task #3 created successfully: ..."), TaskUpdate names it.
+fn task_id(tool: TaskTool, input: &Value, result: &str) -> Option<String> {
+    match tool {
+        TaskTool::Create => {
+            let rest = &result[result.find("Task #")? + "Task #".len()..];
+            let id: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != ':')
+                .collect();
+            (!id.is_empty()).then_some(id)
+        }
+        TaskTool::Update => match input.get("taskId")? {
+            Value::Number(id) => Some(id.to_string()),
+            Value::String(id) => {
+                let id = id.trim().trim_start_matches('#');
+                (!id.is_empty()).then(|| id.to_string())
+            }
+            _ => None,
+        },
+    }
 }
 
 /// `isTerminalAgentTaskStatus` in `claudeProtocol.ts`.
@@ -154,6 +236,56 @@ fn task_finished(status: Option<&str>) -> bool {
 /// A Claude background task (shell, monitor, subagent) is a running tool
 /// that outlives its turn's `result` (`maybeFinishTurn`, claude.ts).
 const TASK: &str = "task:";
+
+/// The tool calls of a Claude `assistant` frame: each runs until its
+/// result, a todo or task call updates the list, ExitPlanMode proposes a plan.
+fn claude_tool_uses(frame: &Value) -> Vec<Event> {
+    frame
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| text(block, "/type") == Some("tool_use"))
+        .flat_map(|block| {
+            let name = text(block, "/name").unwrap_or_default();
+            let id = text(block, "/id");
+            let start = id.map(|id| Event::ToolStart(id.into()));
+            let todos = is_todo_tool(name)
+                .then(|| todos_open(block.get("input")))
+                .flatten();
+            let task = TaskTool::parse(name)
+                .zip(id)
+                .map(|(tool, id)| Event::TaskCall {
+                    id: id.into(),
+                    tool,
+                    input: block.get("input").cloned().unwrap_or(Value::Null),
+                });
+            let plan = (name == "ExitPlanMode").then_some(Event::PlanProposed);
+            start.into_iter().chain(todos).chain(task).chain(plan)
+        })
+        .collect()
+}
+
+/// The tool results of a Claude `user` frame; a task call's result folds it.
+fn claude_tool_results(frame: &Value) -> Vec<Event> {
+    frame
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| text(block, "/type") == Some("tool_result"))
+        .filter_map(|block| {
+            let id = text(block, "/tool_use_id")?;
+            let failed = block.get("is_error") == Some(&Value::Bool(true));
+            let result = (!failed).then(|| Event::TaskResult {
+                id: id.into(),
+                text: result_text(block),
+            });
+            Some(std::iter::once(Event::ToolEnd(id.into())).chain(result))
+        })
+        .flatten()
+        .collect()
+}
 
 fn claude_stdout(frame: &Value) -> Vec<Event> {
     let kind = text(frame, "/type").unwrap_or_default();
@@ -186,22 +318,7 @@ fn claude_stdout(frame: &Value) -> Vec<Event> {
             .or_else(|| text(frame, "/request/request_id"))
             .map(|id| vec![Event::DialogClose(id.into())])
             .unwrap_or_default(),
-        "assistant" if !subagent => frame
-            .pointer("/message/content")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|block| text(block, "/type") == Some("tool_use"))
-            .flat_map(|block| {
-                let name = text(block, "/name").unwrap_or_default();
-                let start = text(block, "/id").map(|id| Event::ToolStart(id.into()));
-                let todos = is_todo_tool(name)
-                    .then(|| todos_open(block.get("input")))
-                    .flatten();
-                let plan = (name == "ExitPlanMode").then_some(Event::PlanProposed);
-                start.into_iter().chain(todos).chain(plan)
-            })
-            .collect(),
+        "assistant" if !subagent => claude_tool_uses(frame),
         "stream_event" if !subagent => {
             let block = frame.pointer("/event/content_block");
             match (
@@ -217,14 +334,7 @@ fn claude_stdout(frame: &Value) -> Vec<Event> {
                 _ => Vec::new(),
             }
         }
-        "user" if !subagent => frame
-            .pointer("/message/content")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|block| text(block, "/type") == Some("tool_result"))
-            .filter_map(|block| text(block, "/tool_use_id").map(|id| Event::ToolEnd(id.into())))
-            .collect(),
+        "user" if !subagent => claude_tool_results(frame),
         "result" if !subagent => vec![Event::TurnEnd],
         "system" => {
             let task = text(frame, "/task_id").map(|id| format!("{TASK}{id}"));
@@ -397,13 +507,17 @@ pub(crate) struct Snapshot {
 impl Snapshot {
     /// Equal but for the progress time, which alone may wait for a flush.
     fn same_but_progress(&self, other: &Snapshot) -> bool {
-        Snapshot {
-            last_progress_at: 0,
-            ..self.clone()
-        } == Snapshot {
-            last_progress_at: 0,
-            ..other.clone()
-        }
+        (
+            self.harness,
+            self.tool_running,
+            self.todo_open,
+            &self.dialog,
+        ) == (
+            other.harness,
+            other.tool_running,
+            other.todo_open,
+            &other.dialog,
+        )
     }
 }
 
@@ -413,6 +527,10 @@ pub(crate) struct Tap {
     dialogs: Vec<TapDialog>,
     tools: HashSet<String>,
     todo_open: bool,
+    /// TaskCreate/TaskUpdate calls waiting for their result.
+    task_calls: HashMap<String, (TaskTool, Value)>,
+    /// The Claude task list by task id: whether each item is open.
+    tasks: HashMap<String, bool>,
     plan_since: Option<i64>,
     last_progress_at: i64,
     written: Option<(Snapshot, i64)>,
@@ -432,6 +550,8 @@ impl Tap {
             dialogs: Vec::new(),
             tools: HashSet::new(),
             todo_open: false,
+            task_calls: HashMap::new(),
+            tasks: HashMap::new(),
             plan_since: None,
             last_progress_at: 0,
             written: None,
@@ -458,8 +578,9 @@ impl Tap {
                 (Pipe::Stdin, harness) => stdin_events(harness, &frame),
             })
             .unwrap_or_default();
-        // Every stdout line is output; on stdin only an answer is progress.
-        if pipe == Pipe::Stdout || !events.is_empty() {
+        // Every stdout line but noise is output; on stdin only an answer.
+        let output = pipe == Pipe::Stdout && !self.harness.is_noise(line);
+        if output || !events.is_empty() {
             self.last_progress_at = now;
         }
         for event in events {
@@ -503,8 +624,38 @@ impl Tap {
                 .dialogs
                 .retain(|dialog| dialog.request_id.as_deref() != Some(&id)),
             Event::Todos { open } => self.todo_open = open,
+            Event::TaskCall { id, tool, input } => {
+                self.task_calls.insert(id, (tool, input));
+            }
+            Event::TaskResult { id, text } => {
+                if let Some((tool, input)) = self.task_calls.remove(&id) {
+                    self.fold_task(tool, &input, &text);
+                }
+            }
             Event::PlanProposed => self.plan_since = Some(now),
         }
+    }
+
+    fn fold_task(&mut self, tool: TaskTool, input: &Value, result: &str) {
+        let Some(id) = task_id(tool, input, result) else {
+            return;
+        };
+        let status = input.get("status").and_then(Value::as_str);
+        match (tool, status.map(str::trim)) {
+            (TaskTool::Create, _) => {
+                self.tasks.insert(id, true);
+            }
+            (TaskTool::Update, Some("deleted")) => {
+                self.tasks.remove(&id);
+            }
+            (TaskTool::Update, Some(status)) => {
+                if let Some(open) = self.tasks.get_mut(&id) {
+                    *open = status_open(status);
+                }
+            }
+            (TaskTool::Update, None) => return,
+        }
+        self.todo_open = self.tasks.values().any(|open| *open);
     }
 
     /// A turn's tool calls end with it; background tasks do not.
@@ -710,6 +861,94 @@ mod tests {
         assert!(open.todo_open);
         let done = feed(&mut tap, 10_000, &[(Pipe::Stdout, &todo("done"))]).unwrap();
         assert!(!done.todo_open);
+    }
+
+    /// A Claude task tool call and its result, as claudeLive.test.ts
+    /// `emitTaskTool` sends them.
+    fn task_tool(id: &str, name: &str, input: &str, result: &str) -> [(Pipe, String); 2] {
+        [
+            (
+                Pipe::Stdout,
+                format!(
+                    r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#
+                ),
+            ),
+            (
+                Pipe::Stdout,
+                format!(
+                    r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"{result}"}}]}}}}"#
+                ),
+            ),
+        ]
+    }
+
+    // Defect (review m2): a Claude build that keeps its list with
+    // TaskCreate/TaskUpdate (claudeProtocol.ts:962-1020) ends a turn with
+    // tasks left and the detector sees no open work, or a list whose last
+    // task completed or was deleted still reads open.
+    #[test]
+    fn a_claude_task_list_is_open_while_a_created_task_is_not_done() {
+        let mut tap = Tap::new(Harness::Claude);
+        let calls = [
+            task_tool(
+                "toolu_c1",
+                "TaskCreate",
+                r#"{"subject":"Write tests","description":"Cover the parser"}"#,
+                "Task #1 created successfully: Write tests",
+            ),
+            task_tool(
+                "toolu_c2",
+                "TaskCreate",
+                r#"{"subject":"Ship it","description":"Open the PR"}"#,
+                "Task #2 created successfully: Ship it",
+            ),
+            task_tool(
+                "toolu_u1",
+                "TaskUpdate",
+                r#"{"taskId":"1","status":"completed"}"#,
+                "Updated task #1 status",
+            ),
+        ];
+        let lines: Vec<(Pipe, &str)> = calls
+            .iter()
+            .flatten()
+            .map(|(pipe, line)| (*pipe, line.as_str()))
+            .collect();
+        let open = feed(&mut tap, 0, &lines).unwrap();
+        assert!(open.todo_open, "task #2 is still pending");
+        let [create, done] = task_tool(
+            "toolu_u2",
+            "TaskUpdate",
+            r##"{"taskId":"#2","status":"deleted"}"##,
+            "Updated task #2",
+        );
+        let done = feed(
+            &mut tap,
+            20_000,
+            &[(create.0, &create.1), (done.0, &done.1)],
+        )
+        .unwrap();
+        assert!(!done.todo_open, "#1 completed and #2 deleted");
+    }
+
+    // Defect (review m1): Claude's keep_alive, which the front end drops
+    // (claude.ts:644), moves the progress time, so a turn stalled on its API
+    // stream is never hung.
+    #[test]
+    fn a_claude_keep_alive_is_not_progress() {
+        let mut tap = Tap::new(Harness::Claude);
+        let init = tap
+            .line(Pipe::Stdout, r#"{"type":"system","subtype":"init"}"#, 0)
+            .unwrap();
+        tap.wrote(init, 0);
+        assert_eq!(
+            tap.line(Pipe::Stdout, r#"{"type":"keep_alive"}"#, 60_000),
+            None
+        );
+        let row = tap
+            .line(Pipe::Stdout, r#"{"type":"assistant"}"#, 120_000)
+            .unwrap();
+        assert_eq!(row.last_progress_at, 120_000, "the next real frame is");
     }
 
     // Defect: Codex approval and question requests are missed, the app's

@@ -212,7 +212,11 @@ impl World {
 
     fn try_tick(&mut self) -> rusqlite::Result<Notices> {
         let app = self.app.as_mut().expect("the app is not running");
-        app.active.tick(&app.store.lock_conn().unwrap())
+        let alarms = crate::alarms::Sources {
+            live: &app.store.alarms,
+            running: Some(&self.running),
+        };
+        app.active.tick(&app.store.lock_conn().unwrap(), &alarms)
     }
 
     /// The app's active clock now (what it holds, not what it stored).
@@ -258,6 +262,7 @@ impl World {
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
         };
+        store.alarms.set_now(active.active_ms());
         self.app = Some(App { store, active });
     }
 
@@ -292,6 +297,28 @@ impl World {
 
     pub(crate) fn running(&self) -> HashMap<String, String> {
         self.running.clone()
+    }
+
+    /// What `ControlHost` does for the stall detector when it authorizes
+    /// turn `turn` of `session` (`record_start`): the turn runs, and its
+    /// start is recorded for the next pass.
+    pub(crate) fn alarm_turn_started(&mut self, session: &SessionId, turn: &str) {
+        self.running
+            .insert(session.as_str().to_string(), turn.to_string());
+        self.store()
+            .alarms
+            .turn(session.as_str(), turn, crate::alarms::Edge::Started);
+    }
+
+    /// Turn `turn` of `session` ends (`end_turns`); a turn that a newer one
+    /// replaced leaves the newer one running.
+    pub(crate) fn alarm_turn_ended(&mut self, session: &SessionId, turn: &str) {
+        if self.running.get(session.as_str()).map(String::as_str) == Some(turn) {
+            self.running.remove(session.as_str());
+        }
+        self.store()
+            .alarms
+            .turn(session.as_str(), turn, crate::alarms::Edge::Ended);
     }
 
     /// What the window does when `session` is idle and a message waits for

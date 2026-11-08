@@ -7,7 +7,7 @@
 //! parent and writes the ask's `miss`; the ask stays open. R15: a blocked
 //! question writes `blocked:<ask>:<seq>` to the parent, delivered the same way.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
@@ -268,7 +268,7 @@ fn reminder_text(
 /// names. Only a blocked row joins its question's seq and text (R15), and
 /// only an alarm row its send's open episode.
 const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body,
-       al.id, al.actor, al.cause, s.level
+       al.id, al.actor, al.cause, s.level, o.claimed_by
      FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
      LEFT JOIN mono_ask_events e ON o.stage = 'blocked' AND e.ask_id = o.ask_id
        AND e.kind = 'question' AND o.key = 'blocked:' || e.ask_id || ':' || e.seq
@@ -426,6 +426,22 @@ pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Resul
 /// Whether a reminder waits for chat `session`.
 pub(crate) fn waits(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
     Ok(!pending(conn, session)?.is_empty())
+}
+
+/// Every recipient an unsent outbox row waits for: a row a window claimed
+/// and has not sent, or an unclaimed one with a prompt (`pending`).
+pub(crate) fn waiting_recipients(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let rows = conn
+        .prepare(&format!("{ROW} WHERE o.sent_at IS NULL"))?
+        .query_map([], |row| {
+            Ok((row_text(row)?, row.get::<_, Option<String>>(11)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|((_, _, text), claimed)| claimed.is_some() || text.is_some())
+        .map(|((_, recipient, _), _)| recipient)
+        .collect())
 }
 
 /// Plan R9, one compare-and-set: window `window` takes reminder `key` with
