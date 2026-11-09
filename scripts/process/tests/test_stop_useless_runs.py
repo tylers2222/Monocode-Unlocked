@@ -45,7 +45,7 @@ class StopJobsTest(unittest.TestCase):
         pull_request_red = "${{ failure() && github.event_name == 'pull_request' }}"
         expected = {
             "ci.yml": ({"mobile", "browser", "host", "check"}, pull_request_red),
-            "e2e.yml": ({"e2e-linux"}, pull_request_red),  # the macOS jobs are not required
+            "e2e.yml": ({"e2e-linux-run"}, pull_request_red),  # not the aggregate: macOS calls nothing
             "gate.yml": ({"lint"}, "${{ failure() }}"),  # gate.yml runs only on pull_request
         }
         for workflow, (needs, condition) in expected.items():
@@ -149,20 +149,23 @@ done
 class RequiredChecksTest(unittest.TestCase):
     """The stop relies on these: a cancelled job must never let its required check pass."""
 
-    def run_ci(self, **results):
+    def run_ci(self, outputs=None, **results):
         with tempfile.NamedTemporaryFile() as output:
-            needs = json.dumps({name: {"result": result} for name, result in results.items()})
-            env = {**os.environ, "NEEDS": needs, "GITHUB_OUTPUT": output.name}
-            done = subprocess.run(["bash", "-c", run_block(job("ci.yml", "ci"))], env=env, capture_output=True, text=True)
+            needs = {name: {"result": result} for name, result in results.items()}
+            needs["changes"]["outputs"] = outputs or {}
+            env = {**os.environ, "NEEDS": json.dumps(needs), "EVENT": "pull_request", "GITHUB_OUTPUT": output.name}
+            done = subprocess.run(["bash", "-c", run_block(job("ci.yml", "ci"))], env=env, capture_output=True, text=True,
+                                  cwd=WORKFLOWS.parents[1])
             return done.returncode, Path(output.name).read_text()
 
     def test_ci_fails_on_a_cancelled_or_failed_job(self):
         for bad in ("cancelled", "failure"):
-            code, output = self.run_ci(changes="success", browser=bad, host="skipped")
+            code, output = self.run_ci({"host": "false"}, changes="success", browser=bad, host="skipped")
             self.assertEqual((code, output), (1, "failed=browser\n"), bad)
 
-    def test_ci_passes_when_every_job_passed_or_was_skipped(self):
-        self.assertEqual(self.run_ci(changes="success", browser="success", host="skipped"), (0, "failed=\n"))
+    def test_ci_passes_when_every_job_passed_or_was_skipped_for_a_reason(self):
+        self.assertEqual(self.run_ci({"host": "false"}, changes="success", browser="success", host="skipped"), (0, "failed=\n"))
+        self.assertEqual(self.run_ci(changes="success", browser="success", host="skipped"), (1, "failed=host\n"))
 
     def test_ci_always_reports_on_every_job_that_can_stop(self):
         block = job("ci.yml", "ci")
@@ -171,10 +174,14 @@ class RequiredChecksTest(unittest.TestCase):
 
     def test_e2e_linux_is_never_skipped_by_a_failed_changes_job_or_a_pull_request_stop(self):
         block = job("e2e.yml", "e2e-linux")
-        self.assertEqual(setting(block, "name"), "e2e-linux")
-        self.assertEqual(setting(block, "needs"), "changes")
-        self.assertEqual(setting(block, "if"),
-                         "${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.e2e-linux != 'false' }}")
+        self.assertEqual(setting(block, "name"), "${{ github.event_name == 'workflow_dispatch' && 'e2e-linux (dispatch)' || "
+                         "needs.changes.outputs.level == 'fast' && 'e2e-linux (not run on a draft)' || 'e2e-linux' }}")
+        self.assertEqual(setting(block, "needs"), "[changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]")
+        self.assertEqual(setting(block, "if"), "${{ always() && github.event_name != 'schedule' }}")
+        suites = job("e2e.yml", "e2e-linux-run")
+        self.assertEqual(setting(suites, "needs"), "changes")
+        self.assertEqual(setting(suites, "if"), "${{ !cancelled() && github.event_name != 'schedule' && "
+                         "needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-linux != 'false' }}")
 
     def test_a_cancelled_mutation_job_fails_gate_mutation(self):
         block = job("gate-mutation.yml", "gate")

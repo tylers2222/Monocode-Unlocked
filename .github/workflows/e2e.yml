@@ -170,7 +170,7 @@ jobs:
   # so they call nothing.
   stop-e2e-linux:
     name: stop (e2e-linux)
-    needs: e2e-linux
+    needs: e2e-linux-run
     if: ${{ failure() && github.event_name == 'pull_request' }}
     permissions:
       actions: write
