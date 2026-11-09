@@ -87,8 +87,10 @@ fn open_episode(world: &World, actor_text: &str) -> Option<String> {
         .unwrap()
 }
 
-/// `session` runs a turn: its open episode closes with progress.
+/// `session` runs a turn that takes its queue: its open episode closes with
+/// progress.
 fn recovers(world: &mut World, actor_text: &str, session: &SessionId) {
+    save_queue(world, session, json!([]), "active");
     ran_a_turn(world, session);
     assert_eq!(open_episode(world, actor_text), None, "closed by the turn");
 }
@@ -631,4 +633,41 @@ fn a_missing_sleep_hold_is_never_limited_and_leaves_the_stall_count_alone() {
     let next = wake_stall(&mut world, &who, &worker, "q3");
     let text = message(&world, &next).expect("after the window");
     assert!(text.contains(&held_line(1)), "the count is intact: {text}");
+}
+
+// Defect (the one rule): a held episode closes unsent and its item counts as
+// already alarmed, so an item that stays stuck never alarms and never escalates.
+#[test]
+fn an_item_held_and_closed_unsent_alarms_when_it_stays_stuck() {
+    let mut world = World::new("alarm-limit-unsent");
+    let chain = chain(&world, "liu");
+    let (who, worker) = (actor(&chain.worker), chain.worker.clone());
+    align(&mut world);
+    ran_a_turn(&mut world, &worker);
+
+    let first = wake_stall(&mut world, &who, &worker, "q1");
+    let window_ends = one_i64(
+        &world,
+        "SELECT opened_active_ms FROM alarm_episodes WHERE id = ?1",
+        &first,
+    ) + WINDOW;
+    recovers(&mut world, &who, &worker);
+
+    // A turn ran, but it did not take the item: the held episode closes unsent.
+    let held = wake_stall(&mut world, &who, &worker, "stuck");
+    assert_eq!(message(&world, &held), None);
+    ran_a_turn(&mut world, &worker);
+    assert_eq!(open_episode(&world, &who), None, "closed unsent");
+
+    world.advance(WAKE_STALL);
+    let again = open_episode(&world, &who).expect("the stuck item stalls again");
+    assert_ne!(again, held);
+    world.advance(window_ends - world.active_ms() + 2 * PASS);
+    let text = take(&world, &test_taps::outbox_key(&again, 1));
+    assert!(text.contains(&held_line(2)), "{text}");
+
+    // Now someone was told, so the item counts once, as any other.
+    ran_a_turn(&mut world, &worker);
+    world.advance(WAKE_STALL + MINUTE);
+    assert_eq!(open_episode(&world, &who), None, "told once");
 }

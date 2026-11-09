@@ -423,8 +423,10 @@ impl Rows {
     }
 }
 
-/// The notice and queue items earlier episodes of `actors` already
-/// listed: each counts toward one episode only (lead N5).
+/// The notice and queue items earlier episodes of `actors` already told
+/// someone of: each counts toward one episode only (lead N5). An episode whose
+/// message the repeat limit held and that closed unsent told no one, so its
+/// items still count, or a stuck item would never alarm.
 fn counted(conn: &Connection, actors: &[String]) -> rusqlite::Result<HashSet<(String, String)>> {
     if actors.is_empty() {
         return Ok(HashSet::new());
@@ -435,7 +437,11 @@ fn counted(conn: &Connection, actors: &[String]) -> rusqlite::Result<HashSet<(St
            FROM alarm_episodes e, json_each(e.open_work_json) w
           WHERE e.actor IN (SELECT value FROM json_each(?1))
             AND e.closed_active_ms IS NOT NULL AND json_valid(e.open_work_json)
-            AND json_extract(w.value, '$.kind') IN ('notice', 'queued')",
+            AND json_extract(w.value, '$.kind') IN ('notice', 'queued')
+            AND EXISTS (SELECT 1 FROM alarm_sends s
+                          LEFT JOIN alarm_prompts p ON p.outbox_key = s.outbox_key
+                         WHERE s.episode_id = e.id
+                           AND (s.recipient = 'tyler' OR p.outbox_key IS NOT NULL))",
         [serde_json::to_string(actors).unwrap_or_default()],
     )?
     .into_iter()
