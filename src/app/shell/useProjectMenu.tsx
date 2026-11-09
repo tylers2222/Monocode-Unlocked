@@ -27,7 +27,7 @@ import {
   toggleProjectPin,
 } from "../../features/projects/model/recents";
 import {
-  isGigaWorkspaceProject,
+  isInGigaWorkspace,
   reservedProjectLabelError,
 } from "../../features/projects/model/reservedProjectName";
 import {
@@ -60,7 +60,7 @@ import {
 } from "../../features/projects/model/projectGroups";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
-import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
+import { useProjectRemoval } from "./useProjectRemoval";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -192,7 +192,11 @@ function projectMenuExtraItems(
 type Point = { x: number; y: number };
 
 type Options = {
-  onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
+  /** A purge answers with why it was refused, or null. */
+  onRemoveProject?: (
+    path: string,
+    options: { purgeData: boolean },
+  ) => void | Promise<string | null>;
   onOpenNotificationSettings?: (projectPath?: string) => void;
   /** Called when a project or group menu opens, so hosts can close sibling menus. */
   onOpen?: () => void;
@@ -222,10 +226,6 @@ export function useProjectMenu({
   const [notificationMenu, setNotificationMenu] = useState<
     (Point & { path: string; project: NotificationProject }) | null
   >(null);
-  const [removing, setRemoving] = useState<{
-    path: string;
-    name: string;
-  } | null>(null);
   const [backgroundProject, setBackgroundProject] = useState<{
     project: string;
     name: string;
@@ -257,8 +257,11 @@ export function useProjectMenu({
       )
     : null;
 
+  // A refusal that came after the menu closed reopens it with this message.
+  const reopenedWith = useRef<string | null>(null);
   useEffect(() => {
-    setMenuError(null);
+    setMenuError(reopenedWith.current);
+    reopenedWith.current = null;
   }, [menuPath]);
 
   useEffect(() => {
@@ -285,6 +288,19 @@ export function useProjectMenu({
   };
 
   const restoreFocus = () => trigger.current?.focus();
+
+  const removal = useProjectRemoval({
+    menuPath,
+    closeMenu: () => setProjectMenu(null),
+    reopenMenu: (menu, refusal) => {
+      reopenedWith.current = refusal;
+      setMenuError(refusal);
+      setProjectMenu(menu);
+    },
+    showRefusal: setMenuError,
+    restoreFocus,
+    onRemoveProject,
+  });
 
   const closeNotificationMenu = () => {
     setNotificationMenu(null);
@@ -329,7 +345,7 @@ export function useProjectMenu({
 
   const dismiss = () => {
     close();
-    setRemoving(null);
+    removal.dismiss();
     setBackgroundProject(null);
   };
 
@@ -392,12 +408,14 @@ export function useProjectMenu({
       });
     } else if (action === "reveal") void revealPath(path);
     else if (action === "archive") {
-      onRemoveProject?.(path, { purgeData: false });
+      removal.archive(path);
+      return false;
     } else if (action === "delete") {
-      setRemoving({
-        path,
+      removal.askToDelete({
+        ...projectMenu,
         name: resolveTabGroupLabel(key, groupLabels, basename(path)),
       });
+      return false;
     }
   };
 
@@ -466,7 +484,7 @@ export function useProjectMenu({
           ),
           // The Giga workspace stays on the rail: no Archive or Delete.
           Boolean(onRemoveProject) &&
-            !isGigaWorkspaceProject(projectMenu.path, home),
+            !isInGigaWorkspace(projectMenu.path, home),
           Boolean(onOpenNotificationSettings),
           Boolean(readyNotificationProject),
           externalEditors,
@@ -583,22 +601,7 @@ export function useProjectMenu({
           />
         </Popover>
       ) : null}
-      {removing ? (
-        <RemoveProjectDialog
-          name={removing.name}
-          path={removing.path}
-          onConfirm={() => {
-            setProjectGroupAssignment(removing.path, null);
-            onRemoveProject?.(removing.path, { purgeData: true });
-            setRemoving(null);
-            restoreFocus();
-          }}
-          onCancel={() => {
-            setRemoving(null);
-            restoreFocus();
-          }}
-        />
-      ) : null}
+      {removal.dialog}
       {backgroundProject ? (
         <ProjectBackgroundDialog
           project={backgroundProject.project}
@@ -624,7 +627,7 @@ export function useProjectMenu({
       projectMenu != null ||
       groupMenu != null ||
       notificationMenu != null ||
-      removing != null ||
+      removal.isRemoving ||
       backgroundProject != null,
     element,
   };

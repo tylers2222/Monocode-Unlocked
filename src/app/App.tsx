@@ -502,20 +502,23 @@ import {
   rebasePath,
   resolveWorkspacePath,
 } from "../shared/lib/paths";
+import { rebaseProjectData } from "../features/projects/model/projectData";
 import {
-  rebaseProjectData,
-  removeProjectData,
-} from "../features/projects/model/projectData";
+  forgetPurgedProject,
+  purgeProjectInSpace,
+  purgeWindowPlan,
+  type ProjectPurge,
+} from "../features/projects/model/projectPurge";
+import { setOpenSessionsSource } from "../features/projects/model/projectDeleteCheck";
+import { notifySpaceProjectsChanged } from "../features/spaces/model/spaces";
 import * as milestones from "../features/milestones/model/milestones";
 import * as approvals from "../features/approvals/model/approvals";
 import {
-  forgetProjectLocation,
   rememberProjectLocation,
   synchronizeProjectLocation,
 } from "../features/projects/model/projectLocation";
 import {
   archiveProject,
-  forgetProject,
   lastProjectPath,
   loadRecents,
   loadPinnedProjects,
@@ -6818,15 +6821,21 @@ function Workspace({
     [],
   );
 
-  const onRemoveProject = useCallback(
-    (path: string, options: { purgeData: boolean }) => {
-      const normalized = normalizeProjectPath(path);
+  useEffect(() => setOpenSessionsSource(() => sessionsRef.current), []);
+
+  /**
+   * `purge` null is Archive. A purge acts only on what the backend deleted; a
+   * project other Spaces still have keeps its rail entry, location, settings
+   * and terminals, which are shared.
+   */
+  const removeProjectFromWindow = useCallback(
+    (normalized: string, purge: ProjectPurge | null) => {
       const wasCurrent = sameProjectPath(projectCwdRef.current, normalized);
-      const remaining = options.purgeData
-        ? forgetProject(normalized)
+      const remaining = purge
+        ? forgetPurgedProject(normalized, purge)
         : archiveProject(normalized);
-      if (options.purgeData) {
-        forgetProjectLocation(normalized);
+      if (!purge) notifySpaceProjectsChanged();
+      if (purge?.complete) {
         setSidebarTabSelection((current) =>
           sameProjectPath(current.project, normalized)
             ? { project: "~", tab: loadProjectSidebarTab("~") }
@@ -6837,45 +6846,37 @@ function Workspace({
 
       const tabs = tabsRef.current;
       const sessions = sessionsRef.current;
-      const projectTabs = filterTabsForProject(tabs, sessions, normalized);
-      const projectTabIds = new Set(projectTabs.map((tab) => tab.id));
       const projectSessions = sessions.filter((session) =>
         sameProjectPath(session.cwd, normalized),
       );
-      const projectSessionIds = new Set(
-        projectSessions.map((session) => session.id),
-      );
+      const plan = purge
+        ? purgeWindowPlan(tabs, sessions, normalized, purge)
+        : {
+            tabs: filterTabsForProject(tabs, sessions, normalized),
+            trimmed: new Map<string, WorkspaceTab>(),
+            sessionIds: new Set(projectSessions.map((session) => session.id)),
+          };
+      const projectTabs = plan.tabs;
+      const projectTabIds = new Set(projectTabs.map((tab) => tab.id));
+      const projectSessionIds = plan.sessionIds;
 
-      if (options.purgeData) {
-        const cachedOrLoading = new Set([
-          ...loadedSessionCache.current.keys(),
-          ...sessionLoads.current.keys(),
-        ]);
-        for (const sessionId of cachedOrLoading) {
+      if (purge) {
+        for (const sessionId of purge.deleted) {
           invalidateLoadedSession(sessionId);
+          pendingPersist.current.delete(sessionId);
+          lastPersisted.current.delete(sessionId);
         }
-        for (const session of projectSessions) {
+        for (const session of sessions) {
+          if (!projectSessionIds.has(session.id)) continue;
           pendingPersist.current.delete(session.id);
-          for (const queued of session.queuedMessages ?? [])
-            turnWatchers.current.cancel(queued.id);
-          if (session.busy) {
-            const gen = (turnGen.current.get(session.id) ?? 0) + 1;
-            turnGen.current.set(session.id, gen);
-            // Nothing runs under this gen; settling it refuses a late attach.
-            turnWatchers.current.settle(session.id, gen, {
-              status: "cancelled",
-              text: "",
-            });
-            for (const id of sessionChildHarnesses(session)) {
-              void cancelHarnessTurn(id, session.id);
-            }
-          }
+          lastPersisted.current.delete(session.id);
           for (const id of sessionChildHarnesses(session)) {
             void forgetHarnessSession(id, session.id);
           }
-          lastPersisted.current.delete(session.id);
         }
-        void removeProjectData(normalized);
+        setHistory((current) =>
+          current.filter((session) => !purge.deleted.has(session.id)),
+        );
       } else {
         for (const session of projectSessions) {
           if (session.busy) continue;
@@ -6893,10 +6894,12 @@ function Workspace({
         }
       }
 
-      let nextTabs = tabs.filter((tab) => !projectTabIds.has(tab.id));
+      let nextTabs = tabs
+        .filter((tab) => !projectTabIds.has(tab.id))
+        .map((tab) => plan.trimmed.get(tab.id) ?? tab);
       let nextSessions = sessions.filter((session) => {
         if (!projectSessionIds.has(session.id)) return true;
-        return !options.purgeData && session.busy;
+        return !purge && session.busy;
       });
       let nextActiveTabId = activeTabIdRef.current;
 
@@ -6931,12 +6934,18 @@ function Workspace({
         }
         return updated;
       });
-      setProjectTerminals((prev) =>
-        prev.filter((dock) => !sameProjectPath(dock.projectPath, normalized)),
-      );
+      if (!purge || purge.lastSpace) {
+        setProjectTerminals((prev) =>
+          prev.filter((dock) => !sameProjectPath(dock.projectPath, normalized)),
+        );
+      }
 
-      if (wasCurrent) {
-        const next = remaining.find((item) => looksLikeProject(item.path));
+      if (wasCurrent && (!purge || purge.complete)) {
+        const next = remaining.find(
+          (item) =>
+            looksLikeProject(item.path) &&
+            !sameProjectPath(item.path, normalized),
+        );
         if (next) {
           onSelectProject(next.path);
           setProjectCwd(next.path);
@@ -6949,9 +6958,28 @@ function Workspace({
     [activeTabId, invalidateLoadedSession, onSelectProject, persistSession],
   );
 
+  const onRemoveProject = useCallback(
+    (
+      path: string,
+      options: { purgeData: boolean },
+    ): void | Promise<string | null> => {
+      const normalized = normalizeProjectPath(path);
+      if (!options.purgeData) {
+        removeProjectFromWindow(normalized, null);
+        return;
+      }
+      return purgeProjectInSpace(normalized).then((result) => {
+        if (result.purge) removeProjectFromWindow(normalized, result.purge);
+        return result.refusal;
+      });
+    },
+    [removeProjectFromWindow],
+  );
+
   const onRestoreProject = useCallback(
     (path: string) => {
       setRecents(rememberProject(path));
+      notifySpaceProjectsChanged();
       onSelectProject(path);
     },
     [onSelectProject],

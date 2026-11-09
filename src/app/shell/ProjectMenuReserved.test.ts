@@ -30,7 +30,8 @@ beforeEach(async () => {
         visible: true,
         cwd: "/work/client",
         recents: [
-          { path: "/home/u/MonoCode", openedAt: 2 },
+          { path: "/home/u/MonoCode", openedAt: 3 },
+          { path: "/home/u/MonoCode/gigas/general", openedAt: 2 },
           { path: "/work/client", openedAt: 1 },
         ],
         onSelectProject: vi.fn(),
@@ -74,6 +75,12 @@ it("offers no Archive or Delete for the Giga workspace, and both for another pro
   const other = await openMenu("client");
   expect(other).toContain("Archive");
   expect(other).toContain("Delete");
+});
+
+it("offers no Archive or Delete on a path under the Giga workspace (F1)", async () => {
+  const under = await openMenu("general");
+  expect(under).not.toContain("Archive");
+  expect(under).not.toContain("Delete");
 });
 
 it("refuses to rename another project to MonoCode", async () => {
