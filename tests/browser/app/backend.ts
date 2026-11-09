@@ -800,6 +800,26 @@ const HANDLERS: Record<string, Handler> = {
   spaces_logins_list: (store) => store.spaceLogins,
   spaces_project_get: (store, { projectPath }) =>
     store.projectSpaces[projectPath as string] ?? "space-1",
+  // spaces/projects.rs: the window's Space, as `window_space` answers it.
+  spaces_project_archive_check: () => null,
+  spaces_project_notify_changed: none,
+  spaces_project_delete_preview: (store, { projectPath }) => ({
+    lastSpace: true,
+    sessionCount: store.sessions.filter(
+      (session) =>
+        session.cwd === projectPath && session.spaceId === store.activeSpaceId,
+    ).length,
+    otherSpaces: [],
+    hiddenSessionCount: 0,
+  }),
+  spaces_project_delete: (store, { projectPath }) => {
+    const doomed = store.sessions.filter(
+      (session) =>
+        session.cwd === projectPath && session.spaceId === store.activeSpaceId,
+    );
+    store.sessions = store.sessions.filter((row) => !doomed.includes(row));
+    return { deletedSessionIds: doomed.map((row) => row.id), lastSpace: true };
+  },
   spaces_project_logins_list: empty,
   spaces_project_login_set: none,
   // spaces/: each CLI's own login, and the writes the import and Settings send.
@@ -1092,6 +1112,9 @@ export function installBackend(
         return reply;
       } catch (error) {
         if (typeof error === "string") call.refused = error;
+        // A typed Space refusal (`{ code, message }`) is an answer, not a bug.
+        else if (typeof (error as { code?: unknown } | null)?.code === "string")
+          call.refused = String((error as { message?: unknown }).message);
         else void window.appBackendReport({ command, problem: String(error) });
         throw error;
       }

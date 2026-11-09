@@ -162,7 +162,7 @@
       "count": 2
     },
     "complexity": {
-      "count": 31
+      "count": 30
     },
     "max-depth": {
       "count": 2
@@ -171,7 +171,7 @@
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 35
+      "count": 34
     },
     "react-hooks/exhaustive-deps": {
       "count": 2

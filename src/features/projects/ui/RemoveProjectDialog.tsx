@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LAYER } from "../../../shared/lib/layers";
 import { prettyCwd } from "../../../shared/lib/paths";
-import { projectSessionCount } from "../model/projectData";
+import {
+  readProjectDeletePrompt,
+  type ProjectDeletePrompt,
+} from "../model/projectDeleteCheck";
+import { isRemoteProjectPath } from "../model/recents";
 
 type Props = {
   name: string;
@@ -11,12 +15,49 @@ type Props = {
   onConfirm: () => void;
 };
 
+/** Scoped unless this Space is the only one with chats or membership. */
+function DeletePromptText({
+  path,
+  prompt,
+}: {
+  path: string;
+  prompt: ProjectDeletePrompt | null;
+}) {
+  const space = prompt?.spaceName ?? "this Space";
+  if (isRemoteProjectPath(path)) {
+    return (
+      <p className="text-[12px] leading-snug text-content/55">
+        It leaves {space}’s sidebar, and nothing on the machine changes.
+      </p>
+    );
+  }
+  const sessions = prompt?.sessions ?? 0;
+  return (
+    <>
+      <p className="text-[12px] leading-snug text-content/55">
+        {prompt && !prompt.scoped
+          ? "All conversations for this project will be deleted."
+          : `All conversations for this project in ${space} will be deleted.`}{" "}
+        It also leaves the sidebar. The folder on disk stays put, and opening it
+        again brings the project back empty.
+      </p>
+      {sessions > 0 ? (
+        <p className="text-[12px] leading-snug text-content/45">
+          {sessions === 1
+            ? "1 saved conversation will be removed."
+            : `${sessions} saved conversations will be removed.`}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 /**
- * Delete drops the project from the rail and its saved chats. The folder on
- * disk is left alone; opening it again brings the project back empty.
+ * Delete drops the project from this Space and this Space's saved chats. The
+ * folder on disk is left alone; opening it again brings the project back empty.
  */
 export function RemoveProjectDialog({ name, path, onCancel, onConfirm }: Props) {
-  const [sessions, setSessions] = useState<number | null>(null);
+  const [prompt, setPrompt] = useState<ProjectDeletePrompt | null>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -25,8 +66,8 @@ export function RemoveProjectDialog({ name, path, onCancel, onConfirm }: Props) 
 
   useEffect(() => {
     let cancelled = false;
-    void projectSessionCount(path).then((count) => {
-      if (!cancelled) setSessions(count);
+    void readProjectDeletePrompt(path).then((next) => {
+      if (!cancelled) setPrompt(next);
     });
     return () => {
       cancelled = true;
@@ -61,18 +102,7 @@ export function RemoveProjectDialog({ name, path, onCancel, onConfirm }: Props) 
           <h2 className="text-[13px] font-medium leading-tight text-content">
             Delete “{name}”?
           </h2>
-          <p className="text-[12px] leading-snug text-content/55">
-            All conversations for this project will be deleted. It also
-            leaves the sidebar. The folder on disk stays put, and opening it
-            again brings the project back empty.
-          </p>
-          {sessions != null && sessions > 0 ? (
-            <p className="text-[12px] leading-snug text-content/45">
-              {sessions === 1
-                ? "1 saved conversation will be removed."
-                : `${sessions} saved conversations will be removed.`}
-            </p>
-          ) : null}
+          <DeletePromptText path={path} prompt={prompt} />
           <p className="truncate text-[11px] leading-tight text-content/40">
             {prettyCwd(path)}
           </p>
