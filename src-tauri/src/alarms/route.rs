@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::limit;
 use super::provisioner::{self, Provisioner};
 use super::store::{agent_stall_minutes, outbox_key, Settings, MINUTE_MS};
+use super::stuck;
 use super::text::{self, DialogLine, Missed, Next, Stall, Who};
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, Notices, SessionId};
@@ -213,7 +214,7 @@ fn clock(conn: &Connection, wall_ms: i64) -> rusqlite::Result<String> {
     )
 }
 
-fn ask_line(conn: &Connection, id: &str, active: i64) -> rusqlite::Result<String> {
+pub(super) fn ask_line(conn: &Connection, id: &str, active: i64) -> rusqlite::Result<String> {
     let row: Option<(Option<i64>, Option<String>)> = conn
         .query_row(
             "SELECT a.due_active_ms, m.body FROM mono_asks a
@@ -234,6 +235,14 @@ fn ask_line(conn: &Connection, id: &str, active: i64) -> rusqlite::Result<String
     })
 }
 
+/// The line of a child's result no turn has read.
+pub(super) fn child_line(conn: &Connection, child: &str) -> rusqlite::Result<String> {
+    Ok(match Actor::parse(child) {
+        Some(actor) => format!("the result of {} not read", who(conn, &actor)?.label),
+        None => format!("the result of {child} not read"),
+    })
+}
+
 /// The episode's open work (section 4), one line per item.
 fn work_lines(conn: &Connection, json: &str, active: i64) -> rusqlite::Result<Vec<String>> {
     let items: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
@@ -241,13 +250,7 @@ fn work_lines(conn: &Connection, json: &str, active: i64) -> rusqlite::Result<Ve
     for item in items {
         let line = match item["kind"].as_str() {
             Some("ask") => ask_line(conn, item["id"].as_str().unwrap_or_default(), active)?,
-            Some("child_result") => {
-                let child = item["child"].as_str().unwrap_or_default();
-                match Actor::parse(child) {
-                    Some(actor) => format!("the result of {} not read", who(conn, &actor)?.label),
-                    None => format!("the result of {child} not read"),
-                }
-            }
+            Some("child_result") => child_line(conn, item["child"].as_str().unwrap_or_default())?,
             Some("todo") => "an unfinished todo list".into(),
             _ => continue,
         };
@@ -318,8 +321,10 @@ pub(crate) fn stall(
 ) -> rusqlite::Result<Stall> {
     let minutes = (active - episode.stalled_since_active) / MINUTE_MS;
     let dialog = if episode.cause == "dialog" {
+        let kind = dialog_kind(conn, &episode.actor)?;
         Some(DialogLine {
-            kind: dialog_kind(conn, &episode.actor)?.unwrap_or_else(|| "permission".into()),
+            kind_unknown: kind.is_none(),
+            kind: kind.unwrap_or_else(|| "permission".into()),
             minutes,
             text: episode.dialog_text.clone().unwrap_or_default(),
         })
@@ -335,6 +340,7 @@ pub(crate) fn stall(
         open_work: work_lines(conn, &episode.open_work_json, active)?,
         last_activity: last_activity(conn, &episode.actor)?,
         dialog,
+        stuck: stuck::read(conn, episode, active),
         escalate_minutes: settings.escalate_minutes,
         held: 0,
     })
