@@ -723,6 +723,16 @@ fn removing_a_project_drops_its_link_or_moves_its_assignment_and_keeps_its_sessi
         Err(ProjectRefusal::Failed { .. })
     ));
 
+    rig.assign("/", TWO);
+    assert_eq!(
+        rig.remove(TWO, "/"),
+        Err(ProjectRefusal::OnlySpace {
+            project: "/".into(),
+            message: "/ is only in this Space. Archive or delete it instead.".into(),
+        }),
+        "the root folder has no last name, so it goes by its path"
+    );
+
     let remote = "remote://host/work/app";
     rig.link(TWO, remote);
     assert!(
