@@ -62,14 +62,22 @@ impl Rig {
         app.listen_any(projects::CHANGED, move |_| {
             count.fetch_add(1, Ordering::SeqCst);
         });
-        Self {
+        let rig = Self {
             root,
             cwd,
             path,
             worktree,
             app,
             heard,
-        }
+        };
+        rig.show(FIRST_SPACE);
+        rig
+    }
+
+    /// A window that never read the settings shows no Space.
+    fn forget_the_window(&self) {
+        let store: tauri::State<'_, SessionStore> = self.app.state();
+        store.window_spaces.lock().unwrap().clear();
     }
 
     fn events(&self) -> usize {
@@ -336,4 +344,41 @@ fn a_cleanup_no_saved_lead_answers_for_keeps_the_windows_space() {
     );
     assert!(rig.worktree.exists());
     assert_eq!(rig.events(), 0);
+}
+
+/// Defect: a window that shows no Space acts for Space 1 or the active Space, so
+/// it deletes what another Space uses. It lists no session as its own, its check
+/// and removal refuse, and a lead's cleanup needs a saved lead to answer for it.
+#[test]
+fn a_window_with_no_space_is_refused_and_lists_nothing_as_its_own() {
+    const NO_SPACE: &str = "This window has no Space yet.";
+    let rig = Rig::new();
+    rig.delete_row("two-a");
+    rig.forget_the_window();
+    let window = super::agent_sandbox::main_window(&rig.app);
+    let listed = worktrees::git_worktrees(window, rig.cwd.clone(), rig.app.state()).unwrap();
+    let tree = listed.worktrees.iter().find(|tree| !tree.is_main).unwrap();
+    assert!(
+        tree.session_ids.is_empty(),
+        "it listed a session as its own"
+    );
+    assert_eq!(tree.other_space_sessions[0].session_id, "one-a");
+    assert_eq!(rig.check(), Err(NO_SPACE.to_owned()));
+    assert_eq!(rig.remove().err().as_deref(), Some(NO_SPACE));
+    assert_eq!(rig.remove_for_a_lead().err().as_deref(), Some(NO_SPACE));
+    assert!(rig.worktree.exists());
+
+    let store: tauri::State<'_, SessionStore> = rig.app.state();
+    rig.run_without_a_saved_lead(&store.lock_conn().unwrap(), &rig.path);
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some(NO_SPACE),
+        "an unsaved lead took the active Space"
+    );
+    assert!(rig.worktree.exists());
+
+    rig.run_by_a_lead(FIRST_SPACE, &rig.path);
+    rig.remove_for_a_lead()
+        .expect("a saved lead answers for a window with no Space");
+    assert!(!rig.worktree.exists());
 }

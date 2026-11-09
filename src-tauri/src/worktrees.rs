@@ -176,7 +176,8 @@ fn default_root(main: &Path) -> PathBuf {
 }
 
 /// `sessionIds` holds the calling window's Space's sessions only: the page
-/// deletes exactly those.
+/// deletes exactly those. A window that shows no Space yet has none, so every
+/// session is reported as another Space's and the page offers nothing to delete.
 #[tauri::command(async)]
 pub fn git_worktrees<R: Runtime>(
     window: WebviewWindow<R>,
@@ -192,7 +193,7 @@ pub fn git_worktrees<R: Runtime>(
         for tree in &mut worktrees {
             let (own, others): (Vec<_>, Vec<_>) = sessions_on(&conn, Path::new(&tree.path))?
                 .into_iter()
-                .partition(|session| session.space_id == space);
+                .partition(|session| space.as_deref() == Some(session.space_id.as_str()));
             tree.session_ids = own.into_iter().map(|session| session.session_id).collect();
             tree.other_space_sessions = others;
         }
@@ -647,7 +648,7 @@ pub fn git_worktree_check_remove<R: Runtime>(
     terminals: State<'_, crate::pty::PtyHost>,
 ) -> Result<(), String> {
     let path = expand_home(&path);
-    let space = crate::spaces::window_space(&store, window.label())?;
+    let space = crate::spaces::shown_space(&store, window.label())?;
     refuse_other_space(&*store.lock_conn()?, &path, &space)?;
     check_removal(
         &expand_home(&cwd),
@@ -909,7 +910,7 @@ pub fn git_worktree_remove<R: Runtime>(
     if terminals.has_working_dir(&path) || agents.has_working_dir(&path) {
         return Err("Close the terminals and agent processes using this worktree first.".into());
     }
-    let space = crate::spaces::window_space(&store, window.label())?;
+    let space = crate::spaces::shown_space(&store, window.label())?;
     let conn = store.lock_conn()?;
     let removed = remove_with_sessions(
         &conn,
@@ -949,21 +950,33 @@ fn run_lead_of(conn: &rusqlite::Connection, path: &Path) -> Result<Option<String
 }
 
 /// The Space a lead's cleanup of `path` answers for: an agent's action uses the
-/// caller's Space (I11), so the Space of the saved lead whose run has the worktree.
-/// With no such lead it is `window`'s, which fails safe.
-fn cleanup_space(conn: &rusqlite::Connection, path: &Path, window: &str) -> Result<String, String> {
-    let Some(lead) = run_lead_of(conn, path)? else {
-        return Ok(window.to_owned());
-    };
-    let space: Option<String> = conn
-        .query_row(
-            "SELECT space_id FROM sessions WHERE id = ?1",
-            [lead],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    Ok(space.unwrap_or_else(|| window.to_owned()))
+/// caller's Space (I11), so the Space of the lead whose run has the worktree. With
+/// no such lead it is `window`'s, which fails safe. A window that shows no Space
+/// has nothing to fall back on, and only a saved lead can answer for it: an unsaved
+/// one would take the app's active Space.
+fn cleanup_space(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    window: Option<&str>,
+) -> Result<String, String> {
+    let lead = run_lead_of(conn, path)?;
+    match (lead, window) {
+        (Some(lead), Some(_)) => {
+            crate::spaces::membership::space_for_row(conn, &lead, None, window)
+                .map_err(|e| e.to_string())
+        }
+        (None, Some(window)) => Ok(window.to_owned()),
+        (Some(lead), None) => conn
+            .query_row(
+                "SELECT space_id FROM sessions WHERE id = ?1",
+                [lead],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "This window has no Space yet.".to_owned()),
+        (None, None) => Err("This window has no Space yet.".to_owned()),
+    }
 }
 
 /// S is the Space of the lead whose run has the worktree ([`cleanup_space`]), else
@@ -987,7 +1000,7 @@ pub fn git_orchestration_worktree_remove<R: Runtime>(
     let branch = tree.branch.clone();
     let window_space = crate::spaces::window_space(&store, window.label())?;
     let conn = store.lock_conn()?;
-    let space = cleanup_space(&conn, &path, &window_space)?;
+    let space = cleanup_space(&conn, &path, window_space.as_deref())?;
     let removed = remove_with_sessions(&conn, &root, &path, &space, true, true)?;
     drop(conn);
     crate::spaces::projects::emit_changed(window.app_handle());
