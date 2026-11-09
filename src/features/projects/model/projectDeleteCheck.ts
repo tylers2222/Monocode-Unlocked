@@ -56,7 +56,7 @@ export function windowRunningRefusal(
   spaceId: string,
   rows: readonly Pick<SessionSummary, "id" | "spaceId">[],
   sessions: readonly OpenSession[],
-  anySpace = false,
+  anySpace: boolean,
 ): string | null {
   const spaceOf = new Map(rows.map((row) => [row.id, row.spaceId]));
   const running = sessions.filter(

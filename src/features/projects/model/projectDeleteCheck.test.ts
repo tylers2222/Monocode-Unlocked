@@ -224,6 +224,9 @@ describe("a window whose Space read failed (B2)", () => {
   it("refuses Delete if the read still fails, even with nothing running", async () => {
     await unread();
     setOpenSessionsSource(() => []);
+    expect(SPACE_UNREAD_REFUSAL).toBe(
+      "This window's Space could not be read. Try again.",
+    );
     await expect(checkProjectDelete(P)).resolves.toBe(SPACE_UNREAD_REFUSAL);
   });
 
