@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHomeDir } from "../../../shared/lib/paths";
 import { loadRecents, rememberProject } from "./recents";
 import {
+  isInGigaWorkspace,
   noticeReservedProjects,
   openPickedFolders,
   RESERVED_PROJECT_NAME_ERROR,
@@ -97,5 +98,22 @@ describe("a MonoCode project added before the name was reserved", () => {
     expect(show.mock.calls[0][0]).toContain("/tmp/x/MonoCode");
     expect(show.mock.calls[0][0]).not.toContain(`${HOME}/MonoCode`);
     expect(storedPaths()).toEqual(before);
+  });
+});
+
+describe("isInGigaWorkspace (F1)", () => {
+  it.each([
+    ["/Users/me/MonoCode", true],
+    ["/Users/me/MonoCode/", true],
+    ["/Users/me/MonoCode/gigas/monocode-general-2", true],
+    ["/Users/me/MonoCode-other", false],
+    ["/Users/me/code", false],
+    ["remote://box/Users/me/MonoCode", false],
+  ])("%s: %s", (path, inside) => {
+    expect(isInGigaWorkspace(path, "/Users/me")).toBe(inside);
+  });
+
+  it("knows nothing before the home folder is known", () => {
+    expect(isInGigaWorkspace("/Users/me/MonoCode", undefined)).toBe(false);
   });
 });
