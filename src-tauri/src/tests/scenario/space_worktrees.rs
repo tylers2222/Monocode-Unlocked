@@ -346,6 +346,62 @@ fn a_cleanup_no_saved_lead_answers_for_keeps_the_windows_space() {
     assert_eq!(rig.events(), 0);
 }
 
+/// N8 against #566's `space_for_row`. Defect: an unsaved lead's cleanup takes the
+/// app's active Space while its window shows another, also when its id names a
+/// parent that is gone; or the window's Space outranks the Space the lead first
+/// spawned in. Either removes, with `force`, a worktree only another Space uses.
+#[test]
+fn a_cleanup_by_an_unsaved_lead_answers_for_its_pin_else_the_window_not_the_active_space() {
+    const NAMED: &str = "app-gone-r1";
+    let rig = Rig::new();
+    rig.delete_row("one-a");
+    let store: tauri::State<'_, SessionStore> = rig.app.state();
+    let run = |lead: &str, checkout: &str| {
+        let run = json!({"status": "active", "tasks": [
+            {"sessionId": format!("{lead}-worker"), "workspace": {"checkoutCwd": checkout}}
+        ]});
+        let conn = store.lock_conn().unwrap();
+        crate::session_store::save_orchestration(&conn, lead, &run).unwrap();
+    };
+    let pin = |lead: &str, space: &str| {
+        let conn = store.lock_conn().unwrap();
+        spaces::membership::remember_first_spawn(&conn, lead, space).unwrap();
+    };
+
+    rig.show(FIRST_SPACE);
+    let active_two = SettingsPatch {
+        active_space_id: Some(TWO.into()),
+        ..SettingsPatch::default()
+    };
+    spaces::set_settings(&store, &active_two).unwrap();
+    run(NAMED, &rig.path);
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some(REFUSAL),
+        "a window on Space 1 removed Space 2's worktree for the active Space"
+    );
+    assert!(rig.worktree.exists(), "the worktree went");
+
+    pin(NAMED, FIRST_SPACE);
+    rig.show(TWO);
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some(REFUSAL),
+        "a lead pinned to Space 1 removed Space 2's worktree for its window"
+    );
+    assert!(rig.worktree.exists(), "the worktree went");
+    assert_eq!(rig.events(), 0, "a refusal tells no window");
+
+    run(NAMED, "/ade263-another-worktree");
+    run("pinned-two", &rig.path);
+    pin("pinned-two", TWO);
+    rig.show(FIRST_SPACE);
+    rig.remove_for_a_lead()
+        .expect("a lead pinned to Space 2 cleans its worktree from a window on Space 1");
+    assert!(!rig.worktree.exists());
+    assert_eq!(rig.events(), 1);
+}
+
 /// Defect: a window that shows no Space acts for Space 1 or the active Space, so
 /// it deletes what another Space uses. It lists no session as its own, its check
 /// and removal refuse, and a lead's cleanup needs a saved lead to answer for it.
