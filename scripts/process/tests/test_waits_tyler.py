@@ -117,6 +117,10 @@ def prs_with(changes):
     return prs
 
 
+# Relabelled so that instance 2 counts 11: the recorded #160 #159 #155 plus these 8. None stay exempt.
+ELEVEN = {number: ["instance:2"] for number in (169, 168, 167, 166, 165, 164, 163, 152)}
+
+
 class PrCap(unittest.TestCase):
     """Recorded: instance 1 has 10 open PRs (7 stacked on feat/ade-53 and feat/ade-54 bases); instance 2 has
     #160 #159 #155 plus 6 process-fix PRs; #170 has no instance label."""
@@ -132,32 +136,31 @@ class PrCap(unittest.TestCase):
     def test_instance_2_leaves_out_process_fix(self):
         result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({}))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("instance 2: 3 of 6 slots used, 6 not counted. A slot is free.", result.stdout)
+        self.assertIn("instance 2: 3 of 12 slots used, 6 not counted. A slot is free.", result.stdout)
         self.assertIn("#164 -> tyler/main  Process: waits-tyler label check and PR cap script (not counted: process-fix)", result.stdout)
         self.assertNotIn("#163", result.stdout)
         self.assertNotIn("#170", result.stdout)
 
-    def test_instance_2_cap_is_six(self):
-        five = {164: ["instance:2"], 165: ["instance:2"]}
-        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(five))
+    def test_instance_2_cap_is_twelve(self):
+        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(ELEVEN))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("5 of 6 slots used", result.stdout)
-        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({**five, 166: ["instance:2"]}))
+        self.assertIn("11 of 12 slots used", result.stdout)
+        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({**ELEVEN, 148: ["instance:2"]}))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("6 of 6 slots used, 3 not counted. Cap full: no new builder.", result.stdout)
+        self.assertIn("12 of 12 slots used, 0 not counted. Cap full: no new builder.", result.stdout)
 
     def test_held_pr_frees_a_slot(self):
-        held = {164: ["instance:2"], 165: ["instance:2"], 166: ["instance:2"], 160: ["instance:2", "waits-tyler:repo-security"]}
+        held = {**ELEVEN, 148: ["instance:2"], 160: ["instance:2", "waits-tyler:repo-security"]}
         result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(held))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("5 of 6 slots used", result.stdout)
+        self.assertIn("11 of 12 slots used", result.stdout)
         self.assertIn("(not counted: waits-tyler:repo-security)", result.stdout)
 
     def test_off_list_label_still_uses_a_slot(self):
-        off_list = {164: ["instance:2"], 165: ["instance:2"], 166: ["instance:2", "waits-tyler:wording"]}
+        off_list = {**ELEVEN, 148: ["instance:2", "waits-tyler:wording"]}
         result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(off_list))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("6 of 6 slots used", result.stdout)
+        self.assertIn("12 of 12 slots used", result.stdout)
 
     def test_instance_is_required(self):
         self.assertEqual(run("pr-cap.py", gh_out=prs_with({})).returncode, 2)
