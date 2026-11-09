@@ -79,6 +79,48 @@ describe("Archive (T9)", () => {
     expect(spies.closeMenu).not.toHaveBeenCalled();
   });
 
+  it("does not archive if the menu closed during the check, even when allowed", async () => {
+    let answer: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectArchive).mockReturnValue(
+      new Promise((done) => (answer = done)),
+    );
+    await act(async () => removal.archive(P));
+    await act(async () => removal.cancelCheck());
+    await act(async () => answer(null));
+    expect(spies.onRemoveProject).not.toHaveBeenCalled();
+    expect(spies.closeMenu).not.toHaveBeenCalled();
+    expect(spies.restoreFocus).not.toHaveBeenCalled();
+  });
+
+  it("drops a refusal for a menu that closed during the check", async () => {
+    let answer: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectArchive).mockReturnValue(
+      new Promise((done) => (answer = done)),
+    );
+    await act(async () => removal.archive(P));
+    await act(async () => removal.cancelCheck());
+    await act(async () => answer("A session is running."));
+    expect(spies.showRefusal).not.toHaveBeenCalled();
+  });
+
+  it("drops the first check when a second one starts", async () => {
+    let first: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectArchive).mockReturnValueOnce(
+      new Promise((done) => (first = done)),
+    );
+    await act(async () => removal.archive(P));
+    await act(async () => removal.archive("/code/other"));
+    expect(spies.onRemoveProject).toHaveBeenCalledTimes(1);
+    expect(spies.onRemoveProject).toHaveBeenCalledWith("/code/other", { purgeData: false });
+    await act(async () => first(null));
+    expect(spies.onRemoveProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("has nothing to cancel before any check", async () => {
+    await act(async () => removal.cancelCheck());
+    expect(spies.onRemoveProject).not.toHaveBeenCalled();
+  });
+
   it("treats an empty refusal text as a refusal", async () => {
     vi.mocked(checkProjectArchive).mockResolvedValue("");
     await act(async () => removal.archive(P));
@@ -111,6 +153,18 @@ describe("Delete", () => {
     expect(dialog()).toBeNull();
     expect(spies.restoreFocus).toHaveBeenCalled();
     expect(spies.reopenMenu).not.toHaveBeenCalled();
+  });
+
+  it("opens no dialog if the menu closed during the check, even when allowed", async () => {
+    let answer: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectDelete).mockReturnValue(
+      new Promise((done) => (answer = done)),
+    );
+    await act(async () => removal.askToDelete(TARGET));
+    await act(async () => removal.cancelCheck());
+    await act(async () => answer(null));
+    expect(dialog()).toBeNull();
+    expect(spies.closeMenu).not.toHaveBeenCalled();
   });
 
   it("reopens the menu where it was, with a refusal that comes after confirm", async () => {

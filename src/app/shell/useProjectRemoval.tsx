@@ -33,13 +33,19 @@ export function useProjectRemoval({
   ) => void | Promise<string | null>;
 }) {
   const [removing, setRemoving] = useState<RemovalTarget | null>(null);
+  const [check, setCheck] = useState<AbortController | null>(null);
 
   const whenAllowed = (
-    check: (path: string) => Promise<string | null>,
+    ask: (path: string) => Promise<string | null>,
     path: string,
     proceed: () => void,
   ) => {
-    void check(path).then((refusal) => {
+    check?.abort();
+    const started = new AbortController();
+    setCheck(started);
+    void ask(path).then((refusal) => {
+      // The user closed or moved the menu while the check ran.
+      if (started.signal.aborted) return;
       if (refusal !== null) {
         showRefusal(path, refusal);
         return;
@@ -64,6 +70,8 @@ export function useProjectRemoval({
   };
 
   return {
+    /** The menu closed or moved: an answer still on its way does nothing. */
+    cancelCheck: () => check?.abort(),
     archive: (path: string) =>
       whenAllowed(checkProjectArchive, path, () => {
         restoreFocus();
