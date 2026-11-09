@@ -3,13 +3,14 @@
 //! and completion results are written by tools and turns, never by these
 //! rows, so the outbox and the saved queue are the paths they travel.
 //!
-//! ADE-270: a row of `mono_completions` is a wake only once it holds a result.
+//! ADE-270: a row of `mono_completions` is a wake only once it holds a result,
+//! or (ADE-271) once its session stopped and no result came.
 
 use serde_json::{json, Value};
 
 use super::agents::Mono;
 use super::alarms_stall::{
-    align, episodes, ran_a_turn, save_queue, start_lead, turn, MINUTE, N, P, PASS,
+    align, claude_tap, episodes, ran_a_turn, save_queue, start_lead, turn, MINUTE, N, P, PASS,
 };
 use super::world::World;
 use crate::ask_scheduler::ALARM_STAGES;
@@ -259,4 +260,201 @@ fn a_finished_result_no_turn_took_is_wake_missed() {
         );
         assert_eq!(listed_notices(&world), [listed], "{stage}");
     }
+}
+
+/// Mono `alb-mono` handed work to `alb-lead`, whose turn runs, and ended its
+/// own turn: the row is bare.
+fn monitoring_a_running_session(name: &str) -> (World, Mono, SessionId) {
+    let mut world = World::new(name);
+    world.add_mono_in("alb-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alb-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "alb-lead");
+    align(&mut world);
+    turn(&mut world, &lead, "lead-turn", true);
+    hold(&world, &[watching(&mono, "req-1", &lead)]);
+    ran_a_turn(&mut world, &mono.chat);
+    (world, mono, lead)
+}
+
+/// The Mono's own wake_missed opens two minutes after the first pass that saw
+/// the stop, not before, and lists the request.
+fn alarms_two_minutes_after_the_stop(world: &mut World, stage: &str) {
+    world.advance(2 * MINUTE - PASS);
+    assert_eq!(episodes(world), Vec::new(), "{stage}: under two minutes");
+    world.advance(3 * PASS);
+    let [episode] = <[_; 1]>::try_from(episodes(world)).unwrap();
+    assert_eq!(
+        (
+            episode.actor.as_str(),
+            episode.provisioner.as_str(),
+            episode.cause.as_str()
+        ),
+        ("mono:alb-mono", "mono:alb-general", "wake_missed"),
+        "{stage}"
+    );
+    assert_eq!(listed_notices(world), ["req-1"], "{stage}");
+}
+
+/// The Mono's next turn closes the episode, and the row that stays bare never
+/// opens another.
+fn does_not_alarm_again(world: &mut World, mono: &Mono, stage: &str) {
+    ran_a_turn(world, &mono.chat);
+    world.advance(2 * MINUTE + 2 * PASS);
+    let causes: Vec<String> = episodes(world)
+        .into_iter()
+        .map(|episode| episode.cause)
+        .collect();
+    assert_eq!(causes, ["wake_missed"], "{stage}: once");
+}
+
+/// A live window's normal end: the row takes its result in a notice, the Mono
+/// chat's save holds the notice and settles the row, and a Mono turn takes it.
+fn window_delivers(world: &mut World, owner: Owner, mono: &Mono, lead: &SessionId) {
+    let notice = "mono-completion-req-1";
+    let mut row = finished(mono, "req-1", lead);
+    row["notice"] = json!(notice);
+    mono_completions::hold(&world.conn(), owner, &[row]).unwrap();
+    let item = json!({"id": notice, "text": "..", "appRequestId": notice, "waitForIdle": true});
+    save_queue(world, &mono.chat, json!([item]), "active");
+    let now = world.now();
+    mono_completions::settle(&world.conn(), Some(mono.chat.as_str()), now).unwrap();
+    turn(world, &mono.chat, "took-it", true);
+    save_queue(world, &mono.chat, json!([]), "active");
+    world.advance(MINUTE);
+    turn(world, &mono.chat, "took-it", false);
+}
+
+// Defect (ADE-271): the window that holds the watcher closes while the session
+// runs in another window, then the session stops. No window writes a result,
+// so the row stays bare and the Mono is never told. A row that does not parse
+// must not silence the alarm.
+#[test]
+fn a_session_that_stops_after_its_watcher_closed_alarms_once() {
+    let (mut world, mono, lead) = monitoring_a_running_session("alarm-closed-watcher");
+    world.advance(5 * MINUTE);
+    assert_eq!(episodes(&world), Vec::new(), "still running");
+    world
+        .conn()
+        .execute(
+            "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run)
+             VALUES ('req-bad', 'not json', 'main', 'run-1')",
+            [],
+        )
+        .unwrap();
+
+    turn(&mut world, &lead, "lead-turn", false);
+    alarms_two_minutes_after_the_stop(&mut world, "closed window");
+    does_not_alarm_again(&mut world, &mono, "closed window");
+}
+
+const NEXT_RUN: Owner<'static> = Owner {
+    window: "main",
+    run: "run-2",
+};
+
+/// The app dies with the session's turn running, comes back, and the restorer
+/// takes the bare row. `restore` keeps it bare while a Continue may pick the
+/// session up, and writes it back (`closeInactive`).
+fn relaunched(world: &mut World) {
+    world.kill();
+    world.restart();
+    align(world);
+    let now = world.now();
+    let kept = mono_completions::claim(&world.conn(), NEXT_RUN, true, &["main"], now).unwrap();
+    assert_eq!(kept.len(), 1, "the row survives the relaunch");
+    mono_completions::hold(&world.conn(), NEXT_RUN, &kept).unwrap();
+}
+
+// Defect (ADE-271): a Continue after a quit is refused, so `resume` ignores its
+// outcome and the restored row stays bare in a live window of this run. The
+// relaunch reports the session as stopped by itself: no turn outlives the app.
+#[test]
+fn a_refused_continue_alarms_once() {
+    let (mut world, mono, _lead) = monitoring_a_running_session("alarm-refused-continue");
+    relaunched(&mut world);
+    alarms_two_minutes_after_the_stop(&mut world, "refused Continue");
+    does_not_alarm_again(&mut world, &mono, "refused Continue");
+}
+
+// Defect (a false alarm, ADE-270's bug through ADE-271's rule): a relaunch
+// reports every session as stopped until its Continue opens the turn, so the
+// time before the Continue, or the running turn, alarms.
+#[test]
+fn a_continue_that_opens_its_turn_does_not_alarm() {
+    let (mut world, mono, lead) = monitoring_a_running_session("alarm-continue-opens");
+    relaunched(&mut world);
+    world.advance(6 * PASS);
+    turn(&mut world, &lead, "continue-turn", true);
+    world.advance(5 * MINUTE);
+    assert_eq!(episodes(&world), Vec::new(), "the Continue runs");
+
+    turn(&mut world, &lead, "continue-turn", false);
+    world.advance(2 * PASS);
+    window_delivers(&mut world, NEXT_RUN, &mono, &lead);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world), Vec::new(), "the window delivered");
+}
+
+// Defect (a false alarm): the turn ends a moment before its live watcher writes
+// the result, so the row is bare while the session is idle. It must not alarm
+// however late inside the threshold the delivery lands.
+#[test]
+fn a_stop_its_live_watcher_delivers_does_not_alarm() {
+    for (stage, wait) in [
+        ("the next pass", PASS),
+        ("just under two minutes", 2 * MINUTE - 2 * PASS),
+    ] {
+        let name = format!("alarm-live-watcher-{}", wait / PASS);
+        let (mut world, mono, lead) = monitoring_a_running_session(&name);
+        turn(&mut world, &lead, "lead-turn", false);
+        world.advance(wait);
+        assert_eq!(episodes(&world), Vec::new(), "{stage}: bare");
+        window_delivers(&mut world, WINDOW, &mono, &lead);
+        world.advance(2 * MINUTE + 2 * PASS);
+        assert_eq!(episodes(&world), Vec::new(), "{stage}: delivered");
+    }
+}
+
+// Defect (a false alarm): a row exists before anything stopped. A session whose
+// child has spawned but that never ran a turn, or a request that waits in its
+// session's paused queue, has a live watcher waiting. Another item in the queue,
+// or a queue that does not parse, hides nothing.
+#[test]
+fn a_request_no_turn_took_yet_is_not_a_stop() {
+    let mut world = World::new("alarm-not-started");
+    world.add_mono_in("alb-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alb-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "alb-lead");
+    align(&mut world);
+    let _child = claude_tap(&world, &lead);
+    hold(&world, &[watching(&mono, "req-1", &lead)]);
+    ran_a_turn(&mut world, &mono.chat);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world), Vec::new(), "no turn yet");
+
+    ran_a_turn(&mut world, &lead);
+    let own = json!({"id": "q-1", "text": "..", "appRequestId": "req-1"});
+    save_queue(&world, &lead, json!([own]), "paused");
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world), Vec::new(), "queued");
+
+    let other = json!({"id": "q-2", "text": "..", "appRequestId": "req-9"});
+    save_queue(&world, &lead, json!([other]), "paused");
+    alarms_two_minutes_after_the_stop(&mut world, "another item queued");
+}
+
+// Defect: a queue that does not parse fails the whole pass, so no agent alarms.
+#[test]
+fn a_queue_that_does_not_parse_hides_no_stop() {
+    let (mut world, _mono, lead) = monitoring_a_running_session("alarm-bad-queue");
+    world
+        .conn()
+        .execute(
+            "UPDATE sessions SET queued_messages_json = 'not json', queue_status = 'paused'
+              WHERE id = ?1",
+            [lead.as_str()],
+        )
+        .unwrap();
+    turn(&mut world, &lead, "lead-turn", false);
+    alarms_two_minutes_after_the_stop(&mut world, "bad queue");
 }

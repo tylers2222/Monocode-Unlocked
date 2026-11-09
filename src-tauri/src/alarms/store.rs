@@ -330,17 +330,29 @@ impl Rows {
         )?
         .into_iter()
         .collect();
-        // The window writes a row at the hand-off, with only the request while
-        // the turn runs: nothing is owed until the row has a result
-        // (`SavedMonoCompletion`, ADE-270).
+        // The window writes a row at the hand-off, with only the request, and
+        // adds the result when the turn ends (`SavedMonoCompletion`, ADE-270).
+        // A bare row is owed too once its session stopped: the watcher lives
+        // only in a window's memory, so nothing here can read it, and a live
+        // window can hold a row whose watcher is gone (a refused Continue). A
+        // live watcher writes the result as the turn ends, well inside the
+        // wake threshold. A session with no turn yet, or that still holds the
+        // request in its queue, has not stopped this request (ADE-271).
         let notices = grouped(pairs(
             conn,
-            "SELECT json_extract(saved_json, '$.origin.monoId'),
-                    CASE json_type(saved_json, '$.notice') WHEN 'text'
-                      THEN json_extract(saved_json, '$.notice') ELSE request_id END
-               FROM mono_completions
-              WHERE json_valid(saved_json) AND json_type(saved_json, '$.origin.monoId') = 'text'
-                AND json_type(saved_json, '$.result') = 'object'",
+            "SELECT json_extract(c.saved_json, '$.origin.monoId'),
+                    CASE json_type(c.saved_json, '$.notice') WHEN 'text'
+                      THEN json_extract(c.saved_json, '$.notice') ELSE c.request_id END
+               FROM mono_completions c
+               LEFT JOIN agent_activity a ON a.session_id = CASE WHEN json_valid(c.saved_json)
+                 THEN json_extract(c.saved_json, '$.request.sessionId') END
+              WHERE json_valid(c.saved_json) AND json_type(c.saved_json, '$.origin.monoId') = 'text'
+                AND (json_type(c.saved_json, '$.result') = 'object'
+                  OR (a.turn_state = 'idle' AND a.turn_started_active_ms IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM sessions s, json_each(s.queued_messages_json) q
+                         WHERE s.id = a.session_id AND json_valid(s.queued_messages_json)
+                           AND json_extract(q.value, '$.appRequestId') = c.request_id)))",
             [],
         )?);
         let queued = grouped(pairs(

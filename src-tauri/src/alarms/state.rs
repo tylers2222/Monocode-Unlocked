@@ -85,7 +85,8 @@ pub(crate) enum OpenWork {
 pub(crate) enum Wake {
     Message,
     Reminder,
-    /// A Mono completion result not yet in its chat.
+    /// A Mono completion result not yet in its chat, or the bare row of a
+    /// session that stopped with no result (ADE-271).
     Notice {
         id: String,
     },
