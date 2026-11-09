@@ -600,6 +600,39 @@ fn nothing_new_in_the_hub_drops_nothing() {
     assert_eq!(told(&world), 1);
 }
 
+// Ruling (orchestrator, m_sujg5vuyiwp7): a live agent that cannot start a turn
+// alarms; an archived one does not, as someone closed it on purpose. The backend
+// cannot see a usage limit or a dead provider: each reads as no turn in the wait,
+// and a limit hit with items queued as a queue paused by the error.
+#[test]
+fn a_limited_or_dead_provider_session_alarms_and_an_archived_one_does_not() {
+    for (stage, sql, alarms) in [
+        ("usage limit, nothing queued", None, true),
+        (
+            "usage limit, items queued",
+            Some("queue_status = 'paused', queue_pause = 'error'"),
+            true,
+        ),
+        ("dead provider", None, true),
+        ("archived", Some("archived = 1"), false),
+    ] {
+        let name = format!("alarm-retry-ruling-{}", stage.replace([' ', ','], "-"));
+        let (mut world, _, mono) = message_waiting(&name);
+        if let Some(sql) = sql {
+            world
+                .conn()
+                .execute(
+                    &format!("UPDATE sessions SET {sql} WHERE id = ?1"),
+                    [mono.chat.as_str()],
+                )
+                .unwrap();
+        }
+        world.advance(2 * WAKE + 2 * PASS);
+        let expected: &[&str] = if alarms { &[GIGA] } else { &[] };
+        assert_eq!(sends(&world), expected, "{stage}");
+    }
+}
+
 // Limit, as the rest of the detector rules it (`next_state`): an archived
 // session is gone on purpose, and a gone agent opens nothing. This test holds
 // that the retry changes neither way, and that the activity row goes with the
