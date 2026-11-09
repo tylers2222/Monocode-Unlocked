@@ -207,7 +207,13 @@ fn the_project_spaces_command_lists_every_space_a_project_is_in() {
     let store = || app.state::<SessionStore>();
     let spaces_of = |path: &str| spaces::spaces_project_spaces(store(), path.into());
 
-    spaces::spaces_project_set(store(), "/work/a".into(), FIRST_SPACE.into()).unwrap();
+    spaces::spaces_project_set(
+        app.handle().clone(),
+        store(),
+        "/work/a".into(),
+        FIRST_SPACE.into(),
+    )
+    .unwrap();
     assert_eq!(
         spaces_of("/work/a"),
         Ok(vec![FIRST_SPACE.to_owned()]),

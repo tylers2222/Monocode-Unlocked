@@ -30,6 +30,7 @@ fn drop_spaces(conn: &Connection) {
          DROP TABLE account_route_grants;
          DROP TABLE checkout_leases;
          DROP TABLE space_projects;
+         DROP TABLE space_project_links;
          DROP TABLE space_settings;
          DROP TABLE provider_accounts;
          DROP TABLE spaces;
@@ -1286,7 +1287,13 @@ fn the_space_and_project_commands_store_what_the_ui_sends() {
         FIRST_SPACE,
         "a project with no row is not in Space 1"
     );
-    spaces::spaces_project_set(store(), "/work/b/".into(), "space-2".into()).unwrap();
+    spaces::spaces_project_set(
+        app.handle().clone(),
+        store(),
+        "/work/b/".into(),
+        "space-2".into(),
+    )
+    .unwrap();
     assert_eq!(
         space_of("/work/b"),
         "space-2",
