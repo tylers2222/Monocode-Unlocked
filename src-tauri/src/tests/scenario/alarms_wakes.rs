@@ -458,3 +458,75 @@ fn a_queue_that_does_not_parse_hides_no_stop() {
     turn(&mut world, &lead, "lead-turn", false);
     alarms_two_minutes_after_the_stop(&mut world, "bad queue");
 }
+
+/// A closed episode as a build before #559 wrote it: every bare row counted, so
+/// `request` is counted though its session still ran.
+fn counted_before_this_build(world: &World, request: &str) {
+    let listed = json!([{"kind": "notice", "id": request}]).to_string();
+    world
+        .conn()
+        .execute(
+            "INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json,
+               stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms,
+               closed_active_ms, closed_wall_ms, close_reason)
+             VALUES ('al_old', 'mono:alb-mono', 'alb-mono', 'mono:alb-general', 'wake_missed', ?1,
+               0, 0, 0, 0, 0, 0, 'progress')",
+            [listed],
+        )
+        .unwrap();
+}
+
+fn listed_sorted(world: &World) -> Vec<String> {
+    let mut listed = listed_notices(world);
+    listed.sort();
+    listed
+}
+
+// Decision (ADE-271, no migration): a row a build before #559 counted while its
+// session ran stays silent when that session stops. Its effect ends there: a new
+// request's row alarms once, and a bare row of a running session is no longer
+// counted by an episode that closes around it, so it still alarms when it stops.
+#[test]
+fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() {
+    let (mut world, mono, lead) = monitoring_a_running_session("alarm-counted-before");
+    counted_before_this_build(&world, "req-1");
+    turn(&mut world, &lead, "lead-turn", false);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world).len(), 1, "the counted row stays silent");
+
+    let new_session = start_lead(&world, &mono, "alb-new");
+    let still_running = start_lead(&world, &mono, "alb-running");
+    turn(&mut world, &new_session, "new-turn", true);
+    turn(&mut world, &still_running, "running-turn", true);
+    let rows = [
+        watching(&mono, "req-1", &lead),
+        watching(&mono, "req-2", &new_session),
+        watching(&mono, "req-3", &still_running),
+    ];
+    hold(&world, &rows);
+    ran_a_turn(&mut world, &mono.chat);
+    world.advance(2 * PASS);
+    turn(&mut world, &new_session, "new-turn", false);
+    world.advance(2 * MINUTE + 2 * PASS);
+    let all = episodes(&world);
+    assert_eq!(all.len(), 2, "the new request alarms");
+    assert!(all[1].open && all[1].cause == "wake_missed", "{all:?}");
+    assert_eq!(
+        listed_sorted(&world),
+        ["req-1", "req-2"],
+        "not the running row"
+    );
+
+    ran_a_turn(&mut world, &mono.chat);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world).len(), 2, "the new request alarms once");
+
+    turn(&mut world, &still_running, "running-turn", false);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world).len(), 3, "the running row was not counted");
+    assert_eq!(
+        listed_sorted(&world),
+        ["req-1", "req-2", "req-3"],
+        "and it alarms for itself"
+    );
+}
