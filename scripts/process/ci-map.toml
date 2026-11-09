@@ -12,6 +12,9 @@
 #   - the diff cannot be read, or is empty.
 # A file that matches only `none` runs no gated job. gate/lint, gate/integrity,
 # gate/mutation and review/agent are never gated: they run on every pull request.
+#
+# This map is one of two filters. scripts/process/ci_level.py is the other: a draft runs
+# only the fast set, whatever this map says. See that script.
 
 # Files whose change can affect every job: the workflows, the map and its reader,
 # dependency manifests and lockfiles, toolchain pins.
@@ -19,6 +22,8 @@ all = [
   ".github/**",
   "scripts/process/ci-map.toml",
   "scripts/process/ci_changes.py",
+  "scripts/process/ci_level.py",
+  "scripts/process/ci_verdict.py",
   "package.json",
   "package-lock.json",
   "Cargo.toml",
