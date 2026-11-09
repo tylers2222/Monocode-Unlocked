@@ -29,6 +29,7 @@ mod fs;
 mod giga_workspace;
 mod gitlab;
 mod harness;
+mod harness_timing;
 mod harness_updates;
 mod inbox_media;
 mod jira;

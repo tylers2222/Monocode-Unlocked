@@ -24,7 +24,8 @@
 // Each exec runs in the agent's folder without a shell and logs {"exec", "code",
 // "stdout", "bytes", "stderr"}.
 // timing.jsonl gets {"event", "at", "pid"} when the agent starts and when it reads
-// `initialize`. The start line adds "origin", when Node began (ADE-273).
+// `initialize`. The start line adds "origin", when Node began. The app appends
+// its own lines to the same file (src-tauri/src/harness_timing.rs, ADE-273).
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";

@@ -249,7 +249,9 @@ cmd_start() {
   local bin jail=(); bin="$(app_bin "$app")"
   # ZDOTDIR: a zsh login shell reads the temp HOME's dotfiles even when the
   # caller set ZDOTDIR. The env command is the app's env, for the login check.
+  # MONOCODE_HARNESS_TIMING: the app's half of the puppet's timing.jsonl (ADE-273).
   APP_ENV=(HOME="$EVAL_HOME" ZDOTDIR="$EVAL_HOME" SHELL="${SHELL:-$LOGIN_SHELL}"
+    MONOCODE_HARNESS_TIMING="$EVAL_HOME/.puppet/timing.jsonl"
     PATH="$(instance_path "$PATH")" "${OS_ENV[@]}")
   local app_env=(env)
   [[ "${GIGA_EVAL_OPEN:-}" != 1 ]] || app_env=(env -i)

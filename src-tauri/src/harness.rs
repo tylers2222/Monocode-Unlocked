@@ -1001,6 +1001,7 @@ pub fn harness_spawn<R: Runtime>(
     omp_mcp: Option<String>,
     helper: Option<crate::spaces::Helper>,
 ) -> Result<Spawned, String> {
+    crate::harness_timing::stamp("spawn_called", &session_id, None);
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
@@ -1129,6 +1130,7 @@ pub fn harness_spawn<R: Runtime>(
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}{place}: {e}"))?;
     let pid = child.id();
+    crate::harness_timing::stamp("spawned", &session_id, Some(pid));
 
     let stdin = child
         .stdin
@@ -1188,8 +1190,10 @@ pub fn harness_spawn<R: Runtime>(
     });
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
+    let stamp_id = session_id.clone();
     thread::spawn(move || {
         read_stdout(stdout, tap.as_deref(), |line| {
+            crate::harness_timing::stamp("stdout_line", &stamp_id, None);
             if let Some(store) = &stdout_store {
                 if line.contains("\"turn/completed\"")
                     || line.contains("\"item/started\"")
@@ -1412,6 +1416,7 @@ pub async fn harness_write(
     session_id: String,
     line: String,
 ) -> Result<(), String> {
+    crate::harness_timing::stamp("write_called", &session_id, None);
     let live = host
         .get(&session_id)
         .ok_or_else(|| "Harness process is not running".to_string())?;
@@ -1423,6 +1428,7 @@ pub async fn harness_write(
             .and_then(|_| stdin.flush())
             .map_err(|e| format!("Failed to write to harness: {e}"))?;
         drop(stdin);
+        crate::harness_timing::stamp("write_done", &session_id, None);
         // Only a line the child received answers its dialog.
         if let Some(tap) = &live.tap {
             tap.line(Pipe::Stdin, &line);
@@ -1437,6 +1443,7 @@ pub async fn harness_write(
 /// blocked on a wedged child's stdin.
 #[tauri::command(async)]
 pub fn harness_kill(host: State<'_, HarnessHost>, session_id: String) -> Result<(), String> {
+    crate::harness_timing::stamp("kill_called", &session_id, None);
     host.stop_sse(&session_id);
     if let Some(live) = host.kill_session(&session_id) {
         terminate(live.pid);
