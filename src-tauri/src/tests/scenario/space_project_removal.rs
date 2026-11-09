@@ -387,8 +387,20 @@ fn a_mono_stops_every_way_out_in_the_approved_words() {
     rig.delete_refused(TWO, SHARED, &held);
     assert_eq!(
         removal::remove(&rig.store, TWO, SHARED, || Some(turn("two-a"))),
-        Err(held),
+        Err(held.clone()),
         "a Mono refusal shows before a running one"
+    );
+    assert_eq!(
+        removal::delete(
+            &rig.store,
+            TWO,
+            SHARED,
+            || Some(turn("two-a")),
+            |id| { rig.end(id) }
+        )
+        .err(),
+        Some(held),
+        "a Mono refusal shows before a running one, on delete too"
     );
 
     let archive = |space: &str| match removal::archive_check(&rig.store, space, SHARED, no_turns) {
@@ -818,4 +830,56 @@ fn the_commands_read_the_windows_space_and_tell_every_window_of_a_change() {
     assert_eq!(archive("/work/free"), Ok(()));
     removal::spaces_project_notify_changed(app.handle().clone());
     assert_eq!(events(), 2, "T9 writes only the window's storage");
+}
+
+/// Defect: a window that never read the settings, so shows no Space, acts for
+/// Space 1 and removes, counts or archives what another Space holds.
+#[test]
+fn a_window_with_no_space_is_refused_and_changes_nothing() {
+    let rig = Rig::new();
+    rig.link(FIRST_SPACE, SHARED);
+    rig.session("one-a", SHARED, FIRST_SPACE);
+    let app = tauri::test::mock_builder()
+        .manage(rig.store)
+        .manage(crate::control::tests::host())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let window = super::agent_sandbox::main_window(&app);
+    let refused = Some(ProjectRefusal::Failed {
+        message: "This window has no Space yet.".into(),
+    });
+    assert_eq!(
+        removal::spaces_project_remove(
+            window.clone(),
+            app.handle().clone(),
+            app.state(),
+            app.state(),
+            SHARED.into(),
+        )
+        .err(),
+        refused
+    );
+    assert_eq!(
+        removal::spaces_project_archive_check(
+            window.clone(),
+            app.state(),
+            app.state(),
+            SHARED.into(),
+        )
+        .err(),
+        refused
+    );
+    assert_eq!(
+        removal::spaces_project_delete_preview(window, app.state(), app.state(), SHARED.into())
+            .err(),
+        refused
+    );
+    let store: tauri::State<'_, SessionStore> = app.state();
+    let conn = store.lock_conn().unwrap();
+    assert_eq!(
+        read_strings(&conn, "SELECT space_id FROM space_project_links"),
+        [FIRST_SPACE],
+        "a refusal changed a link"
+    );
+    assert_eq!(read_strings(&conn, "SELECT id FROM sessions"), ["one-a"]);
 }
