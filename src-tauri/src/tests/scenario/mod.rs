@@ -50,6 +50,8 @@ mod space_import;
 mod space_login;
 mod space_project_rename;
 #[cfg(not(windows))]
+mod space_project_removal;
+#[cfg(not(windows))]
 mod space_projects;
 #[cfg(not(windows))]
 mod space_rows;

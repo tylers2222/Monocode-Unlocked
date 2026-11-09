@@ -2003,12 +2003,18 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
+/// The saved sessions a project's list shows, as a SQL condition: not a draft,
+/// an inbox ask or a lead's worker.
+pub(crate) const LISTED_SESSION: &str = "has_user_message = 1
+           AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
+           AND id NOT IN (SELECT session_id FROM orchestration_workers)";
+
 pub(crate) fn list_by_project(
     conn: &Connection,
     cwd: &str,
 ) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
@@ -2016,11 +2022,9 @@ pub(crate) fn list_by_project(
                 worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id, space_id
          FROM sessions
          WHERE cwd = ?1
-           AND has_user_message = 1
-           AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
-           AND id NOT IN (SELECT session_id FROM orchestration_workers)
+           AND {LISTED_SESSION}
          ORDER BY updated_at DESC, id ASC",
-    )?;
+    ))?;
     let rows = statement.query_map(params![cwd], |row| {
         let stored_branch: Option<String> = row.get(9)?;
         let archived: i64 = row.get(10)?;
