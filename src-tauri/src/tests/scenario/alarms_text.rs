@@ -123,12 +123,13 @@ impl Lead {
 
     /// The whole list the episode's row holds.
     fn listed(&self) -> Vec<Value> {
+        let episode = self.episode();
         let json: String = self
             .world
             .conn()
             .query_row(
                 "SELECT open_work_json FROM alarm_episodes WHERE id = ?1",
-                [self.episode()],
+                [episode],
                 |row| row.get(0),
             )
             .unwrap();
