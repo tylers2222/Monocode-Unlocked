@@ -154,6 +154,12 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     ))?;
     // SQLite refuses ADD COLUMN with both REFERENCES and a non-NULL default,
     // so these two columns carry no foreign key.
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS first_spawn_spaces (
+           session_id TEXT PRIMARY KEY,
+           space_id TEXT NOT NULL
+         );",
+    )?;
     let default = format!("TEXT NOT NULL DEFAULT '{FIRST_SPACE}'");
     for table in ["monos", "sessions"] {
         ensure_column(&tx, table, "space_id", &default)?;
@@ -769,6 +775,11 @@ pub(crate) fn prepare_spawn(
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
+    if let Some(session) = child.session() {
+        with_conn(store, |conn| {
+            membership::remember_first_spawn(conn, session, window)
+        })?;
+    }
     let (no_space, kept) = match child {
         Child::Session(_) => (None, false),
         Child::Helper { key, neutral, .. } => {

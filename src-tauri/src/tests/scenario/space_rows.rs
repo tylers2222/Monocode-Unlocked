@@ -37,7 +37,7 @@ fn add_mono(app: &App<MockRuntime>, id: &str) {
     }))
     .unwrap();
     let window = crate::scenario::agent_sandbox::main_window(app);
-    mono_roster::monos_create(app.handle().clone(), window, app.state(), mono).unwrap();
+    mono_roster::monos_create(app.handle().clone(), window, app.state(), mono, None).unwrap();
 }
 
 /// A window save of session `id` in `PROJECT`, linked to a PR so the linked
