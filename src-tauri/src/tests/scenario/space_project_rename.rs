@@ -114,7 +114,7 @@ fn a_rename_takes_everything_stored_under_the_project_with_it() {
     );
     rig.sql(
         "INSERT INTO automations (id, definition_json, enabled, next_run_at, updated_at)
-         VALUES ('nightly', ?1, 1, NULL, 1), ('elsewhere', ?2, 1, NULL, 1)",
+         VALUES ('nightly', ?1, 1, 1, 1), ('elsewhere', ?2, 1, 1, 1)",
         params![
             json!({"name": "n", "cwd": "/work/old/"}).to_string(),
             json!({"name": "e", "cwd": "/work/keep"}).to_string()
