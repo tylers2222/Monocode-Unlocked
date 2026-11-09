@@ -99,7 +99,7 @@ def main(argv: Sequence[str]) -> int:
     stale = stale_reason(head, merge_head()) if event == "pull_request" else None
     if stale:
         # On stderr: stdout goes to GITHUB_OUTPUT, and a line like this would void the file.
-        print(f"::error::ci-level: {stale}. Push again or wait for GitHub to update the merge ref.", file=sys.stderr)
+        print(f"::error::ci-level: {stale}. Push again: a re-run keeps this merge commit.", file=sys.stderr)
         return 1
     return 0
 

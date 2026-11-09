@@ -259,9 +259,10 @@ jobs:
   # never skipped on a pull request: it passes only when every suite passed, or when a
   # suite was skipped for a stated reason. It covers the macOS shards too, which
   # the ruleset does not name. On the fast set it runs under another name, so the required
-  # e2e-linux stays absent and a draft's run can never pass it, also when re-run later.
+  # e2e-linux stays absent and a draft's run can never pass it, also when re-run later. A
+  # dispatch can run part of the suites on a branch, so it never reports the required name.
   e2e-linux:
-    name: ${{ needs.changes.outputs.level == 'fast' && 'e2e-linux (not run on a draft)' || 'e2e-linux' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && 'e2e-linux (dispatch)' || needs.changes.outputs.level == 'fast' && 'e2e-linux (not run on a draft)' || 'e2e-linux' }}
     needs: [changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest

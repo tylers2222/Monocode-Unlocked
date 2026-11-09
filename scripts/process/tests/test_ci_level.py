@@ -3,6 +3,7 @@
     python3 -m unittest discover -s scripts/process/tests
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -92,11 +93,11 @@ class Main(unittest.TestCase):
         with tempfile.TemporaryDirectory() as repo:
             self.git(repo, "init", "-q", "-b", "base")
             self.git(repo, "commit", "-q", "--allow-empty", "-m", "base")
-            self.git(repo, "checkout", "-q", "-b", "head")
+            self.git(repo, "checkout", "-q", "-b", "pr-branch")
             self.git(repo, "commit", "-q", "--allow-empty", "-m", "head")
             head = self.git(repo, "rev-parse", "HEAD")
             self.git(repo, "checkout", "-q", "base")
-            self.git(repo, "merge", "-q", "--no-ff", "-m", "merge", "head")
+            self.git(repo, "merge", "-q", "--no-ff", "-m", "merge", "pr-branch")
 
             good = self.run_script(repo, "pull_request", "false", "1", "o/r", head)
             self.assertEqual((good.returncode, good.stdout), (0, "level=full\n"))
@@ -118,8 +119,64 @@ class Main(unittest.TestCase):
         self.assertEqual(self.run_script(HERE, "push").returncode, 2)
 
 
+class LiveRead(unittest.TestCase):
+    """main with a stub gh on PATH, as a re-run of a draft run reads the PR."""
+
+    def run_with_gh(self, gh_body):
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "gh"
+            calls = Path(tmp) / "calls"
+            stub.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n{gh_body}\n')
+            stub.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp}{os.pathsep}{os.environ['PATH']}"}
+            result = subprocess.run([sys.executable, str(SCRIPT), "pull_request", "true", "7", "o/r", "unused"],
+                                    capture_output=True, text=True, env=env, cwd=tmp)
+            return result.stdout.splitlines()[0], calls.read_text()
+
+    @staticmethod
+    def pr(draft, *labels):
+        body = json.dumps({"draft": draft, "labels": [{"name": name} for name in labels]})
+        return f"cat <<'EOF'\n{body}\nEOF"
+
+    def test_reads_this_pull_request(self):
+        self.assertEqual(self.run_with_gh(self.pr(True))[1], "api repos/o/r/pulls/7\n")
+
+    def test_a_draft_is_fast(self):
+        self.assertEqual(self.run_with_gh(self.pr(True))[0], "level=fast")
+
+    def test_a_pr_ready_now_is_full(self):
+        self.assertEqual(self.run_with_gh(self.pr(False))[0], "level=full")
+
+    def test_a_draft_with_the_label_is_full(self):
+        self.assertEqual(self.run_with_gh(self.pr(True, "x", FULL_LABEL))[0], "level=full")
+
+    def test_a_failed_read_is_full(self):
+        self.assertEqual(self.run_with_gh(self.pr(True) + "\nexit 1")[0], "level=full")
+
+    def test_bad_json_is_full(self):
+        self.assertEqual(self.run_with_gh("echo not-json")[0], "level=full")
+
+
+# One block: the `changes` job's path step has its own EVENT and set -e lines.
+LEVEL_STEP = """\
+        id: level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/process/ci_level.py "$EVENT" "$DRAFT" "$PR" "$REPO" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+"""
+FULL = "needs.changes.outputs.level != 'fast'"
+
+
 class Workflows(unittest.TestCase):
-    """What a real run proved, kept from being edited away. Text checks: PyYAML is not here."""
+    """The lines that decide pass, fail or skip. Whole lines, so `|| true` or a changed value
+    fails. A real run proves the behaviour; these stop a later edit. PyYAML is not here."""
 
     def text(self, name):
         return (WORKFLOWS / name).read_text()
@@ -129,19 +186,28 @@ class Workflows(unittest.TestCase):
         self.assertIsNotNone(match, job_id)
         return match.group(1)
 
+    def assert_lines(self, name, job_id, *lines):
+        have = [line.strip() for line in self.job(name, job_id).splitlines()]
+        for line in lines:
+            self.assertIn(line, have, f"{name} {job_id}")
+
     def test_each_two_level_workflow_starts_on_ready_for_review(self):
         for name in ("ci.yml", "e2e.yml", "native.yml"):
-            self.assertIn("types: [opened, synchronize, reopened, ready_for_review]", self.text(name), name)
+            self.assertIn("    types: [opened, synchronize, reopened, ready_for_review]\n", self.text(name), name)
 
-    def test_required_names_are_absent_from_the_fast_level(self):
-        self.assertIn("name: ${{ needs.changes.outputs.level == 'fast' && 'ci (fast)' || 'ci' }}\n",
-                      self.job("ci.yml", "ci"))
-        self.assertIn("name: ${{ needs.changes.outputs.level == 'fast' && 'e2e-linux (not run on a draft)' || 'e2e-linux' }}\n",
-                      self.job("e2e.yml", "e2e-linux"))
+    def test_each_changes_job_decides_the_level(self):
+        for name in ("ci.yml", "e2e.yml", "native.yml"):
+            self.assertIn(LEVEL_STEP, self.job(name, "changes"), name)
+            self.assert_lines(name, "changes", "level: ${{ steps.level.outputs.level }}", "pull-requests: read")
+
+    def test_the_required_names(self):
+        self.assert_lines("ci.yml", "ci", "name: ${{ needs.changes.outputs.level == 'fast' && 'ci (fast)' || 'ci' }}")
+        self.assert_lines("e2e.yml", "e2e-linux", "name: ${{ github.event_name == 'workflow_dispatch' && 'e2e-linux (dispatch)' "
+                          "|| needs.changes.outputs.level == 'fast' && 'e2e-linux (not run on a draft)' || 'e2e-linux' }}")
 
     def test_a_required_job_is_never_skipped_on_a_pull_request(self):
-        self.assertIn("if: always()\n", self.job("ci.yml", "ci"))
-        self.assertIn("if: ${{ always() && github.event_name != 'schedule' }}\n", self.job("e2e.yml", "e2e-linux"))
+        self.assert_lines("ci.yml", "ci", "if: always()")
+        self.assert_lines("e2e.yml", "e2e-linux", "if: ${{ always() && github.event_name != 'schedule' }}")
 
     def test_no_other_job_uses_a_required_name(self):
         for name in ("ci.yml", "e2e.yml"):
@@ -149,13 +215,30 @@ class Workflows(unittest.TestCase):
                 self.assertNotRegex(self.text(name), rf"(?m)^    name: {required}$", name)
 
     def test_the_required_checks_wait_for_every_job_of_the_full_set(self):
-        self.assertIn("needs: [changes, mobile, browser, host, check, appimage, rpm, rpm-clean-install]",
-                      self.job("ci.yml", "ci"))
-        self.assertIn("needs: [changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]", self.job("e2e.yml", "e2e-linux"))
+        self.assert_lines("ci.yml", "ci", "needs: [changes, mobile, browser, host, check, appimage, rpm, rpm-clean-install]")
+        self.assert_lines("e2e.yml", "e2e-linux", "needs: [changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]")
 
     def test_the_required_checks_take_their_result_from_ci_verdict(self):
-        self.assertIn("scripts/process/ci_verdict.py ci", self.job("ci.yml", "ci"))
-        self.assertIn("scripts/process/ci_verdict.py e2e", self.job("e2e.yml", "e2e-linux"))
+        self.assert_lines("ci.yml", "ci", "set -euo pipefail", "EVENT: ${{ github.event_name }}", "NEEDS: ${{ toJSON(needs) }}",
+                          'python3 scripts/process/ci_verdict.py ci | tee -a "$GITHUB_OUTPUT"')
+        self.assert_lines("e2e.yml", "e2e-linux", "EVENT: ${{ github.event_name }}", "NEEDS: ${{ toJSON(needs) }}",
+                          "run: python3 scripts/process/ci_verdict.py e2e")
+        self.assertIn("DISPATCH_SKIPS_MACOS: ${{ github.event_name == 'workflow_dispatch' && (inputs.macos_build == 'release' "
+                      "|| !contains(", self.job("e2e.yml", "e2e-linux"))
+
+    def test_the_full_set_jobs_run_only_on_the_full_level(self):
+        self.assert_lines("ci.yml", "browser", f"if: ${{{{ !cancelled() && {FULL} && needs.changes.outputs.browser != 'false' }}}}")
+        self.assert_lines("e2e.yml", "e2e-linux-run", "if: ${{ !cancelled() && github.event_name != 'schedule' && "
+                          f"{FULL} && needs.changes.outputs.e2e-linux != 'false' }}}}")
+        self.assertIn(f"&& {FULL} && needs.changes.outputs.e2e-macos != 'false' &&", self.job("e2e.yml", "e2e-macos-1"))
+        self.assert_lines("e2e.yml", "e2e-macos-2", "if: *e2e-macos-if")
+        self.assert_lines("native.yml", "desktop", f"if: ${{{{ !cancelled() && {FULL} && needs.changes.outputs.native != 'false' }}}}")
+
+    def test_the_fast_level_keeps_only_ubuntu_legs(self):
+        self.assertIn("needs.changes.outputs.level == 'fast' && fromJSON('[\"ubuntu-latest\"]') || "
+                      "fromJSON('[\"macos-latest\", \"ubuntu-latest\"]')", self.job("ci.yml", "check"))
+        self.assert_lines("native.yml", "core", "os: ${{ needs.changes.outputs.level == 'fast' && fromJSON('[\"ubuntu-latest\"]') || "
+                          "fromJSON('[\"ubuntu-latest\", \"macos-latest\", \"windows-latest\"]') }}")
 
     def test_the_level_is_not_a_path_decision(self):
         # merge-when-green.sh accepts a skipped e2e job on the `<job>=false` log line of

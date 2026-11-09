@@ -50,7 +50,7 @@ def failed(workflow: str, needs: Mapping[str, Mapping], event: str, dispatch_ski
     outputs = needs.get("changes", {}).get("outputs", {})
     skip_ok = reasons(workflow, outputs, event, dispatch_skips_macos)
     return [job for job, need in needs.items()
-            if need["result"] != ("skipped" if skip_ok.get(job, False) else "success")]
+            if not (need["result"] == "success" or (need["result"] == "skipped" and skip_ok.get(job, False)))]
 
 
 def main(argv: list[str]) -> int:
