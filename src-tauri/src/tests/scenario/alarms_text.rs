@@ -243,32 +243,35 @@ fn idle_open_work_names_the_child_result_then_the_ask_then_the_todo() {
 // one; the other result is not counted.
 #[test]
 fn the_child_result_that_ended_last_is_the_stuck_item() {
-    let mut scene = lead("att-results");
-    let older = scene
-        .world
-        .add_session("atr-older", P, Some(scene.lead.as_str()));
-    let newer = scene
-        .world
-        .add_session("atr-newer", P, Some(scene.lead.as_str()));
-    align(&mut scene.world);
-    ran_a_turn(&mut scene.world, &scene.lead.clone());
-    ran_a_turn(&mut scene.world, &older);
-    scene.world.advance(4 * MINUTE);
-    ran_a_turn(&mut scene.world, &newer);
-    scene.world.advance(N);
+    // Both id orders: the list order must not pick the result.
+    for (name, older, newer) in [
+        ("att-results-a", "atr-a-worker", "atr-z-worker"),
+        ("att-results-z", "atr-z-worker", "atr-a-worker"),
+    ] {
+        let mut scene = lead(name);
+        let lead_id = scene.lead.clone();
+        let older = scene.world.add_session(older, P, Some(lead_id.as_str()));
+        let newer = scene.world.add_session(newer, P, Some(lead_id.as_str()));
+        align(&mut scene.world);
+        ran_a_turn(&mut scene.world, &lead_id);
+        ran_a_turn(&mut scene.world, &older);
+        scene.world.advance(4 * MINUTE);
+        ran_a_turn(&mut scene.world, &newer);
+        scene.world.advance(N);
 
-    let episode = scene.episode();
-    let stuck = test_taps::stuck(&scene.world.conn(), &episode, scene.world.active_ms());
-    assert!(stuck.item.starts_with("the result of "), "{}", stuck.item);
-    assert!(
-        stuck.item.ends_with("its last turn ended 15 min ago"),
-        "{}",
-        stuck.item
-    );
-    assert_eq!(
-        stuck.work.unwrap().other,
-        vec![("ask", 1), ("child result", 1)]
-    );
+        let episode = scene.episode();
+        let stuck = test_taps::stuck(&scene.world.conn(), &episode, scene.world.active_ms());
+        assert!(stuck.item.starts_with("the result of "), "{}", stuck.item);
+        assert!(
+            stuck.item.ends_with("its last turn ended 15 min ago"),
+            "{name}: {}",
+            stuck.item
+        );
+        assert_eq!(
+            stuck.work.unwrap().other,
+            vec![("ask", 1), ("child result", 1)]
+        );
+    }
 }
 
 // Defect (ADE-277): a wake_missed alarm does not say which message waits,
