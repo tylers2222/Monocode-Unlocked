@@ -1,6 +1,14 @@
 import type { AgentModelChoice } from "../../agent-app/model/agentModelChoice";
 import { monoError } from "../../agent-app/model/appActionError";
-import { loadRecents, projectRailItems } from "../../projects/model/recents";
+import {
+  loadRecents,
+  projectRailItems,
+  type RecentProject,
+} from "../../projects/model/recents";
+import {
+  knownProjects,
+  spaceProjectKey,
+} from "../../spaces/model/knownProjects";
 import {
   newSession,
   type HarnessId,
@@ -63,10 +71,25 @@ function monoSettings(
 }
 
 /**
- * A Mono's projects, each named by path or by name, as the projects on the
- * rail: the same ones its settings offer. A project already on the rail is
- * accepted whatever its folder is named; only a folder that is not one yet is
- * refused under the reserved name MonoCode.
+ * What a Mono may list (T3): the rail, then every project any Space has that
+ * the rail's cap or this Space's list leaves out.
+ */
+export function monoProjectChoices(): RecentProject[] {
+  const rail = projectRailItems(loadRecents(), "");
+  const onRail = new Set(rail.map((item) => spaceProjectKey(item.path)));
+  return [
+    ...rail,
+    ...knownProjects()
+      .filter((item) => !onRail.has(spaceProjectKey(item.path)))
+      .map((item) => ({ path: item.path, openedAt: 0 })),
+  ];
+}
+
+/**
+ * A Mono's projects, each named by path or by name, as `monoProjectChoices`:
+ * the same ones its settings offer. A known project is accepted whatever its
+ * folder is named; only a folder that is not one yet is refused under the
+ * reserved name MonoCode.
  */
 export function resolveMonoProjects(
   value: unknown,
@@ -83,16 +106,16 @@ export function resolveMonoProjects(
     throw new Error(
       `projects must be an array of at most ${PROJECTS_MAX} project paths or names`,
     );
-  const rail = projectRailItems(loadRecents(), "").map((item) => item.path);
+  const choices = monoProjectChoices().map((item) => item.path);
   return (value as string[]).map((named) => {
-    const byPath = rail.find((path) => pathKey(path) === pathKey(named));
-    const byName = rail.filter((path) => projectName(path) === named.trim());
+    const byPath = choices.find((path) => pathKey(path) === pathKey(named));
+    const byName = choices.filter((path) => projectName(path) === named.trim());
     const match = byPath ?? (byName.length === 1 ? byName[0] : undefined);
     if (match) return match;
     throw new Error(
       reservedProjectNameError(named, home) ??
         `Not a project in MonoCode: ${named}. Projects: ${
-          rail.map((path) => `${projectName(path)} (${path})`).join(", ") ||
+          choices.map((path) => `${projectName(path)} (${path})`).join(", ") ||
           "none yet"
         }`,
     );

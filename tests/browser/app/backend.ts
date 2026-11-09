@@ -801,6 +801,20 @@ const HANDLERS: Record<string, Handler> = {
   spaces_project_get: (store, { projectPath }) =>
     store.projectSpaces[projectPath as string] ?? "space-1",
   // spaces/projects.rs: the window's Space, as `window_space` answers it.
+  spaces_project_list: (store) => ({
+    spaceId: store.activeSpaceId,
+    projects: [],
+    monoHeld: [],
+    noRowIsHere: store.activeSpaceId === "space-1",
+    assignedElsewhere: [],
+  }),
+  spaces_project_known: (store) =>
+    Object.entries(store.projectSpaces).map(([path, space]) => ({
+      path,
+      spaces: [space],
+    })),
+  spaces_project_add: () => "linked",
+  spaces_project_remove: () => true,
   spaces_project_archive_check: () => null,
   spaces_project_notify_changed: none,
   spaces_project_delete_preview: (store, { projectPath }) => ({
