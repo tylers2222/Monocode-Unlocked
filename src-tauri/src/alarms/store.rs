@@ -13,6 +13,7 @@ use super::state::{
     self, Cause, CloseReason, Episode, Facts, OpenWork, Thresholds, Transition, Wake,
 };
 use super::tree::{self, Edge, Edges};
+use super::unseen;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
@@ -699,6 +700,7 @@ fn pass(
             .collect();
         activity::reconcile(&tx, running, &recorded, active_ms, wall_ms)?;
     }
+    unseen::seed(&tx, active_ms, wall_ms);
     let rows = Rows::load(&tx)?;
     let agents: Vec<(&Activity, Actor)> = rows
         .activity
