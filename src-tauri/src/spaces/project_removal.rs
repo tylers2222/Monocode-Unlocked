@@ -13,7 +13,7 @@ use tauri::{AppHandle, Runtime, State, WebviewWindow};
 use super::projects::{
     emit_changed, held_by, holders, in_workspace, three_texts, workspace_roots, InWorkspace,
 };
-use super::{project_key, project_space_in, project_spaces_in, window_space};
+use super::{project_key, project_space_in, project_spaces_in, shown_space};
 use crate::control::ControlHost;
 use crate::session_store::{session_delete, SessionStore, LISTED_SESSION};
 
@@ -579,7 +579,7 @@ pub fn spaces_project_remove<R: Runtime>(
     control: State<'_, ControlHost>,
     project_path: String,
 ) -> Result<bool, ProjectRefusal> {
-    let space = window_space(&store, window.label())?;
+    let space = shown_space(&store, window.label())?;
     let removed = remove(&store, &space, &project_path, host_turns(&control))?;
     if removed {
         emit_changed(&app);
@@ -595,7 +595,7 @@ pub fn spaces_project_archive_check<R: Runtime>(
     control: State<'_, ControlHost>,
     project_path: String,
 ) -> Result<(), ProjectRefusal> {
-    let space = window_space(&store, window.label())?;
+    let space = shown_space(&store, window.label())?;
     archive_check(&store, &space, &project_path, host_turns(&control))
 }
 
@@ -613,7 +613,7 @@ pub fn spaces_project_delete_preview<R: Runtime>(
     control: State<'_, ControlHost>,
     project_path: String,
 ) -> Result<DeletePreview, ProjectRefusal> {
-    let space = window_space(&store, window.label())?;
+    let space = shown_space(&store, window.label())?;
     delete_preview(&store, &space, &project_path, host_turns(&control))
 }
 
@@ -629,7 +629,7 @@ pub fn spaces_project_delete(
     control: State<'_, ControlHost>,
     project_path: String,
 ) -> Result<ProjectDeleted, ProjectRefusal> {
-    let space = window_space(&store, window.label())?;
+    let space = shown_space(&store, window.label())?;
     let deleted = delete(
         &store,
         &space,
