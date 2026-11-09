@@ -17,6 +17,7 @@ mod store;
 pub(crate) mod taps;
 mod text;
 mod tree;
+mod unseen;
 
 use rusqlite::Connection;
 use tauri::{Manager, Runtime};
