@@ -5,6 +5,8 @@ on:
     branches: [main, mc/migrate-monocode-to-gpui]
   workflow_dispatch:
   pull_request:
+    # ready_for_review starts the full set on a PR that ran only the fast set as a draft.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -20,7 +22,12 @@ jobs:
   changes:
     name: Changed paths (native)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # ci_level.py reads the PR's draft state and labels.
+      pull-requests: read
     outputs:
+      level: ${{ steps.level.outputs.level }}
       native: ${{ steps.paths.outputs.native }}
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +45,22 @@ jobs:
           set -euo pipefail
           python3 scripts/process/ci_changes.py github "$EVENT" "$BASE" "$HEAD" | tee -a "$GITHUB_OUTPUT"
 
+      # Draft or ready: scripts/process/ci_level.py. It also fails this job when the merge
+      # ref does not hold the event's head. A separate output from the path decision:
+      # merge-when-green.sh reads the path decision's log, and a draft is not a path reason.
+      - name: Decide the level (fast on a draft, else full)
+        id: level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/process/ci_level.py "$EVENT" "$DRAFT" "$PR" "$REPO" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+
   core:
     name: Core (${{ matrix.os }})
     needs: changes
@@ -45,7 +68,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The macOS and Windows legs are in the full set only.
+        os: ${{ needs.changes.outputs.level == 'fast' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +91,8 @@ jobs:
   desktop:
     name: Monocode Native (macOS)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
+    # Full set only (scripts/process/ci_level.py).
+    if: ${{ !cancelled() && needs.changes.outputs.level != 'fast' && needs.changes.outputs.native != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
