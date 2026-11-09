@@ -471,9 +471,8 @@ fn send(
     Ok(())
 }
 
-/// The level-1 message goes now, whether it was just opened or was held. The
-/// only way it is written, so ADE-276's re-check has one place: first in here,
-/// and an alarm it drops returns before `limit::sent` and uses no window.
+/// The level-1 message goes now, whether it was just opened or was held: its
+/// window starts and the count it carries is spent.
 fn tell_level_one(
     tx: &Connection,
     notices: &mut Notices,
@@ -489,7 +488,7 @@ fn tell_level_one(
 }
 
 /// The held level-1 message of `episode` goes now. Its escalation clock has
-/// run since the episode opened, so it says the time that is left.
+/// run since the episode opened, so it says the whole minutes that are left.
 pub(super) fn send_held(
     tx: &Connection,
     notices: &mut Notices,
@@ -503,7 +502,7 @@ pub(super) fn send_held(
     };
     let left = episode.next_escalate.unwrap_or(active) - active;
     let settings = Settings {
-        escalate_minutes: ((left + MINUTE_MS - 1) / MINUTE_MS).max(1),
+        escalate_minutes: (left / MINUTE_MS).max(1),
         ..settings.clone()
     };
     tell_level_one(tx, notices, episode, &chain, recipient, &settings, active)

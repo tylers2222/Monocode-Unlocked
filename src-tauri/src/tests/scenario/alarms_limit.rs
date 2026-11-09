@@ -325,7 +325,7 @@ fn an_open_stall_is_told_when_the_window_ends_and_escalates_on_the_unheld_schedu
     );
     let text = take(&world, &key);
     assert!(text.contains(&held_line(1)), "{text}");
-    let left = (opened + ESCALATE - released + MINUTE - 1) / MINUTE;
+    let left = (opened + ESCALATE - released) / MINUTE;
     assert!(left < 15, "{left}");
     assert!(
         text.contains(&format!("No act in {left} min goes to")),

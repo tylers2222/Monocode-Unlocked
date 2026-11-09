@@ -62,7 +62,7 @@ pub(super) fn grouped(conn: &Connection, actor: &str) -> rusqlite::Result<i64> {
 }
 
 /// A level-1 message goes now: its cause's window starts, and the count it
-/// carries is spent. An alarm the re-check dropped never gets here.
+/// carries is spent.
 pub(super) fn sent(tx: &Connection, episode: &EpisodeRow, active: i64) -> rusqlite::Result<()> {
     let actor = episode.actor.to_string();
     tx.execute(
@@ -83,7 +83,8 @@ pub(super) fn sent(tx: &Connection, episode: &EpisodeRow, active: i64) -> rusqli
 fn release(
     tx: &Connection,
     notices: &mut Notices,
-    (id, sent_at): (&str, i64),
+    id: &str,
+    sent_at: i64,
     settings: &Settings,
     active: i64,
 ) -> rusqlite::Result<()> {
@@ -123,7 +124,7 @@ pub(super) fn release_due(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, sent_at) in held {
         tx.execute_batch("SAVEPOINT alarm_release")?;
-        match release(tx, notices, (&id, sent_at), settings, active) {
+        match release(tx, notices, &id, sent_at, settings, active) {
             Ok(()) => tx.execute_batch("RELEASE alarm_release")?,
             Err(error) => {
                 tx.execute_batch("ROLLBACK TO alarm_release; RELEASE alarm_release")?;
