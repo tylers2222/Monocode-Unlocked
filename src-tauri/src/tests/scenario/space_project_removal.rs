@@ -15,7 +15,7 @@ use crate::spaces::project_removal::{
 use crate::spaces::{self, projects, SettingsPatch, FIRST_SPACE};
 
 const TWO: &str = "space-2";
-const SHARED: &str = "/work/vibtra";
+const SHARED: &str = "/work/sample-app";
 
 struct Rig {
     store: SessionStore,
@@ -179,8 +179,8 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
 
 fn running_here() -> ProjectRefusal {
     ProjectRefusal::SessionRunning {
-        project: "vibtra".into(),
-        message: "A session is running in vibtra here. Stop it first.".into(),
+        project: "sample-app".into(),
+        message: "A session is running in sample-app here. Stop it first.".into(),
     }
 }
 
@@ -195,9 +195,9 @@ fn deleting_a_shared_project_in_one_space_takes_only_that_spaces_sessions() {
     rig.link(TWO, SHARED);
     for (id, cwd, space) in [
         ("one-a", SHARED, FIRST_SPACE),
-        ("one-b", "/work/vibtra/", FIRST_SPACE),
+        ("one-b", "/work/sample-app/", FIRST_SPACE),
         ("two-a", SHARED, TWO),
-        ("two-b", "/work/vibtra/", TWO),
+        ("two-b", "/work/sample-app/", TWO),
         ("two-other", "/work/other", TWO),
     ] {
         rig.session(id, cwd, space);
@@ -298,13 +298,13 @@ fn deleting_in_the_last_space_purges_the_project_and_keeps_other_spaces_chats() 
 /// F1, the MUST. Defect: a path at or under the Giga workspace gets a Remove,
 /// an Archive or a Delete; a delete takes a Mono's chat; a project holding a
 /// Mono's chat in any Space can be archived or deleted; or a rule added here
-/// stops General's chat resolving, so it no longer opens.
+/// stops a Giga's chat resolving, so it no longer opens.
 #[test]
 fn the_workspace_and_every_monos_chat_are_out_of_reach() {
     let rig = Rig::new();
     let roots = projects::workspace_roots();
     let root = roots.first().expect("a home folder").clone();
-    let under = format!("{root}/gigas/monocode-general-2");
+    let under = format!("{root}/gigas/sample-giga");
     let conn_row = |path: &str| {
         rig.sql(
             "INSERT OR IGNORE INTO space_projects (project_path, space_id) VALUES (?1, ?2)",
@@ -312,8 +312,8 @@ fn the_workspace_and_every_monos_chat_are_out_of_reach() {
         );
     };
     conn_row(&under);
-    rig.session("general-chat", &under, TWO);
-    rig.chat_mono("general", "General", TWO, &[root.as_str()], "general-chat");
+    rig.session("chief-chat", &under, TWO);
+    rig.chat_mono("chief", "Chief", TWO, &[root.as_str()], "chief-chat");
     let before = rig.everything();
     for path in [&root, &under] {
         for refused in [
@@ -334,12 +334,12 @@ fn the_workspace_and_every_monos_chat_are_out_of_reach() {
         assert_eq!(
             spaces::project_spaces_in(&conn, &under).unwrap(),
             [TWO],
-            "General's folder stopped resolving"
+            "a Giga's folder stopped resolving"
         );
         assert_eq!(
             list_by_project(&conn, &under).unwrap()[0].id,
-            "general-chat",
-            "General's chat stopped opening"
+            "chief-chat",
+            "a Giga's chat stopped opening"
         );
     }
     assert_eq!(spaces::project_space(&rig.store, &under).unwrap(), TWO);
@@ -349,7 +349,7 @@ fn the_workspace_and_every_monos_chat_are_out_of_reach() {
     rig.session("two-a", SHARED, TWO);
     rig.chat_mono("away", "Away", FIRST_SPACE, &[], "chat-here");
     let chat = ProjectRefusal::MonoChat {
-        project: "vibtra".into(),
+        project: "sample-app".into(),
         monos: vec!["Away".into()],
         message: "Away's chat is in this project.".into(),
     };
@@ -376,16 +376,11 @@ fn a_mono_stops_every_way_out_in_the_approved_words() {
     rig.link(TWO, SHARED);
     rig.session("two-a", SHARED, TWO);
     rig.milestone(SHARED);
-    rig.mono(
-        "orchestrator",
-        "Vibtra Orchestrator",
-        TWO,
-        &["/work/vibtra/"],
-    );
+    rig.mono("site-builder", "Site Builder", TWO, &["/work/sample-app/"]);
     let held = ProjectRefusal::MonoHeld {
-        project: "vibtra".into(),
-        monos: vec!["Vibtra Orchestrator".into()],
-        message: "Vibtra Orchestrator uses vibtra. Take it off that Mono first.".into(),
+        project: "sample-app".into(),
+        monos: vec!["Site Builder".into()],
+        message: "Site Builder uses sample-app. Take it off that Mono first.".into(),
     };
     let before = rig.everything();
     assert_eq!(rig.remove(TWO, SHARED), Err(held.clone()));
@@ -402,19 +397,19 @@ fn a_mono_stops_every_way_out_in_the_approved_words() {
     };
     assert_eq!(
         archive(TWO),
-        "Vibtra Orchestrator uses vibtra, and Archive hides it in every Space. \
+        "Site Builder uses sample-app, and Archive hides it in every Space. \
          Take it off that Mono first."
     );
     assert_eq!(
         archive(FIRST_SPACE),
-        "Vibtra Orchestrator in Space 2 uses vibtra, and Archive hides it in every Space. \
+        "Site Builder in Space 2 uses sample-app, and Archive hides it in every Space. \
          Take it off that Mono first."
     );
     rig.mono("helper", "Helper", TWO, &[SHARED]);
     rig.mono("third", "Third", FIRST_SPACE, &[SHARED]);
     assert_eq!(
         archive(TWO),
-        "Vibtra Orchestrator, Helper and Third in Space 1 use vibtra, and Archive hides it \
+        "Site Builder, Helper and Third in Space 1 use sample-app, and Archive hides it \
          in every Space. Take it off those Monos first."
     );
     assert_eq!(rig.everything(), before);
@@ -542,12 +537,13 @@ fn a_running_session_stops_what_reaches_it_and_nothing_else() {
 fn an_automation_stops_what_would_move_its_space() {
     let rig = Rig::new();
     rig.assign(SHARED, TWO);
-    rig.automation("nightly", "Nightly report", "/work/vibtra/");
+    rig.automation("nightly", "Nightly report", "/work/sample-app/");
     rig.session("two-a", SHARED, TWO);
     let automation = ProjectRefusal::Automation {
-        project: "vibtra".into(),
+        project: "sample-app".into(),
         automations: vec!["Nightly report".into()],
-        message: "The automation Nightly report runs in vibtra. Move or delete it first.".into(),
+        message: "The automation Nightly report runs in sample-app. Move or delete it first."
+            .into(),
     };
     rig.delete_refused(TWO, SHARED, &automation);
 
@@ -569,7 +565,7 @@ fn an_automation_stops_what_would_move_its_space() {
     let refused = rig.delete(TWO, SHARED).err().unwrap();
     assert!(
         matches!(&refused, ProjectRefusal::Automation { message, .. }
-            if message == "The automations Nightly report and Weekly run in vibtra. \
+            if message == "The automations Nightly report and Weekly run in sample-app. \
                            Move or delete them first."),
         "{refused:?}"
     );
@@ -705,8 +701,8 @@ fn removing_a_project_drops_its_link_or_moves_its_assignment_and_keeps_its_sessi
     assert_eq!(leases(), [TWO], "a held lease never moves");
 
     let only = ProjectRefusal::OnlySpace {
-        project: "vibtra".into(),
-        message: "vibtra is only in this Space. Archive or delete it instead.".into(),
+        project: "sample-app".into(),
+        message: "sample-app is only in this Space. Archive or delete it instead.".into(),
     };
     assert_eq!(rig.remove(&three, SHARED), Err(only));
     assert_eq!(rig.spaces_of(SHARED), [three.as_str()], "I7");
@@ -806,9 +802,9 @@ fn the_commands_read_the_windows_space_and_tell_every_window_of_a_change() {
         serde_json::to_value(&refused).unwrap(),
         json!({
             "code": "monoHeld",
-            "project": "vibtra",
+            "project": "sample-app",
             "monos": ["Held"],
-            "message": "Held uses vibtra. Take it off that Mono first."
+            "message": "Held uses sample-app. Take it off that Mono first."
         })
     );
     let archive = |path: &str| {
@@ -817,7 +813,7 @@ fn the_commands_read_the_windows_space_and_tell_every_window_of_a_change() {
     assert!(matches!(
         archive(SHARED),
         Err(ProjectRefusal::MonoHeld { message, .. })
-            if message.starts_with("Held uses vibtra, and Archive")
+            if message.starts_with("Held uses sample-app, and Archive")
     ));
     assert_eq!(archive("/work/free"), Ok(()));
     removal::spaces_project_notify_changed(app.handle().clone());
