@@ -152,10 +152,9 @@ class Workflows(unittest.TestCase):
                       self.job("ci.yml", "ci"))
         self.assertIn("needs: [changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]", self.job("e2e.yml", "e2e-linux"))
 
-    def test_a_job_passes_only_by_success_or_a_skip_named_in_skip_ok(self):
-        verdict = '(if (.key | IN($ok[])) then "skipped" else "success" end)'
-        self.assertIn(verdict, self.job("ci.yml", "ci"))
-        self.assertIn(verdict, self.job("e2e.yml", "e2e-linux"))
+    def test_the_required_checks_take_their_result_from_ci_verdict(self):
+        self.assertIn("scripts/process/ci_verdict.py ci", self.job("ci.yml", "ci"))
+        self.assertIn("scripts/process/ci_verdict.py e2e", self.job("e2e.yml", "e2e-linux"))
 
     def test_the_level_is_not_a_path_decision(self):
         # merge-when-green.sh accepts a skipped e2e job on the `<job>=false` log line of

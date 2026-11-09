@@ -22,6 +22,8 @@ all = [
   ".github/**",
   "scripts/process/ci-map.toml",
   "scripts/process/ci_changes.py",
+  "scripts/process/ci_level.py",
+  "scripts/process/ci_verdict.py",
   "package.json",
   "package-lock.json",
   "Cargo.toml",
