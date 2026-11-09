@@ -315,6 +315,7 @@ fn space_two(data: &Path) {
             "PRAGMA foreign_keys = OFF;
              DROP TABLE account_route_grants; DROP TABLE space_project_accounts;
              DROP TABLE space_accounts; DROP TABLE checkout_leases; DROP TABLE space_projects;
+             DROP TABLE space_project_links;
              DROP TABLE space_settings; DROP TABLE provider_accounts; DROP TABLE spaces;
              ALTER TABLE monos DROP COLUMN space_id; ALTER TABLE sessions DROP COLUMN space_id;",
         )

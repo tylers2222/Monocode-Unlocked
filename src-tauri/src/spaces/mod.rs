@@ -3,12 +3,14 @@
 //! storage commands and the one spawn hook every harness child passes through. Each concern the hook
 //! applies lives in its own file: `account` (the Space's login), `grants`
 //! (usage-limit routing) and `leases` (one Space per checkout). `scope` is
-//! what the app CLI shows a caller of its Space.
+//! what the app CLI shows a caller of its Space; `projects` is which projects
+//! a Space shows.
 
 pub(crate) mod account;
 pub(crate) mod grants;
 pub(crate) mod leases;
 pub(crate) mod membership;
+pub(crate) mod projects;
 pub(crate) mod scope;
 
 use std::collections::HashMap;
@@ -18,7 +20,7 @@ use std::sync::MutexGuard;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, ToSql, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use tauri::{Runtime, State, WebviewWindow};
+use tauri::{AppHandle, Runtime, State, WebviewWindow};
 
 use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
 use crate::session_store::{ensure_column, now_millis, SessionStore};
@@ -82,16 +84,13 @@ impl FromSql for Provider {
 /// sessions that predate Spaces land in Space 1 through the column default.
 /// Projects need no backfill: `space_projects` holds only the folders
 /// assigned out of Space 1, so a folder with no row is assigned to Space 1.
-/// A Mono's own projects are in its Space as well (`project_spaces_in`), so
-/// a project shared by several Spaces needs no row. Project paths are stored
-/// in the front end's `pathKey()` form.
+/// `space_project_links` lists a project in a further Space; its first open
+/// links each Mono's projects in the Mono's Space (`projects::backfill_links`).
+/// Project paths are stored in the front end's `pathKey()` form.
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let fresh: bool = tx.query_row(
-        "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spaces')",
-        [],
-        |row| row.get(0),
-    )?;
+    let fresh = table_missing(&tx, "spaces")?;
+    let no_links = table_missing(&tx, "space_project_links")?;
     tx.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS spaces (
            id TEXT PRIMARY KEY
@@ -109,6 +108,11 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS space_projects (
            project_path TEXT PRIMARY KEY,
            space_id TEXT NOT NULL REFERENCES spaces(id)
+         );
+         CREATE TABLE IF NOT EXISTS space_project_links (
+           space_id TEXT NOT NULL REFERENCES spaces(id),
+           project_path TEXT NOT NULL,
+           PRIMARY KEY (space_id, project_path)
          );
          CREATE TABLE IF NOT EXISTS provider_accounts (
            provider TEXT NOT NULL,
@@ -177,7 +181,18 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             )?;
         }
     }
+    if no_links {
+        projects::backfill_links(&tx)?;
+    }
     tx.commit()
+}
+
+fn table_missing(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )
 }
 
 fn with_conn<T>(
@@ -203,12 +218,12 @@ pub(crate) fn folder_key(path: &str) -> Result<String, String> {
 /// A project key as the front end's `pathKey()` writes it
 /// (src/shared/lib/paths.ts): `~` for no project (`selectionKey`), a remote
 /// project (`remote://<host>/<path>`, `REMOTE_PATH_PREFIX`) as it is with its
-/// trailing slash trimmed, or an absolute local folder.
+/// trailing slash trimmed, or an absolute local folder, which `~/` may name.
 fn project_key(path: &str) -> Result<String, String> {
     if path == "~" || path.starts_with("remote://") {
         Ok(crate::mono_gate::path_key(path))
     } else {
-        folder_key(path)
+        folder_key(&crate::fs::expand_home(path).to_string_lossy())
     }
 }
 
@@ -339,35 +354,21 @@ pub(crate) fn project_space(store: &SessionStore, project_path: &str) -> Result<
     project_space_in(&*store.lock_conn()?, project_path)
 }
 
-/// Every Space `project_path` is a project of (ADE-229): the Space it is
-/// assigned ([`project_space_in`]), then the Space of each Mono that lists it,
-/// so a Mono's own projects are always its projects in its Space. One project
-/// may be in several Spaces; each works in its own copy (`leases::place`).
-/// This is the rule the app CLI's lists and project check read
-/// (`scope::scoped`).
+/// Every Space `project_path` is a project of (ADE-229, ADE-235): the Space
+/// it is assigned ([`project_space_in`]), then each Space with a link to it or
+/// a Mono that lists it, so a Mono's own projects are always its projects in
+/// its Space. One project may be in several Spaces; each works in its own copy
+/// (`leases::place`). This is the one rule: the app CLI's lists and project
+/// check read it (`scope::scoped`), and so does the window's list
+/// ([`projects::list`] over the same facts).
 pub(crate) fn project_spaces_in(
     conn: &Connection,
     project_path: &str,
 ) -> Result<Vec<String>, String> {
     let project_path = project_key(project_path)?;
     let mut spaces = vec![project_space_in(conn, &project_path)?];
-    let listed: Vec<(String, String)> = conn
-        .prepare(
-            "SELECT m.space_id, j.value
-               FROM monos m,
-                    json_each(CASE WHEN json_valid(m.data_json) THEN m.data_json END, '$.projects') j
-              WHERE j.type = 'text'",
-        )
-        .and_then(|mut statement| {
-            statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect()
-        })
-        .map_err(|e| e.to_string())?;
-    for (space, listed) in listed {
-        // A Mono's path that is no project key is in no Space.
-        if project_key(&listed).as_deref() == Ok(project_path.as_str()) && !spaces.contains(&space)
-        {
+    for space in projects::held_by(conn, &project_path).map_err(|e| e.to_string())? {
+        if !spaces.contains(&space) {
             spaces.push(space);
         }
     }
@@ -591,6 +592,13 @@ pub(crate) fn window_space(store: &SessionStore, label: &str) -> Result<Option<S
     Ok(window_spaces(store)?.get(label).cloned())
 }
 
+/// The Space a window's action on a Space's projects is for. A window that shows
+/// no Space yet has none: this refuses, so nothing lists, changes or deletes
+/// another Space's data for it.
+pub(crate) fn shown_space(store: &SessionStore, label: &str) -> Result<String, String> {
+    window_space(store, label)?.ok_or_else(|| "This window has no Space yet.".to_owned())
+}
+
 /// Forgets a closed window's Space, so a later window never inherits it.
 /// `destroy_window`, the end of every workspace window's close, calls it.
 pub(crate) fn window_closed(store: &SessionStore, label: &str) {
@@ -617,13 +625,35 @@ pub fn spaces_project_spaces(
     project_spaces_in(&*store.lock_conn()?, &project_path)
 }
 
+/// The calling window's Space's projects in one read
+/// ([`projects::SpaceProjects`]). The Space is never a client value.
 #[tauri::command(async)]
-pub fn spaces_project_set(
+pub fn spaces_project_list<R: Runtime>(
+    window: WebviewWindow<R>,
+    store: State<'_, SessionStore>,
+) -> Result<projects::SpaceProjects, String> {
+    projects::list(&store, &shown_space(&store, window.label())?)
+}
+
+/// Every project any Space has, for the window's add list (T2) and its known
+/// project check (T3).
+#[tauri::command(async)]
+pub fn spaces_project_known(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<projects::KnownProject>, String> {
+    projects::known(&store)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_set<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, SessionStore>,
     project_path: String,
     space_id: String,
 ) -> Result<(), String> {
-    set_project_space(&store, &project_path, &space_id)
+    set_project_space(&store, &project_path, &space_id)?;
+    projects::emit_changed(&app);
+    Ok(())
 }
 
 #[tauri::command(async)]
