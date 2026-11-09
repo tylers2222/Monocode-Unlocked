@@ -60,6 +60,9 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: PROBE deliberate red browser shard 2
+        if: matrix.shard == 2
+        run: exit 1
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -147,8 +150,6 @@ jobs:
         os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
-      - name: PROBE deliberate red host job
-        run: exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

@@ -1,6 +1,5 @@
 name: zz-probe-integrity
 
-# GitHub runs a pull_request_target workflow from the default branch, and the
 # checkout below takes the default branch too, so a pull request cannot edit the
 # check that judges it. The branches filter keeps the job to pull requests into
 # tyler/main. That is safe only while no step runs pull request code: the PR head
@@ -85,9 +84,7 @@ jobs:
       - name: Integrity check (default-branch script, diff only)
         run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
 
-      # The Actions policy allows pull_request_target only for this file, and any other
       # workflow with it could run PR code with a write token.
-      - name: Only gate-integrity.yml uses pull_request_target
         if: ${{ !cancelled() }}
         run: python3 scripts/process/workflow_events.py "$BASE_SHA" "$HEAD_SHA"
 
