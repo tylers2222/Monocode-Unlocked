@@ -25,7 +25,9 @@ Only jobs with same-ref or new-run evidence get a log fetched. Other failed jobs
 count only if their log is already on disk; those counts are scaled to all failed
 jobs of their kind and are labelled as estimates. A job with more than
 MASS_FAILURE failed tests is counted on its own and not per test: something broke
-the whole run, and those names would bury the real list.
+the whole run, and those names would bury the real list. A failure line that
+also shows in the log of a job that passed is no failure: scenario d2 stops the
+app on purpose, so its "instance exited" line is in green jobs too.
 """
 import argparse
 import collections
@@ -38,6 +40,8 @@ import subprocess
 import time
 from datetime import datetime
 
+from flaky_log import parse_log
+
 REPO = "tylers2222/Monocode-Unlocked"
 SKIP_WORKFLOWS = {"gate-integrity", "gate-integrity-rerun", "cancel-closed-pr-runs", "Fork sync"}
 MASS_FAILURE = 10
@@ -46,88 +50,6 @@ WATCH_ROWS = 20
 ROLLUP_STEP = re.compile(r"^Every (job|needed job) ")
 TEST_STEP = re.compile(r"^Run (the scenarios|the suites|npm (run )?test|cargo test|npx vitest|node --test|python3 -m unittest)")
 SETUP_STEP = re.compile(r"install|set up|setup|download|checkout|cache|\bapt\b|docker|image|toolchain|^Run actions/", re.I)
-NETWORK = re.compile(r"curl: \(\d+\)|HTTP error 5\d\d|\b50[234] (Bad Gateway|Service|Gateway)|error: 50[234]|ECONNRESET|ETIMEDOUT"
-                     r"|Could not resolve host|TLS handshake|Temporary failure resolving|npm ERR! network", re.I)
-LOG_LINE = re.compile(r"^\S+Z\s?")
-ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-MERGE = re.compile(r"Merge ([0-9a-f]{40}) into ([0-9a-f]{40})")
-SECTION = re.compile(r"^== scenarios: (.+?) #(\d+)\s*$")
-ANY_SECTION = re.compile(r"^== ")
-EVAL_ERROR = re.compile(r"^\[giga-eval [\d:]+\] ERROR: (?:timed out after \d+ s: )?(.+)$")
-EVAL_COUNT = re.compile(r"^\[giga-eval [\d:]+\] .+: (\d+)/(\d+) passed\s*$")
-SCENARIO_FAIL = re.compile(r"^\s+FAIL (.+)$")
-PW_HEAD = re.compile(r"^\s*\d+ (failed|flaky)\s*$")
-PW_TEST = re.compile(r"^\s*\[(\w+)\] › (.+?):\d+:\d+ › (.+?)\s*$")
-CARGO = re.compile(r"^test (\S+) \.\.\. FAILED\s*$")
-VITEST = re.compile(r"^ FAIL  (.+?)(?: \[ .+ \])?\s*$")
-UNITTEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \((.+?)\)")
-NODE = re.compile(r"^✖ (?!failing tests)(.+?) \(\d")
-
-
-def clean_scenario_text(text):
-    text = UUID.sub("*", text)
-    if text.startswith("instance exited"):
-        return "instance exited"
-    match = re.match(r"(.+):\s*[^:]*, expected\b", text)
-    return (match.group(1) if match else text).strip()[:120]
-
-
-def parse_log(text):
-    """Failed test names, repeats and the merge ref in one job's log."""
-    out = {"ref": None, "tests": set(), "network": None, "repeats": {}}
-    runs = collections.defaultdict(set)   # scenario -> repeat numbers seen
-    failed = collections.defaultdict(lambda: collections.defaultdict(set))  # scenario -> test -> repeats
-    section, number, in_summary = None, None, False
-    for raw in text.splitlines():
-        line = ANSI.sub("", LOG_LINE.sub("", raw))
-        merge = MERGE.search(line)
-        if merge and not out["ref"]:
-            out["ref"] = merge.group(1, 2)
-        if not out["network"]:
-            hit = NETWORK.search(line)
-            out["network"] = hit.group(0) if hit else None
-        head = SECTION.match(line)
-        if head:
-            section, number = head.group(1), int(head.group(2))
-            runs[section].add(number)
-            continue
-        if ANY_SECTION.match(line):
-            section = None
-        if section:
-            hit = EVAL_ERROR.match(line) or SCENARIO_FAIL.match(line)
-            if hit:
-                failed[section][clean_scenario_text(hit.group(1))].add(number)
-                continue
-            count = EVAL_COUNT.match(line)
-            if count and int(count.group(1)) < int(count.group(2)) and not any(number in r for r in failed[section].values()):
-                failed[section]["failed, no detail in the log"].add(number)
-        if PW_HEAD.match(line):
-            in_summary = True
-            continue
-        if in_summary:
-            pw = PW_TEST.match(line)
-            if pw:
-                out["tests"].add("browser: %s › %s" % (pw.group(2).replace("tests/browser/", ""), pw.group(3)))
-                continue
-            in_summary = False
-        for rule, make in ((CARGO, lambda m: "cargo: " + m.group(1)),
-                           (VITEST, lambda m: "vitest: " + m.group(1)),
-                           (UNITTEST, lambda m: "unittest: %s.%s" % (m.group(2), m.group(1))),
-                           (NODE, lambda m: "node: " + m.group(1))):
-            hit = rule.match(line)
-            if hit:
-                out["tests"].add(make(hit))
-                break
-    for scenario, tests in failed.items():
-        bad = set().union(*tests.values()) if tests else set()
-        clean = len(runs[scenario] - bad)
-        for test, numbers in tests.items():
-            name = "scenario %s: %s" % (scenario, test)
-            out["tests"].add(name)
-            if clean and numbers:
-                out["repeats"][name] = (len(numbers), len(runs[scenario]))
-    return out
 
 
 def classify_step(names):
@@ -162,7 +84,7 @@ class Source:
         self.store_jobs, self.logs = os.path.join(store, "jobs"), os.path.join(store, "logs")
         self.budget, self.offline, self.repo = budget, offline, repo
         self.runner, self.calls, self.stopped = runner, 0, None
-        self.jobs, self.runs, self.keys = {}, {}, set()
+        self.jobs, self.runs, self.keys, self.parsed = {}, {}, set(), {}
         os.makedirs(self.store_jobs, exist_ok=True)
         os.makedirs(self.logs, exist_ok=True)
         for directory in [*caches, self.store_jobs]:
@@ -216,6 +138,8 @@ class Source:
         return 1 in seen and run.get("run_attempt", 1) in seen
 
     def log(self, job_id, fetch=False):
+        if job_id in self.parsed:
+            return self.parsed[job_id]
         path = os.path.join(self.logs, "%d.log" % job_id)
         if not os.path.exists(path) and fetch:
             text = self.get("repos/%s/actions/jobs/%d/logs" % (self.repo, job_id))
@@ -224,7 +148,8 @@ class Source:
                     f.write(text)
         if os.path.exists(path):
             with open(path, errors="replace") as f:
-                return parse_log(f.read())
+                self.parsed[job_id] = parse_log(f.read())
+            return self.parsed[job_id]
         return None
 
 
@@ -290,63 +215,50 @@ def group_of(job):
     return (job.get("workflow_name"), job["name"].split(" (")[0].rstrip("0123456789-"), tuple(failed_steps(job)))
 
 
-def rank(failures, source, fetch=True):
-    """Test rows, setup rows and counts."""
-    tests = collections.defaultdict(lambda: {
-        "same_ref": 0, "by_rule": 0, "new_ref": 0, "unread": 0, "repeat": 0, "repeat_runs": [0, 0], "later_head": 0,
-        "none": 0, "jobs": {}, "branches": set(), "where": collections.Counter(), "examples": [], "sampled": {}})
-    setup = collections.defaultdict(lambda: {"jobs": 0, "minutes": 0.0, "same_ref": 0, "new_ref": 0, "examples": []})
-    counts = collections.Counter()
-    no_name, mass = [], []
-    known, read = collections.Counter(), collections.Counter()
-    for fail in failures:
-        job = fail["job"]
-        counts[fail["class"]] += 1
-        counts[fail["class"] + "_minutes"] += fail["minutes"]
-        paired = bool(fail["rerun"] or fail["new_run"])
-        verdict = ref_verdict(fail, source, fetch=fetch and fail["class"] == "test")
-        log = source.log(job["id"], fetch=fetch and paired and fail["class"] == "setup")
-        if fail["class"] == "setup" or (fail["class"] == "test" and log and not log["tests"] and log["network"]):
-            step = (failed_steps(job) or ["(no step)"])[0]
-            label = re.sub(r"\s*\(.*$", "", step) + (" [%s]" % log["network"] if log and log["network"] else "")
-            row = setup[label]
-            row["jobs"] += 1
-            row["minutes"] += fail["minutes"]
-            row["same_ref"] += int(bool(fail["rerun"]))
-            row["new_ref"] += int(bool(not fail["rerun"] and fail["new_run"]))
-            row["examples"].append(job["run_id"])
-            continue
-        if fail["class"] != "test":
-            continue
-        if not paired:
-            known[group_of(job)] += 1
-            if log:
-                read[group_of(job)] += 1
-        if not log:
-            if paired:
-                no_name.append(job)
-            continue
-        if not log["tests"]:
-            no_name.append(job)
-        if len(log["tests"]) > MASS_FAILURE:
-            mass.append((job, len(log["tests"]), paired))
-            continue
-        for name in log["tests"]:
-            row = tests[name]
-            key = {"same_ref": "same_ref", "same_ref_by_rule": "by_rule", "new_ref": "new_ref",
-                   "new_ref_unread": "unread", "later_head": "later_head", "none": "none"}[verdict]
-            row[key] += 1
-            if name in log["repeats"]:
-                row["repeat"] += 1
-                row["repeat_runs"][0] += log["repeats"][name][0]
-                row["repeat_runs"][1] += log["repeats"][name][1]
-            row["jobs"][job["id"]] = fail["minutes"]
-            row["branches"].add(job.get("head_branch"))
-            row["where"][job["name"]] += 1
-            strong = key in ("same_ref", "by_rule") or name in log["repeats"]
-            row["examples"].append((0 if strong else 1, job["run_id"], job.get("run_attempt", 1)))
-            if not paired:
-                row["sampled"][job["id"]] = group_of(job)
+def new_test_row():
+    return {"same_ref": 0, "by_rule": 0, "new_ref": 0, "unread": 0, "repeat": 0, "repeat_runs": [0, 0], "later_head": 0,
+            "none": 0, "jobs": {}, "branches": set(), "where": collections.Counter(), "examples": [], "sampled": {}}
+
+
+def new_setup_row():
+    return {"jobs": 0, "minutes": 0.0, "same_ref": 0, "new_ref": 0, "examples": []}
+
+
+VERDICT_COLUMN = {"same_ref": "same_ref", "same_ref_by_rule": "by_rule", "new_ref": "new_ref",
+                  "new_ref_unread": "unread", "later_head": "later_head", "none": "none"}
+
+
+def add_setup(setup, fail, log):
+    job = fail["job"]
+    step = (failed_steps(job) or ["(no step)"])[0]
+    label = re.sub(r"\s*\(.*$", "", step) + (" [%s]" % log["network"] if log and log["network"] else "")
+    row = setup[label]
+    row["jobs"] += 1
+    row["minutes"] += fail["minutes"]
+    row["same_ref"] += int(bool(fail["rerun"]))
+    row["new_ref"] += int(bool(not fail["rerun"] and fail["new_run"]))
+    if job["run_id"] not in row["examples"]:
+        row["examples"].append(job["run_id"])
+
+
+def add_test(row, name, fail, log, verdict, paired):
+    job = fail["job"]
+    column = VERDICT_COLUMN[verdict]
+    row[column] += 1
+    if name in log["repeats"]:
+        row["repeat"] += 1
+        row["repeat_runs"][0] += log["repeats"][name][0]
+        row["repeat_runs"][1] += log["repeats"][name][1]
+    row["jobs"][job["id"]] = fail["minutes"]
+    row["branches"].add(job.get("head_branch"))
+    row["where"][job["name"]] += 1
+    is_strong = column in ("same_ref", "by_rule") or name in log["repeats"]
+    row["examples"].append((0 if is_strong else 1, job["run_id"], job.get("run_attempt", 1)))
+    if not paired:
+        row["sampled"][job["id"]] = group_of(job)
+
+
+def scale_to_estimates(tests, known, read):
     for row in tests.values():
         row["est_jobs"], row["est_minutes"], row["estimate"] = 0.0, 0.0, False
         for job_id, mins in row["jobs"].items():
@@ -355,7 +267,49 @@ def rank(failures, source, fetch=True):
             row["estimate"] = row["estimate"] or scale > 1.0
             row["est_jobs"] += scale
             row["est_minutes"] += mins * scale
-    return {"tests": tests, "setup": setup, "counts": counts, "no_name": no_name, "mass": mass, "known": known, "read": read}
+
+
+def lines_in_passing_jobs(failures, source):
+    noise = set()
+    for fail in failures:
+        pass_job = fail["rerun"] or fail["new_run"]
+        passed = source.log(pass_job["id"]) if pass_job else None
+        noise |= passed["tests"] if passed else set()
+    return noise
+
+
+def rank(failures, source, fetch=True):
+    """Test rows, setup rows and counts."""
+    tests, setup = collections.defaultdict(new_test_row), collections.defaultdict(new_setup_row)
+    counts, known, read = collections.Counter(), collections.Counter(), collections.Counter()
+    no_name, mass = [], []
+    verdicts = {f["job"]["id"]: ref_verdict(f, source, fetch=fetch and f["class"] == "test") for f in failures}
+    noise = lines_in_passing_jobs(failures, source)
+    for fail in failures:
+        job = fail["job"]
+        counts[fail["class"]] += 1
+        counts[fail["class"] + "_minutes"] += fail["minutes"]
+        paired = bool(fail["rerun"] or fail["new_run"])
+        log = source.log(job["id"], fetch=fetch and paired and fail["class"] == "setup")
+        names = log["tests"] - noise if log else set()
+        if fail["class"] == "setup" or (fail["class"] == "test" and log and not names and log["network"]):
+            add_setup(setup, fail, log)
+            continue
+        if fail["class"] != "test":
+            continue
+        if not paired:
+            known[group_of(job)] += 1
+            read[group_of(job)] += int(bool(log))
+        if not names and (log or paired):
+            no_name.append(job)
+        if len(names) > MASS_FAILURE:
+            mass.append((job, len(names), paired))
+            continue
+        for name in names:
+            add_test(tests[name], name, fail, log, verdicts[job["id"]], paired)
+    scale_to_estimates(tests, known, read)
+    return {"tests": tests, "setup": setup, "counts": counts, "no_name": no_name, "mass": mass, "known": known, "read": read,
+            "noise": noise}
 
 
 def strong(row):
@@ -405,11 +359,11 @@ def report(ranked, source, candidates, window):
     proven = [(n, r) for n, r in ordered(tests) if strong(r)]
     weak = [(n, r) for n, r in ordered(tests) if not strong(r) and (r["new_ref"] + r["unread"])]
     watch = [(n, r) for n, r in ordered(tests) if not strong(r) and not (r["new_ref"] + r["unread"]) and len(r["branches"]) >= 2]
-    for title, rows in (("## Ranked: passed on the same ref, or inside the job (flaky)", proven),
-                        ("## Passed only on a new ref (main moved; may be a fix on main)", weak),
-                        ("## Failed on 2 or more branches, no rerun evidence (not proven flaky, may be real)", watch)):
+    for title, rows, cap in (("## Ranked: passed on the same ref, or inside the job (flaky)", proven, len(proven)),
+                             ("## Passed only on a new ref (main moved; may be a fix on main)", weak, len(weak)),
+                             ("## Failed on 2 or more branches, no rerun evidence (not proven flaky, may be real)", watch, WATCH_ROWS)):
         lines += [title, ""]
-        shown = rows[:WATCH_ROWS]
+        shown = rows[:cap]
         lines += [HEAD] + [test_row(i + 1, n, r) for i, (n, r) in enumerate(shown)] if rows else ["None."]
         if len(rows) > len(shown):
             lines.append("\n%d more rows are not shown." % (len(rows) - len(shown)))
@@ -446,6 +400,8 @@ def report(ranked, source, candidates, window):
             sum(read.values()), sum(known.values())),
         "- Test-step jobs with a log and no test name, or rerun evidence and no log: %d. Examples: %s." % (
             len(no_name), " ".join(str(j["run_id"]) for j in no_name[:5]) or "none"),
+        "- Failure lines also in the log of a job that passed, so not counted: %s." % (
+            "; ".join("`%s`" % n for n in sorted(ranked["noise"])) or "none"),
         "- GET calls this run: %d.%s" % (source.calls, " Stopped: " + source.stopped if source.stopped else ""),
         "- Only reruns and repeats show a flake, so this is a lower bound and not a flake rate. Runs nobody reran show nothing.",
         "- Job-minutes are the failed job's run time, not a person's time."]

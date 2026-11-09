@@ -10,10 +10,12 @@ import json
 import sys
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
 SCRIPT = Path(__file__).parent.parent / "flaky_tests.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("flaky_tests", SCRIPT)
 flaky = importlib.util.module_from_spec(spec)
 sys.modules["flaky_tests"] = flaky
@@ -44,6 +46,7 @@ class Harness:
 
     def __init__(self, logs=None, runner=None, budget=0, offline=True):
         self.dir = tempfile.TemporaryDirectory()
+        self.finish = weakref.finalize(self, self.dir.cleanup)
         self.source = flaky.Source([], self.dir.name, budget, offline, runner=runner)
         for job_id, text in (logs or {}).items():
             (Path(self.source.logs) / ("%d.log" % job_id)).write_text(text)
@@ -165,13 +168,13 @@ class Rank(unittest.TestCase):
         ranked = h.rank([job(1, 10, step="Install omp 18.2.11 (sha256-checked release binary)"), job(2, 10, "browser (2/6)", "success", 2, **LATER)])
         self.assertEqual(dict(ranked["tests"]), {})
         self.assertEqual(ranked["counts"]["setup"], 1)
-        self.assertEqual(list(ranked["setup"]), ["Install omp 18.2.11 [curl: (22)]"])
+        self.assertEqual(list(ranked["setup"]), ["Install omp 18.2.11 [curl: (22) HTTP 504]"])
 
     def test_a_network_error_in_a_test_step_with_no_test_name_is_setup(self):
         h = Harness({1: "curl: (22) The requested URL returned error: 504\n"})
         ranked = h.rank([job(1, 10, step="Run the scenarios")])
         self.assertEqual(dict(ranked["tests"]), {})
-        self.assertEqual(list(ranked["setup"]), ["Run the scenarios [curl: (22)]"])
+        self.assertEqual(list(ranked["setup"]), ["Run the scenarios [curl: (22) HTTP 504]"])
 
     def test_a_network_line_beside_a_named_test_stays_a_test(self):
         h = Harness({1: "curl: (22) The requested URL returned error: 504\n" + PW_FAIL})
@@ -191,6 +194,14 @@ class Rank(unittest.TestCase):
         row = ranked["tests"]["browser: a.spec.ts › opens a tab"]
         self.assertEqual((row["same_ref"], row["by_rule"], len(row["jobs"])), (1, 0, 1))
         self.assertEqual((row["est_jobs"], row["est_minutes"], row["estimate"]), (1.0, 10.0, False))
+
+    def test_a_failure_line_also_in_a_passing_job_is_not_counted(self):
+        expected = "== scenarios: d2 #1\n[giga-eval 06:43:51] ERROR: instance exited, see /tmp/i.log\n"
+        h = Harness({1: expected + "  FAIL real one: 1, expected 2\n", 2: expected, 3: expected})
+        ranked = h.rank([job(1, 10), job(2, 10, "browser (1/6)", "success", 2, **LATER), job(3, 11, "other", branch="y")])
+        self.assertEqual(list(ranked["tests"]), ["scenario d2: real one"])
+        self.assertEqual(ranked["noise"], {"scenario d2: instance exited"})
+        self.assertEqual([j["id"] for j in ranked["no_name"]], [3])
 
     def test_a_copied_failure_of_a_later_attempt_counts_once(self):
         h = Harness({1: PW_FAIL, 2: PW_FAIL})
