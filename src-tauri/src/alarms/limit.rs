@@ -17,10 +17,17 @@
 use rusqlite::{params, Connection};
 
 use super::route::{self, EpisodeRow};
+use super::state::Cause;
 use super::store::{Settings, MINUTE_MS};
 use crate::mono_messages::Notices;
 
 const WINDOW_MS: i64 = 15 * MINUTE_MS;
+
+/// The sleep hold's alarm is not a stall: it is never held, starts no window
+/// and neither carries nor spends the agent's count.
+fn exempt(episode: &EpisodeRow) -> bool {
+    episode.cause == Cause::HoldMissing.as_str()
+}
 
 pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -38,6 +45,9 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
 /// Holds `episode`'s level-1 message if its agent was alarmed for this cause
 /// inside the window. A send stamped ahead of the clock holds nothing.
 pub(super) fn holds(tx: &Connection, episode: &EpisodeRow, active: i64) -> rusqlite::Result<bool> {
+    if exempt(episode) {
+        return Ok(false);
+    }
     let held = tx.execute(
         "UPDATE alarm_repeat_limit SET held_count = held_count + 1, held_episode = ?3
           WHERE actor = ?1 AND cause = ?2 AND sent_active_ms <= ?4 AND ?4 - sent_active_ms < ?5",
@@ -53,10 +63,13 @@ pub(super) fn holds(tx: &Connection, episode: &EpisodeRow, active: i64) -> rusql
 }
 
 /// The alarms the agent's next send carries.
-pub(super) fn grouped(conn: &Connection, actor: &str) -> rusqlite::Result<i64> {
+pub(super) fn grouped(conn: &Connection, episode: &EpisodeRow) -> rusqlite::Result<i64> {
+    if exempt(episode) {
+        return Ok(0);
+    }
     conn.query_row(
         "SELECT COALESCE(SUM(held_count), 0) FROM alarm_repeat_limit WHERE actor = ?1",
-        [actor],
+        [episode.actor.to_string()],
         |row| row.get(0),
     )
 }
@@ -64,6 +77,9 @@ pub(super) fn grouped(conn: &Connection, actor: &str) -> rusqlite::Result<i64> {
 /// A level-1 message goes now: its cause's window starts, and the count it
 /// carries is spent.
 pub(super) fn sent(tx: &Connection, episode: &EpisodeRow, active: i64) -> rusqlite::Result<()> {
+    if exempt(episode) {
+        return Ok(());
+    }
     let actor = episode.actor.to_string();
     tx.execute(
         "UPDATE alarm_repeat_limit SET held_count = 0, held_episode = NULL WHERE actor = ?1",

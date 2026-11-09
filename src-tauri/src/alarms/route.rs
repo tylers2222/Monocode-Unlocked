@@ -381,7 +381,7 @@ fn level_text(
 ) -> rusqlite::Result<String> {
     let mut stall = stall(conn, episode, settings, active)?;
     if level == 1 {
-        stall.held = limit::grouped(conn, &episode.actor.to_string())?;
+        stall.held = limit::grouped(conn, episode)?;
     }
     let missed = match chain.get(level - 1) {
         Some(Provisioner::Agent(actor)) if level >= 2 => Some(Missed {

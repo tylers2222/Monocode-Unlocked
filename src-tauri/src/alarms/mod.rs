@@ -122,6 +122,13 @@ pub(crate) fn alarm_session<R: Runtime>(
 pub(crate) mod test_taps {
     pub(crate) use super::store::outbox_key;
 
+    /// Episode `id`, a row the test wrote, opens as `Pass::open` opens one.
+    pub(crate) fn opened(conn: &rusqlite::Connection, id: &str, active: i64) {
+        let settings = super::store::Settings::load(conn).unwrap();
+        let mut notices = crate::mono_messages::Notices::default();
+        super::route::opened(conn, &mut notices, id, &settings, active).unwrap();
+    }
+
     /// `session`'s row as `(turn_state, turn_id, last_progress, tool_running)`.
     pub(crate) fn row(
         conn: &rusqlite::Connection,

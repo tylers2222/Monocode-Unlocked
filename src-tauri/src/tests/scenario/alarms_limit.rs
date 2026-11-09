@@ -557,3 +557,78 @@ fn a_send_stamped_ahead_of_the_clock_holds_nothing() {
     let next = wake_stall(&mut world, &who, &worker, "q2");
     assert!(message(&world, &next).is_some());
 }
+
+/// A `hold_missing` episode of `who` opens through routing, as #546's detector
+/// path opens one; nothing on main does yet.
+fn hold_missing_opens(world: &World, id: &str, who: &str, provisioner: &str) {
+    let active = world.active_ms();
+    world
+        .conn()
+        .execute(
+            "INSERT INTO alarm_episodes (id, actor, provisioner, cause, open_work_json,
+               stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms,
+               next_escalate_active_ms)
+             VALUES (?1, ?2, ?3, 'hold_missing', '[]', ?4, ?5, ?4, ?5, ?6)",
+            rusqlite::params![id, who, provisioner, active, world.now(), active + ESCALATE],
+        )
+        .unwrap();
+    test_taps::opened(&world.conn(), id, active);
+}
+
+/// The detector leaves a `hold_missing` episode open, so the test closes it.
+fn closes(world: &World, id: &str) {
+    world
+        .conn()
+        .execute(
+            "UPDATE alarm_episodes SET closed_active_ms = ?2, closed_wall_ms = ?3,
+               close_reason = 'progress' WHERE id = ?1",
+            rusqlite::params![id, world.active_ms(), world.now()],
+        )
+        .unwrap();
+}
+
+// Defect (ruling on ADE-278): a missing sleep hold is not a stall, yet the
+// limit holds its repeats, gives it a window, or spends the stall count on it,
+// so the next stall alarm loses what was held.
+#[test]
+fn a_missing_sleep_hold_is_never_limited_and_leaves_the_stall_count_alone() {
+    let mut world = World::new("alarm-limit-hold");
+    let chain = chain(&world, "lih");
+    let (who, worker) = (actor(&chain.worker), chain.worker.clone());
+    let lead = actor(&chain.lead);
+    align(&mut world);
+    ran_a_turn(&mut world, &worker);
+
+    let first = wake_stall(&mut world, &who, &worker, "q1");
+    let window_ends = one_i64(
+        &world,
+        "SELECT opened_active_ms FROM alarm_episodes WHERE id = ?1",
+        &first,
+    ) + WINDOW;
+    recovers(&mut world, &who, &worker);
+    let held = wake_stall(&mut world, &who, &worker, "q2");
+    assert_eq!(message(&world, &held), None, "a stall repeat is held");
+    recovers(&mut world, &who, &worker);
+
+    for id in ["al_hold1", "al_hold2"] {
+        hold_missing_opens(&world, id, &who, &lead);
+        let text = message(&world, id).expect("never held, a repeat included");
+        assert!(text.contains("cause=\"hold_missing\""), "{text}");
+        assert!(!text.contains("Held back"), "not a stall's count: {text}");
+        closes(&world, id);
+    }
+    assert_eq!(
+        one_i64(
+            &world,
+            "SELECT count(*) FROM alarm_repeat_limit WHERE cause = ?1",
+            "hold_missing",
+        ),
+        0,
+        "it uses no window"
+    );
+
+    world.advance(window_ends - world.active_ms() + 2 * PASS);
+    let next = wake_stall(&mut world, &who, &worker, "q3");
+    let text = message(&world, &next).expect("after the window");
+    assert!(text.contains(&held_line(1)), "the count is intact: {text}");
+}
