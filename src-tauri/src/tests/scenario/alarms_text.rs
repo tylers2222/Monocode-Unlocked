@@ -150,6 +150,7 @@ fn line<'a>(text: &'a str, start: &str) -> &'a str {
 fn an_old_open_ask_not_tied_to_the_stuck_item_is_only_counted() {
     let mut scene = lead("att-stale");
     scene.ask("old-1", "Old work one");
+    scene.takes_a_turn("t0");
     scene.world.jump_wall(30 * DAY);
     scene.ask("fresh", "Fresh work");
     scene.world.jump_wall(MINUTE);
@@ -450,20 +451,15 @@ fn a_missed_notice_names_the_session_its_result_came_from() {
     align(&mut scene.world);
     let chat = scene.mono.chat.clone();
     let child = scene.lead.clone();
-    let start: String = scene
+    // Its ask is done, so its result is the Mono's to read. An ack would add a
+    // message that competes with the notice.
+    scene
         .world
         .conn()
-        .query_row("SELECT id FROM mono_asks", [], |row| row.get(0))
+        .execute("UPDATE mono_asks SET state = 'acked'", [])
         .unwrap();
     turn(&mut scene.world, &child, "c1", true);
     ran_a_turn(&mut scene.world, &chat);
-    scene.world.tool(
-        &session_caller(&child, P),
-        "acked",
-        "ack",
-        json!({"ask_id": start, "message": "Done"}),
-        &[&chat],
-    );
     turn(&mut scene.world, &child, "c1", false);
     let conn_row = finished(&scene.mono, "req-1", &child, Some("notice-1"));
     mono_completions::hold(&scene.world.conn(), WINDOW, &[conn_row]).unwrap();
