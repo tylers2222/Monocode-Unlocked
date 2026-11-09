@@ -10,7 +10,9 @@ use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
 use tauri::{AppHandle, Runtime, State, WebviewWindow};
 
-use super::projects::{emit_changed, held_by, holders, in_workspace, workspace_roots, InWorkspace};
+use super::projects::{
+    emit_changed, held_by, holders, in_workspace, three_texts, workspace_roots, InWorkspace,
+};
 use super::{project_key, project_space_in, project_spaces_in, window_space};
 use crate::control::ControlHost;
 use crate::session_store::{session_delete, SessionStore, LISTED_SESSION};
@@ -175,18 +177,10 @@ pub(crate) struct SessionFacts {
 }
 
 fn session_facts(conn: &Connection, condition: &str) -> rusqlite::Result<Vec<SessionFacts>> {
-    let rows = conn
-        .prepare(&format!(
-            "SELECT id, space_id, cwd FROM sessions WHERE {condition}"
-        ))?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = three_texts(
+        conn,
+        &format!("SELECT id, space_id, cwd FROM sessions WHERE {condition}"),
+    )?;
     Ok(rows
         .into_iter()
         .map(|(id, space, cwd)| SessionFacts {
