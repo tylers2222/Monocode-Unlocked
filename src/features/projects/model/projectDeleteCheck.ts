@@ -80,6 +80,16 @@ function spaceName(id: string): string {
   return spacesView().spaces.find((space) => space.id === id)?.name ?? id;
 }
 
+/** T8's window half for this Space, for an event with no dialog (T5, T6). */
+export async function checkWindowRunning(path: string): Promise<string | null> {
+  return windowRunningRefusal(
+    path,
+    spacesView().activeSpaceId,
+    await listSessionsByProject(path),
+    openSessions(),
+  );
+}
+
 /**
  * Why Delete is refused right now, before its dialog opens and again before the
  * delete. The backend answers first: a Mono's refusal comes before a running
@@ -88,12 +98,7 @@ function spaceName(id: string): string {
 export async function checkProjectDelete(path: string): Promise<string | null> {
   try {
     await previewProjectDelete(path);
-    return windowRunningRefusal(
-      path,
-      spacesView().activeSpaceId,
-      await listSessionsByProject(path),
-      openSessions(),
-    );
+    return await checkWindowRunning(path);
   } catch (error) {
     return refusalMessage(error);
   }

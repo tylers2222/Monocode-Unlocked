@@ -7,7 +7,13 @@ import { loadTabGroupLabels } from "../../features/workspace/model/tabGroups";
 import { ProjectRail } from "./ProjectRail";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async () => null),
+  invoke: vi.fn(async (command: string) =>
+    command === "spaces_project_known"
+      ? [{ path: "/work/client", spaces: ["space-1"] }]
+      : command === "spaces_project_list"
+        ? { spaceId: "space-1", projects: [], monoHeld: [] }
+        : null,
+  ),
   convertFileSrc: (path: string) => path,
 }));
 vi.mock("../../features/source-control/hooks/useProjectDiffStats", () => ({

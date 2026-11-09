@@ -511,6 +511,7 @@ import {
 } from "../features/projects/model/projectPurge";
 import { setOpenSessionsSource } from "../features/projects/model/projectDeleteCheck";
 import { notifySpaceProjectsChanged } from "../features/spaces/model/spaces";
+import { removeProjectFromActiveSpace } from "../features/projects/model/projectRowActions";
 import * as milestones from "../features/milestones/model/milestones";
 import * as approvals from "../features/approvals/model/approvals";
 import {
@@ -6824,6 +6825,29 @@ function Workspace({
   useEffect(() => setOpenSessionsSource(() => sessionsRef.current), []);
 
   /**
+   * Leaves project `normalized`, for the next one this window shows. False when
+   * there is none: the window is then on no project.
+   */
+  const moveOffProject = useCallback(
+    (normalized: string, remaining: readonly { path: string }[]) => {
+      const next = remaining.find(
+        (item) =>
+          looksLikeProject(item.path) &&
+          !sameProjectPath(item.path, normalized),
+      );
+      if (next) {
+        onSelectProject(next.path);
+        setProjectCwd(next.path);
+        return true;
+      }
+      setProjectCwd("~");
+      setComposerFocused(true);
+      return false;
+    },
+    [onSelectProject],
+  );
+
+  /**
    * `purge` null is Archive. A purge acts only on what the backend deleted; a
    * project other Spaces still have keeps its rail entry, location, settings
    * and terminals, which are shared.
@@ -6941,29 +6965,37 @@ function Workspace({
       }
 
       if (wasCurrent && (!purge || purge.complete)) {
-        const next = remaining.find(
-          (item) =>
-            looksLikeProject(item.path) &&
-            !sameProjectPath(item.path, normalized),
-        );
-        if (next) {
-          onSelectProject(next.path);
-          setProjectCwd(next.path);
-        } else {
-          setProjectCwd("~");
-          setComposerFocused(true);
-        }
+        moveOffProject(normalized, remaining);
       }
     },
-    [activeTabId, invalidateLoadedSession, onSelectProject, persistSession],
+    [activeTabId, invalidateLoadedSession, moveOffProject, persistSession],
   );
 
   const onRemoveProject = useCallback(
     (
       path: string,
-      options: { purgeData: boolean },
+      options: { purgeData: boolean; leaveSpace?: boolean },
     ): void | Promise<string | null> => {
       const normalized = normalizeProjectPath(path);
+      if (options.leaveSpace) {
+        // T5, T6: chats and tabs stay, hidden, and return if it is added again.
+        return removeProjectFromActiveSpace(normalized).then((result) => {
+          if ("refusal" in result) return result.refusal;
+          if (
+            result.removed &&
+            sameProjectPath(projectCwdRef.current, normalized) &&
+            !moveOffProject(normalized, loadRecents())
+          ) {
+            // Its tabs stay, hidden: the last project needs a blank one to show.
+            const session = newWorkspaceSession("~", sessionDefaults?.runtimeMode);
+            const tab = newTab(session.id);
+            setSessions((prev) => [...prev, session]);
+            appendTab(tab, "~");
+            setActiveTabId(tab.id);
+          }
+          return null;
+        });
+      }
       if (!options.purgeData) {
         removeProjectFromWindow(normalized, null);
         return;
@@ -6973,7 +7005,12 @@ function Workspace({
         return result.refusal;
       });
     },
-    [removeProjectFromWindow],
+    [
+      appendTab,
+      moveOffProject,
+      removeProjectFromWindow,
+      sessionDefaults?.runtimeMode,
+    ],
   );
 
   const onRestoreProject = useCallback(
