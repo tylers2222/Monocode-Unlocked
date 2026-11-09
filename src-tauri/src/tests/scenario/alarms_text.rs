@@ -194,6 +194,11 @@ fn the_ask_the_last_turn_took_is_the_stuck_item() {
     let mut scene = lead("att-last-turn");
     scene.ask("taken", "Taken in the last turn");
     scene.takes_a_turn("t1");
+    // A newer ask no turn took. The paused queue keeps it from being a wake.
+    scene.world.jump_wall(MINUTE);
+    scene.ask("newer", "Newer and not taken");
+    let lead = scene.lead.clone();
+    save_queue(&scene.world, &lead, json!([]), "paused");
     scene.world.advance(N);
     let text = scene.alarm();
     assert!(
@@ -206,7 +211,7 @@ fn the_ask_the_last_turn_took_is_the_stuck_item() {
     );
     assert_eq!(
         line(&text, "Other open work: "),
-        "Other open work: 1 not tied to it (1 ask)."
+        "Other open work: 2 not tied to it (2 asks)."
     );
 }
 
