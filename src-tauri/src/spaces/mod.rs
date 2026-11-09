@@ -775,7 +775,7 @@ pub(crate) fn prepare_spawn(
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
-    if let Some(session) = child.session() {
+    if let (Child::Session(session), Some(window)) = (child, window) {
         with_conn(store, |conn| {
             membership::remember_first_spawn(conn, session, window)
         })?;

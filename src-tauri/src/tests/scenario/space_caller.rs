@@ -142,6 +142,42 @@ fn a_start_from_an_unsaved_lead_joins_the_leads_space_and_its_login() {
     );
 }
 
+/// Defect: a helper pins its owner, so a picker in one window decides the Space
+/// of a tab another window then runs; or a window that shows no Space pins the
+/// app's active Space for good.
+#[test]
+fn only_a_sessions_own_child_from_a_window_with_a_space_pins_it() {
+    let store = store();
+    let target = || SpawnTarget {
+        workdir: PathBuf::from("/ade263-no-such-folder"),
+        account: None,
+    };
+    prepare_spawn(
+        &store,
+        Child::Helper {
+            key: None,
+            owner: Some("tab"),
+            neutral: std::path::Path::new("/ade263-neutral"),
+        },
+        Some(TWO),
+        None,
+        1,
+        target(),
+    )
+    .unwrap();
+    assert_eq!(
+        save(&store, "tab", None, Some(FIRST_SPACE)),
+        FIRST_SPACE,
+        "a helper pinned its owner"
+    );
+    first_spawn(&store, "no-window", None);
+    assert_eq!(
+        save(&store, "no-window", None, Some(TWO)),
+        TWO,
+        "a window with no Space pinned the active Space"
+    );
+}
+
 /// Defect (I11 order): a row with no parent and no spawn takes the app's active
 /// Space while a window exists, or the active Space stops being the last
 /// fallback for a window that shows no Space; or a pin outranks a saved row.

@@ -53,16 +53,18 @@ pub(crate) fn space_for_row(
     )
 }
 
-/// Pins an unsaved session to the Space its first child starts in, so its row,
-/// and a row its agent starts, join that Space even if the window has switched
-/// by then. It lasts as long as the app runs; a saved row needs no pin.
+/// Pins an unsaved session to the Space its own first child starts in, so its
+/// row, and a row its agent starts, join that Space even if the window has
+/// switched by then. A helper does not pin: it is judged by the window that
+/// calls. A window that shows no Space has none to pin. It lasts as long as the
+/// app runs; a saved row needs no pin.
 pub(crate) fn remember_first_spawn(
     conn: &Connection,
     session: &str,
-    window: Option<&str>,
+    window: &str,
 ) -> rusqlite::Result<()> {
     let session = session.split('#').next().unwrap_or(session);
-    let space = space_for_row(conn, session, None, window)?;
+    let space = space_for_row(conn, session, None, Some(window))?;
     conn.execute(
         "INSERT OR IGNORE INTO temp.first_spawn_spaces (session_id, space_id)
          SELECT ?1, ?2 WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE id = ?1)",
