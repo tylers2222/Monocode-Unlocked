@@ -2,13 +2,19 @@
 //! nudge) wait for no recipient on any path a wake is read from. Messages
 //! and completion results are written by tools and turns, never by these
 //! rows, so the outbox and the saved queue are the paths they travel.
+//!
+//! ADE-270: a row of `mono_completions` is a wake only once it holds a result.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::agents::Mono;
-use super::alarms_stall::{align, episodes, ran_a_turn, save_queue, start_lead, N, P};
+use super::alarms_stall::{
+    align, episodes, ran_a_turn, save_queue, start_lead, turn, MINUTE, N, P, PASS,
+};
 use super::world::World;
 use crate::ask_scheduler::ALARM_STAGES;
+use crate::mono_completions::{self, Owner};
+use crate::mono_messages::SessionId;
 use crate::mono_roster::MonoRole;
 
 /// Where a row of the outbox can wait for its recipient's provider.
@@ -132,5 +138,125 @@ fn no_alarm_family_row_is_a_missed_wake_on_any_path() {
             vec!["wake_missed"],
             "a reminder on {carrier:?} still waits"
         );
+    }
+}
+
+const WINDOW: Owner<'static> = Owner {
+    window: "main",
+    run: "run-1",
+};
+
+/// A row as the window writes it while the request's turn runs
+/// (`undelivered` in monoSessionCompletion.ts).
+fn watching(mono: &Mono, request: &str, session: &SessionId) -> Value {
+    json!({
+        "origin": {"monoId": mono.chat.as_str(), "turn": 1},
+        "request": {
+            "requestId": request, "sessionId": session.as_str(), "project": P, "prompt": "Build it.",
+        },
+    })
+}
+
+/// The same row once the turn ended: it holds the frozen result.
+fn finished(mono: &Mono, request: &str, session: &SessionId) -> Value {
+    let mut row = watching(mono, request, session);
+    row["result"] = json!({
+        "sessionId": session.as_str(), "project": P, "title": "Agent session",
+        "status": "completed", "originalPrompt": "Build it.", "result": "Done.", "truncated": false,
+    });
+    row
+}
+
+fn hold(world: &World, rows: &[Value]) {
+    mono_completions::hold(&world.conn(), WINDOW, rows).unwrap();
+}
+
+/// The completion results the agents' episodes list.
+fn listed_notices(world: &World) -> Vec<String> {
+    world
+        .conn()
+        .prepare(
+            "SELECT json_extract(w.value, '$.id')
+               FROM alarm_episodes e, json_each(e.open_work_json) w
+              WHERE json_extract(w.value, '$.kind') = 'notice'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+// Defect (ADE-270): the window writes a row at the hand-off, so a Mono that
+// handed work to a session and ended its turn alarms as wake_missed two
+// minutes later, and again after each new hand-off.
+#[test]
+fn a_mono_monitoring_a_running_session_misses_no_wake() {
+    let mut world = World::new("alarm-monitoring");
+    world.add_mono_in("alm-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("alm-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "alm-lead");
+    align(&mut world);
+    turn(&mut world, &lead, "lead-turn", true);
+    hold(&world, &[watching(&mono, "req-1", &lead)]);
+    ran_a_turn(&mut world, &mono.chat);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world), Vec::new(), "first hand-off");
+
+    hold(
+        &world,
+        &[
+            watching(&mono, "req-1", &lead),
+            watching(&mono, "req-2", &lead),
+        ],
+    );
+    ran_a_turn(&mut world, &mono.chat);
+    world.advance(2 * MINUTE + 2 * PASS);
+    assert_eq!(episodes(&world), Vec::new(), "second hand-off");
+}
+
+// Defect (ADE-270): a fix that drops the running rows drops a real miss with
+// them: the result of a finished session that no turn of the Mono took, held
+// without a notice or in one, opens no alarm. A sibling that still runs is
+// not listed with it.
+#[test]
+fn a_finished_result_no_turn_took_is_wake_missed() {
+    for (stage, notice, listed) in [
+        ("no notice yet", None, "req-1"),
+        ("in a notice", Some("notice-1"), "notice-1"),
+    ] {
+        let mut world = World::new(&format!("alarm-finished-{}", stage.replace(' ', "-")));
+        world.add_mono_in("alr-general", MonoRole::Giga, &[P]);
+        let mono = world.add_mono_in("alr-mono", MonoRole::Mono, &[P]);
+        let lead = start_lead(&world, &mono, "alr-lead");
+        let sibling = start_lead(&world, &mono, "alr-sibling");
+        align(&mut world);
+        turn(&mut world, &lead, "lead-turn", true);
+        turn(&mut world, &sibling, "sibling-turn", true);
+        let running = watching(&mono, "req-2", &sibling);
+        hold(&world, &[watching(&mono, "req-1", &lead), running.clone()]);
+        ran_a_turn(&mut world, &mono.chat);
+
+        turn(&mut world, &lead, "lead-turn", false);
+        let mut ended = finished(&mono, "req-1", &lead);
+        if let Some(notice) = notice {
+            ended["notice"] = json!(notice);
+        }
+        hold(&world, &[ended, running]);
+        world.advance(2 * MINUTE - PASS);
+        assert_eq!(episodes(&world), Vec::new(), "{stage}: under two minutes");
+
+        world.advance(3 * PASS);
+        let [episode] = <[_; 1]>::try_from(episodes(&world)).unwrap();
+        assert_eq!(
+            (
+                episode.actor.as_str(),
+                episode.provisioner.as_str(),
+                episode.cause.as_str()
+            ),
+            ("mono:alr-mono", "mono:alr-general", "wake_missed"),
+            "{stage}"
+        );
+        assert_eq!(listed_notices(&world), [listed], "{stage}");
     }
 }

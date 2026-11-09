@@ -330,13 +330,17 @@ impl Rows {
         )?
         .into_iter()
         .collect();
+        // The window writes a row at the hand-off, with only the request while
+        // the turn runs: nothing is owed until the row has a result
+        // (`SavedMonoCompletion`, ADE-270).
         let notices = grouped(pairs(
             conn,
             "SELECT json_extract(saved_json, '$.origin.monoId'),
                     CASE json_type(saved_json, '$.notice') WHEN 'text'
                       THEN json_extract(saved_json, '$.notice') ELSE request_id END
                FROM mono_completions
-              WHERE json_valid(saved_json) AND json_type(saved_json, '$.origin.monoId') = 'text'",
+              WHERE json_valid(saved_json) AND json_type(saved_json, '$.origin.monoId') = 'text'
+                AND json_type(saved_json, '$.result') = 'object'",
             [],
         )?);
         let queued = grouped(pairs(
