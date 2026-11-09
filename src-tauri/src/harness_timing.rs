@@ -67,4 +67,25 @@ mod tests {
         assert_eq!(lines[1]["event"], "write_called");
         assert!(lines[1]["pid"].is_null());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_stamped_commands_still_write_and_kill() {
+        use crate::harness::{harness_kill, harness_write, tests::exits_soon, HarnessHost};
+        use tauri::async_runtime::block_on;
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .manage(HarnessHost::new())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let mut child = app.state::<HarnessHost>().insert_test_child("s");
+
+        let missing = block_on(harness_write(app.state(), "gone".into(), "line".into()));
+        assert_eq!(missing.unwrap_err(), "Harness process is not running");
+        block_on(harness_write(app.state(), "s".into(), "line".into())).unwrap();
+
+        harness_kill(app.state(), "s".into()).unwrap();
+        assert!(exits_soon(&mut child), "the child kept running");
+    }
 }
