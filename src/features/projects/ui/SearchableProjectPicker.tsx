@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import { useTabGroupLogos } from "../hooks/useTabGroupLogos";
 import { useProjectAppearance } from "../hooks/useProjectAppearance";
@@ -63,6 +64,8 @@ type Props = {
   compact?: boolean;
   onSelectProject: (path: string) => void;
   onOpenProject?: () => void;
+  /** A last row beside "New project"; it is given the way to close the picker. */
+  footerAction?: (close: () => void) => ReactNode;
   /** Opens the project's context menu; the search input receives focus back. */
   onProjectContextMenu?: (
     path: string,
@@ -88,6 +91,7 @@ export function SearchableProjectPicker({
   compact = false,
   onSelectProject,
   onOpenProject,
+  footerAction,
   onProjectContextMenu,
   projectMenuActive = false,
   monos,
@@ -212,6 +216,7 @@ export function SearchableProjectPicker({
           onDismiss={closePicker}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
+          footerAction={footerAction}
           onProjectContextMenu={onProjectContextMenu}
           projectMenuActive={projectMenuActive}
           monos={monos}
@@ -243,6 +248,7 @@ type ProjectPickerPopoverProps = Pick<
   Props,
   | "onSelectProject"
   | "onOpenProject"
+  | "footerAction"
   | "onProjectContextMenu"
   | "projectMenuActive"
   | "monos"
@@ -253,10 +259,17 @@ type ProjectPickerPopoverProps = Pick<
   onDismiss: () => void;
   label?: string;
   emptyMessage?: string;
+  /** A short tag at the end of a project's row. */
+  projectTag?: (path: string) => string | undefined;
+  /** Lines under the list. */
+  note?: ReactNode;
   /** A flyout off another menu opens beside it, and that menu owns outside
    * clicks for both. */
   flyout?: { layer: number; attributes?: Record<`data-${string}`, boolean> };
 };
+
+/** An outside click in a flyout of the add list leaves its menu open. */
+export const ADD_FROM_SPACE_FLYOUT = "[data-add-from-space]";
 
 /** Shared searchable project menu for switching projects or adding them to a Mono. */
 export function ProjectPickerPopover({
@@ -271,6 +284,9 @@ export function ProjectPickerPopover({
   monos,
   label = "Project picker",
   emptyMessage = "No projects found",
+  projectTag,
+  note,
+  footerAction,
   flyout,
 }: ProjectPickerPopoverProps) {
   const [query, setQuery] = useState("");
@@ -392,6 +408,7 @@ export function ProjectPickerPopover({
       role="dialog"
       aria-label={label}
       onDismiss={projectMenuActive || flyout ? undefined : onDismiss}
+      ignore={ADD_FROM_SPACE_FLYOUT}
       onKeyDown={onPickerKeyDown}
       className="flex flex-col overflow-hidden"
     >
@@ -518,6 +535,11 @@ export function ProjectPickerPopover({
                 <span className="min-w-0 max-w-28 flex-1 truncate font-mono text-[11px] text-content/40">
                   {prettyParent(item.path)}
                 </span>
+                {projectTag?.(item.path) ? (
+                  <span className="shrink-0 rounded border border-stroke px-1.5 text-[11px] leading-4 text-content/45">
+                    {projectTag(item.path)}
+                  </span>
+                ) : null}
               </button>
             );
           })
@@ -527,7 +549,8 @@ export function ProjectPickerPopover({
           </p>
         )}
       </div>
-      {onOpenProject || monos?.onCreate ? (
+      {note}
+      {onOpenProject || monos?.onCreate || footerAction ? (
         <div className="shrink-0 border-t border-stroke p-1.5">
           {monos?.onCreate ? (
             <button
@@ -555,6 +578,7 @@ export function ProjectPickerPopover({
               <span>New project</span>
             </button>
           ) : null}
+          {footerAction?.(onDismiss)}
         </div>
       ) : null}
     </Popover>
