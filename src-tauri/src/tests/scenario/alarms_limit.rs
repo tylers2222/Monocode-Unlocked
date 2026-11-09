@@ -47,7 +47,8 @@ fn chain(world: &World, name: &str) -> Chain {
             .unwrap();
         SessionId::parse(&id).unwrap()
     };
-    let lead = start(&mono_caller(&mono, "start"), format!("{name}-lead"));
+    let mono_start = mono_caller(&mono, "start");
+    let lead = start(&mono_start, format!("{name}-lead"));
     let lead_start = session_caller(&lead, P);
     let worker = start(&lead_start, format!("{name}-worker"));
     let other = start(&lead_start, format!("{name}-other"));
