@@ -479,34 +479,24 @@ jobs:
     needs: [changes, mobile, browser, host, check, appimage, rpm, rpm-clean-install]
     if: always()
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       failed: ${{ steps.results.outputs.failed }}
     steps:
-      # A job passes only by success. It may be skipped only when it is named here, for the
-      # reason that `changes` gave or the event. So a job skipped for any other reason
-      # fails this check, and a new job in `needs` must succeed until it is named here.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # A job passes by success, or by a skip with a reason in scripts/process/ci_verdict.py.
       - name: Every job passed, or was skipped for a stated reason
         id: results
         env:
           NEEDS: ${{ toJSON(needs) }}
-          SKIP_OK: >-
-            ${{ needs.changes.outputs.mobile == 'false' && 'mobile' || '' }}
-            ${{ (needs.changes.outputs.level == 'fast' || needs.changes.outputs.browser == 'false') && 'browser' || '' }}
-            ${{ needs.changes.outputs.host == 'false' && 'host' || '' }}
-            ${{ (needs.changes.outputs.check == 'false' && needs.changes.outputs.release-channel == 'false') && 'check' || '' }}
-            ${{ (github.event_name != 'push' || needs.changes.outputs.appimage == 'false') && 'appimage' || '' }}
-            ${{ (github.event_name != 'push' || needs.changes.outputs.rpm == 'false') && 'rpm rpm-clean-install' || '' }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          echo "May be skipped: $SKIP_OK"
-          failed="$(jq -r --arg skip "$SKIP_OK" '($skip | split(" ")) as $ok | [to_entries[] | select(.value.result != (if (.key | IN($ok[])) then "skipped" else "success" end)) | .key] | join(", ")' <<<"$NEEDS")"
-          echo "failed=$failed" >> "$GITHUB_OUTPUT"
-          if [ -n "$failed" ]; then
-            echo "Failed or cancelled: $failed" >&2
-            exit 1
-          fi
+          python3 scripts/process/ci_verdict.py ci | tee -a "$GITHUB_OUTPUT"
 
   # Pull requests skip the Windows, host macOS and packaging legs, so a break there
   # first shows on tyler/main. One open issue tracks it; the next green run closes it.

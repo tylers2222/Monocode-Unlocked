@@ -257,7 +257,7 @@ jobs:
 
   # The required check. GitHub counts a skipped required check as passed, so this job is
   # never skipped on a pull request: it passes only when every suite passed, or when a
-  # suite was skipped for a reason named in SKIP_OK. It covers the macOS shards too, which
+  # suite was skipped for a stated reason. It covers the macOS shards too, which
   # the ruleset does not name. On the fast set it runs under another name, so the required
   # e2e-linux stays absent and a draft's run can never pass it, also when re-run later.
   e2e-linux:
@@ -265,23 +265,20 @@ jobs:
     needs: [changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # A suite passes by success, or by a skip with a reason in scripts/process/ci_verdict.py.
       - name: Every suite passed, or was skipped for a stated reason
         env:
           NEEDS: ${{ toJSON(needs) }}
-          SKIP_OK: >-
-            ${{ (needs.changes.outputs.level == 'fast' || needs.changes.outputs.e2e-linux == 'false') && 'e2e-linux-run' || '' }}
-            ${{ (needs.changes.outputs.level == 'fast' || needs.changes.outputs.e2e-macos == 'false' || (github.event_name == 'workflow_dispatch' && (inputs.macos_build == 'release' || !contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all')))) && 'e2e-macos-1 e2e-macos-2' || '' }}
-        run: |
-          set -euo pipefail
-          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          echo "May be skipped: $SKIP_OK"
-          failed="$(jq -r --arg skip "$SKIP_OK" '($skip | split(" ")) as $ok | [to_entries[] | select(.value.result != (if (.key | IN($ok[])) then "skipped" else "success" end)) | .key] | join(", ")' <<<"$NEEDS")"
-          if [ -n "$failed" ]; then
-            echo "Failed, cancelled or skipped with no reason: $failed" >&2
-            exit 1
-          fi
+          EVENT: ${{ github.event_name }}
+          DISPATCH_SKIPS_MACOS: ${{ github.event_name == 'workflow_dispatch' && (inputs.macos_build == 'release' || !contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all')) }}
+        run: python3 scripts/process/ci_verdict.py e2e
 
   # Every scenario on a release build, so an optimised build still runs them
   # before a release ships. Not on pull requests.
