@@ -44,6 +44,8 @@ pub(crate) struct Stall {
     pub last_activity: Option<String>,
     pub dialog: Option<DialogLine>,
     pub escalate_minutes: i64,
+    /// The alarms for this agent held back since its last one (`limit`).
+    pub held: i64,
 }
 
 /// The level-k recipient that did not act, and how the stalled agent
@@ -135,8 +137,16 @@ pub(crate) fn alarm(stall: &Stall, level: i64, missed: Option<&Missed>, next: &N
             ),
         ),
     };
+    let held = if stall.held > 0 {
+        format!(
+            "\nHeld back since this agent's last alarm: {} (limit one per 15 min).",
+            stall.held
+        )
+    } else {
+        String::new()
+    };
     let body = format!(
-        "{head}\nOpen work: {}.\nLast activity: {}.\n{}\n{acts}{}",
+        "{head}\nOpen work: {}.\nLast activity: {}.\n{}\n{acts}{}{held}",
         joined(&stall.open_work),
         stall.last_activity.as_deref().unwrap_or("none"),
         dialog_lines(stall.dialog.as_ref()),
@@ -233,6 +243,7 @@ mod tests {
             last_activity: Some("13:48 Bash `cargo test -p monocode alarms` (completed)".into()),
             dialog: None,
             escalate_minutes: 15,
+            held: 0,
         }
     }
 

@@ -86,6 +86,7 @@ COPY = {
     "alarm_dialogs": (("episode_id",), ()),
     "alarm_acts": (("episode_id", "seq"), ("at_active_ms",)),
     "agent_alarm_settings": (("actor",), ()),
+    "alarm_repeat_limit": (("actor", "cause"), ("sent_active_ms",)),
     "mono_session_ends": (("session_id",), ()),
     "mono_completion_deliveries": (("group_id",), ()),
     "notes": (("id",), ()),

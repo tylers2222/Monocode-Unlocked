@@ -8,6 +8,7 @@
 pub(crate) mod act;
 mod activity;
 pub(crate) mod deliver;
+mod limit;
 mod live;
 mod provisioner;
 mod rights;
@@ -35,6 +36,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     activity::ensure_table(conn)?;
     store::ensure_tables(conn)?;
     store::ensure_indexes(conn)?;
+    limit::ensure_table(conn)?;
     route::ensure_tables(conn)
 }
 
