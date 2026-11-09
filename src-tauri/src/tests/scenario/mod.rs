@@ -55,6 +55,8 @@ mod space_checkouts;
 mod space_import;
 mod space_login;
 #[cfg(not(windows))]
+mod space_project_add;
+#[cfg(not(windows))]
 mod space_project_removal;
 mod space_project_rename;
 #[cfg(not(windows))]

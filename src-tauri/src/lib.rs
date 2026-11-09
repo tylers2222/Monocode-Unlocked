@@ -427,6 +427,7 @@ pub fn run() {
             spaces::spaces_project_spaces,
             spaces::spaces_project_list,
             spaces::spaces_project_known,
+            spaces::project_add::spaces_project_add,
             spaces::project_removal::spaces_project_remove,
             spaces::project_removal::spaces_project_archive_check,
             spaces::project_removal::spaces_project_notify_changed,
