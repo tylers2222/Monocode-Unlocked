@@ -509,7 +509,12 @@ fn a_held_alarm_acted_on_is_not_sent() {
     let (who, worker) = (actor(&chain.worker), chain.worker.clone());
     align(&mut world);
     ran_a_turn(&mut world, &worker);
-    wake_stall(&mut world, &who, &worker, "q1");
+    let first = wake_stall(&mut world, &who, &worker, "q1");
+    let window_ends = one_i64(
+        &world,
+        "SELECT opened_active_ms FROM alarm_episodes WHERE id = ?1",
+        &first,
+    ) + WINDOW;
     recovers(&mut world, &who, &worker);
     let held = wake_stall(&mut world, &who, &worker, "q2");
     let acted = act::call(
@@ -524,7 +529,10 @@ fn a_held_alarm_acted_on_is_not_sent() {
         matches!(acted, Ok(Outcome::Done { .. })),
         "the dismiss was taken"
     );
-    world.advance(WINDOW);
+    // Past the window, before the act's own N minutes would close the episode
+    // and drop any row it wrote.
+    world.advance(window_ends - world.active_ms() + 2 * PASS);
+    assert_eq!(open_episode(&world, &who).as_ref(), Some(&held));
     assert_eq!(message(&world, &held), None);
 }
 
