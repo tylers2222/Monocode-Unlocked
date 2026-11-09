@@ -96,3 +96,12 @@ jobs:
       - name: Clippy
         if: ${{ !cancelled() && steps.linux-deps.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # gate/lint is required, so a red one ends the other runs of this head.
+  stop-lint:
+    name: stop (gate/lint)
+    needs: lint
+    if: ${{ failure() }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/stop-useless-runs.yml

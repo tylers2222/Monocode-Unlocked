@@ -142,6 +142,17 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # e2e-linux is required, so a red one on a pull request ends the other runs of this
+  # head. The macOS jobs are not required, and their failures are often infrastructure,
+  # so they call nothing.
+  stop-e2e-linux:
+    name: stop (e2e-linux)
+    needs: e2e-linux
+    if: ${{ failure() && github.event_name == 'pull_request' }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/stop-useless-runs.yml
+
   # Two named jobs, not a matrix: a skipped job keeps its name, so a ruleset can
   # require e2e-macos-1 and e2e-macos-2. scripts/e2e-macos.sh holds the split
   # (E2E_MACOS_SHARD) and fails when a scenario is in no shard or in two.

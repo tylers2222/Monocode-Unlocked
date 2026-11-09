@@ -53,7 +53,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.browser != 'false' }}
     strategy:
-      fail-fast: false
+      # A pull request stops at the first red leg; a push runs every leg, so main-red lists all.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     permissions:
@@ -139,7 +140,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.host != 'false' }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         # Pull requests run ubuntu only; the macOS and Windows legs run after the
         # merge (a push), and a red one opens the "tyler/main CI red" issue.
@@ -201,7 +202,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.check != 'false' || needs.changes.outputs.release-channel != 'false') }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         # The Windows leg runs after the merge (a push) only; a red one opens the
         # "tyler/main CI red" issue.
@@ -472,6 +473,40 @@ jobs:
             echo "Failed or cancelled: $failed" >&2
             exit 1
           fi
+
+  # A red job under `ci` on a pull request ends the other runs of this head. These jobs
+  # are not in the needs of `ci`: they report nothing to it, and a skipped one takes no runner.
+  stop-mobile:
+    name: stop (mobile)
+    needs: mobile
+    if: ${{ failure() && github.event_name == 'pull_request' }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/stop-useless-runs.yml
+
+  stop-browser:
+    name: stop (browser)
+    needs: browser
+    if: ${{ failure() && github.event_name == 'pull_request' }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/stop-useless-runs.yml
+
+  stop-host:
+    name: stop (host)
+    needs: host
+    if: ${{ failure() && github.event_name == 'pull_request' }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/stop-useless-runs.yml
+
+  stop-check:
+    name: stop (check)
+    needs: check
+    if: ${{ failure() && github.event_name == 'pull_request' }}
+    permissions:
+      actions: write
+    uses: ./.github/workflows/stop-useless-runs.yml
 
   # Pull requests skip the Windows, host macOS and packaging legs, so a break there
   # first shows on tyler/main. One open issue tracks it; the next green run closes it.
