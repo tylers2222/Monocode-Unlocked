@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rusqlite::params;
+use serde_json::json;
 use tauri::{Listener, Manager};
 
 use super::space_checkouts::{git_project, temp_root};
@@ -117,6 +118,26 @@ impl Rig {
         };
         let window = super::agent_sandbox::main_window(&self.app);
         spaces::spaces_settings_set(window, self.app.state(), patch).unwrap();
+    }
+
+    /// A saved lead in `space` whose run has a task on `checkout`.
+    fn run_by_a_lead(&self, space: &str, checkout: &str) {
+        let store: tauri::State<'_, SessionStore> = self.app.state();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, space_id)
+             VALUES ('lead', ?1, 'codex', 'm', 'auto', 't', 1, 1, ?2)",
+            params![self.cwd, space],
+        )
+        .unwrap();
+        self.run_without_a_saved_lead(&conn, checkout);
+    }
+
+    fn run_without_a_saved_lead(&self, conn: &rusqlite::Connection, checkout: &str) {
+        let run = json!({"status": "active", "tasks": [
+            {"sessionId": "two-a", "workspace": {"checkoutCwd": checkout}}
+        ]});
+        crate::session_store::save_orchestration(conn, "lead", &run).unwrap();
     }
 
     fn delete_row(&self, id: &str) {
@@ -258,4 +279,61 @@ fn another_windows_switch_does_not_move_a_removal() {
     assert_eq!(rig.remove().err().as_deref(), Some(REFUSAL));
     assert_eq!(rig.remove_for_a_lead().err().as_deref(), Some(REFUSAL));
     assert!(rig.worktree.exists());
+}
+
+/// Defect: a Space 2 lead's cleanup is refused whenever its window shows Space 1,
+/// leaving a worktree behind, because S ignores the lead (I11); or a run's folder
+/// written in another form of the path is not matched.
+#[test]
+fn a_leads_cleanup_answers_for_the_leads_own_space_whatever_the_window_shows() {
+    let rig = Rig::new();
+    rig.show(FIRST_SPACE);
+    rig.delete_row("one-a");
+    rig.run_by_a_lead(TWO, &format!("{}/", rig.path));
+    rig.remove_for_a_lead()
+        .expect("a Space 2 lead cleans its own worktree from a window on Space 1");
+    assert!(!rig.worktree.exists());
+    assert_eq!(rig.events(), 1);
+}
+
+/// Defect: the lead's Space lets a cleanup past another Space's session, which T18
+/// must still refuse.
+#[test]
+fn a_leads_own_space_does_not_get_past_another_spaces_session() {
+    let rig = Rig::new();
+    rig.show(TWO);
+    rig.run_by_a_lead(TWO, &rig.path);
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some("A session in Space 1 uses this worktree."),
+    );
+    assert!(rig.worktree.exists(), "the worktree went");
+    assert_eq!(rig.events(), 0);
+}
+
+/// Defect: a run that does not have this worktree, or a lead with no saved row,
+/// decides the Space; either must keep the calling window's, which fails safe.
+#[test]
+fn a_cleanup_no_saved_lead_answers_for_keeps_the_windows_space() {
+    let rig = Rig::new();
+    rig.show(FIRST_SPACE);
+    rig.delete_row("one-a");
+    rig.run_by_a_lead(TWO, "/ade263-another-worktree");
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some(REFUSAL),
+        "a run of another worktree decided the Space"
+    );
+    assert!(rig.worktree.exists());
+
+    rig.delete_row("lead");
+    let store: tauri::State<'_, SessionStore> = rig.app.state();
+    rig.run_without_a_saved_lead(&store.lock_conn().unwrap(), &rig.path);
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some(REFUSAL),
+        "a lead with no saved row decided the Space"
+    );
+    assert!(rig.worktree.exists());
+    assert_eq!(rig.events(), 0);
 }

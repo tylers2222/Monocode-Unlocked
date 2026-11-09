@@ -924,9 +924,50 @@ pub fn git_worktree_remove<R: Runtime>(
     Ok(removed)
 }
 
-/// S is the calling window's Space, as for the page's removal (T18). A lead's
-/// cleanup from a window on another Space is refused and the worktree stays; the
-/// orchestrator records the refusal on the task and carries on.
+/// The lead whose orchestration run has a task on the worktree `path`. A run's
+/// state that is not JSON names no lead.
+fn run_lead_of(conn: &rusqlite::Connection, path: &Path) -> Result<Option<String>, String> {
+    let runs = conn
+        .prepare("SELECT lead_id, state FROM orchestration_runs ORDER BY lead_id")
+        .and_then(|mut query| {
+            query
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(runs.into_iter().find_map(|(lead, state)| {
+        let run: serde_json::Value = serde_json::from_str(&state).ok()?;
+        run["tasks"]
+            .as_array()?
+            .iter()
+            .filter_map(|task| task["workspace"]["checkoutCwd"].as_str())
+            .any(|checkout| same_path(&expand_home(checkout), path))
+            .then_some(lead)
+    }))
+}
+
+/// The Space a lead's cleanup of `path` answers for: an agent's action uses the
+/// caller's Space (I11), so the Space of the saved lead whose run has the worktree.
+/// With no such lead it is `window`'s, which fails safe.
+fn cleanup_space(conn: &rusqlite::Connection, path: &Path, window: &str) -> Result<String, String> {
+    let Some(lead) = run_lead_of(conn, path)? else {
+        return Ok(window.to_owned());
+    };
+    let space: Option<String> = conn
+        .query_row(
+            "SELECT space_id FROM sessions WHERE id = ?1",
+            [lead],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(space.unwrap_or_else(|| window.to_owned()))
+}
+
+/// S is the Space of the lead whose run has the worktree ([`cleanup_space`]), else
+/// the calling window's. The T18 guard still refuses a session of any other Space.
 #[tauri::command(async)]
 pub fn git_orchestration_worktree_remove<R: Runtime>(
     window: WebviewWindow<R>,
@@ -944,8 +985,9 @@ pub fn git_orchestration_worktree_remove<R: Runtime>(
     }
     let tree = removal_target(&root, &path)?;
     let branch = tree.branch.clone();
-    let space = crate::spaces::window_space(&store, window.label())?;
+    let window_space = crate::spaces::window_space(&store, window.label())?;
     let conn = store.lock_conn()?;
+    let space = cleanup_space(&conn, &path, &window_space)?;
     let removed = remove_with_sessions(&conn, &root, &path, &space, true, true)?;
     drop(conn);
     crate::spaces::projects::emit_changed(window.app_handle());
