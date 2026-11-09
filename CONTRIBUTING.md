@@ -73,6 +73,8 @@ When the pause lifts, this section goes away.
 
 Keep a PR to one thing, and say what changed and why. The [PR template](.github/pull_request_template.md) covers the rest. If it changes the UI, a before/after screenshot helps a lot.
 
+A draft PR runs the fast checks on each push: lint, unit tests, Ubuntu. Marking it ready runs the full set (macOS, browser, E2E), and every push to a ready PR runs it again; the full set must pass before merge. To run the full set on a draft, add the `ci:full` label, then push or re-run the CI, E2E and Monocode Native Preview runs (`gh run rerun <id>`, without `--failed`). The label only adds jobs. `scripts/process/ci_level.py` holds the rule.
+
 For anything that moves product direction - a new surface, new provider behavior, a refactor that changes the shape of the app - open an issue first. That’s not gatekeeping, I’d just rather you hear “I’m already halfway through that” before you write it than after. New providers are the exception: don’t send the adapter, even from an issue, until the pause above is gone.
 
 I might close a PR, ask you to shrink it, or end up implementing the idea differently. That’s a call about scope and timing, not about you or the quality of your work.
