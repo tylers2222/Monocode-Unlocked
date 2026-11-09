@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 /** The Space every row predates Spaces in, and a project with no row is in. */
 export const FIRST_SPACE = "space-1";
@@ -118,6 +119,35 @@ export function previewProjectDelete(
 /** Resolves when Archive may go ahead; rejects with T9's refusal. */
 export function checkProjectArchive(projectPath: string): Promise<null> {
   return invoke<null>("spaces_project_archive_check", { projectPath });
+}
+
+/** A project some Space has, with those Spaces. */
+export type KnownProject = { path: string; spaces: string[] };
+
+/** Every project any Space has; no root or under-workspace path. */
+export function listKnownProjects(): Promise<KnownProject[]> {
+  return invoke<KnownProject[]>("spaces_project_known");
+}
+
+/** T5 or T6. False: it was not in the Space, and nothing changed. */
+export function removeProjectFromSpace(projectPath: string): Promise<boolean> {
+  return invoke<boolean>("spaces_project_remove", { projectPath });
+}
+
+/** Calls `onChange` after every write to any Space's projects, in any window. */
+export function subscribeSpaceProjects(onChange: () => void): () => void {
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  void listen(SPACE_PROJECTS_CHANGED, onChange)
+    .then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    })
+    .catch(() => undefined);
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
 }
 
 /** The text of a typed Space refusal (`{ code, message }`), or of any failure. */

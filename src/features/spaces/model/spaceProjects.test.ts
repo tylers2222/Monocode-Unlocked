@@ -301,6 +301,7 @@ describe("the window's invariants", () => {
 
   it("leaves ~/a alone before the home folder is known", () => {
     expect(spaceProjectKey("~/a", undefined)).toBe("~/a");
+    expect(spaceProjectKey("~", HOME)).toBe("~");
     expect(spaceProjectKey("~/a", HOME)).toBe(`${HOME}/a`);
     expect(spaceProjectKey("/a/", HOME)).toBe("/a");
   });

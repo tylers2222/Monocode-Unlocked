@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Plus, X } from "../../../shared/ui/icons";
 import { prettyCwd, projectKey, projectName } from "../../../shared/lib/paths";
-import { loadRecents, projectRailItems } from "../../projects/model/recents";
+import { monoProjectChoices } from "../model/gigaMono";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -38,7 +38,7 @@ function ProjectFace({ path }: { path: string }) {
 
 /**
  * The projects a Mono works on, one row each in its settings: face, name and
- * folder. Each can be taken away; more are added from the projects on the rail.
+ * folder. Each can be taken away; more are added from the projects any Space has.
  */
 export function MonoProjects({
   monoId,
@@ -51,9 +51,7 @@ export function MonoProjects({
   const [adding, setAdding] = useState(false);
   const taken = new Set(projects.map((project) => projectKey(project.path)));
   const choices = adding
-    ? projectRailItems(loadRecents(), "").filter(
-        (item) => !taken.has(projectKey(item.path)),
-      )
+    ? monoProjectChoices().filter((item) => !taken.has(projectKey(item.path)))
     : [];
   return (
     <div
