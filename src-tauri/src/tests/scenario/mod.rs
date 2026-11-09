@@ -12,6 +12,7 @@ mod agents;
 mod alarms_route;
 mod alarms_stall;
 mod alarms_turns;
+mod alarms_unseen;
 mod alarms_wakes;
 mod asks;
 mod clock;
@@ -39,6 +40,8 @@ mod s3_miss;
 mod s4_questions;
 mod s5_delivery;
 mod s5_scheduler;
+#[cfg(not(windows))]
+mod space_caller;
 #[cfg(unix)]
 mod space_checkouts;
 #[cfg(unix)]

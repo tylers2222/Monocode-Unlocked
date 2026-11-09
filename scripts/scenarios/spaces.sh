@@ -182,6 +182,10 @@ listed() {
   jq -rs --arg r "$1" --arg a "$2" "(first(.[] | select(.rule == \$r)) | .pid) as \$pid
     | first(.[] | select(.pid == \$pid and (.action == \$a or .tool == \$a)) | .result) | $3" "$PUPPET/log.jsonl"
 }
+# logged <rule> <tool or action>: `listed` can read that call. The puppet logs
+# a turn's calls in order, each after its answer, so a turn's last call means
+# its earlier ones are in the log too.
+logged() { [[ -n "$(listed "$1" "$2" true)" ]]; }
 # wait_for <seconds> <command...>: wait_until that returns 1 instead of
 # stopping the run, so the readings after it still print.
 wait_for() {
@@ -368,7 +372,10 @@ run_spaces_messages() {
   request_habit ms2-giga "Say hello" "MS2-GIGA-HABIT: say hello across."
   "$INSTANCE" start
   wait_until 90 "Space 1's Mono gets Space 2's answer" saw MS-BACK
-  wait_until 60 "Space 2's Giga tried" holds_log '[.[] | select(.input.message // "" | startswith("MS-FROM-GIGA"))] | length == 1'
+  # The last call of each turn the readings below read: the Mono's and the Giga's
+  # turns both call get_monos, so `logged` matches the turn and not only the tool.
+  wait_until 60 "Space 2's Mono made its last call" logged MS-HELLO sessions.list
+  wait_until 60 "Space 2's Giga made its last call" logged MS2-GIGA-HABIT get_monos
   wait_for 60 holds_log '[.[] | select(.input.message // "" | startswith("MS-FROM-KID"))] | length == 1' \
     || echo "  (Space 1's session never sent; its start: $(called MS-KID 'tostring'))"
   local c1

@@ -3,7 +3,7 @@
 
     pr-cap.py --instance <1|2> [--repo <owner/name>]
 
-The cap is per instance: 4 open PRs for instance 1, 6 for instance 2. A PR
+The cap is per instance: 4 open PRs for instance 1, 12 for instance 2. A PR
 belongs to the instance its `instance:<n>` label names (instance-label.py
 checks every PR has one). Every open PR on the repo
 counts, stacked PRs and drafts too, except a PR held on Tyler (a valid
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pr_labels
 
-CAPS = {"1": 4, "2": 6}
+CAPS = {"1": 4, "2": 12}
 EXEMPT = "process-fix"
 
 _spec = importlib.util.spec_from_file_location("waits_tyler", Path(__file__).with_name("waits-tyler.py"))

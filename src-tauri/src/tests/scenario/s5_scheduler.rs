@@ -126,7 +126,7 @@ fn pending(world: &World) -> Vec<(String, String)> {
     pairs(
         world,
         "SELECT key, recipient FROM mono_outbox
-          WHERE sent_at IS NULL AND claimed_by IS NULL ORDER BY key",
+          WHERE sent_at IS NULL AND claimed_by IS NULL AND stage <> 'alarm' ORDER BY key",
     )
 }
 
@@ -370,6 +370,10 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
         session_caller(&lead, P),
     );
     let untimed = ask(&world, &live, &g, "s5-g", mono.id.as_str(), 30);
+    // The chat takes it, so its untaken message opens no alarm row before the
+    // reminder this scenario counts. An untaken reminder later opens one.
+    world.start_turn(&mono.chat, "m0");
+    world.end_turn(&mono.chat, "m0", true);
     let a = ask(&world, &live, &m, "s5-a", lead.as_str(), 10);
     let acked = ask(&world, &live, &l, "s5-f", w1.as_str(), 10);
     let sent = ask(&world, &live, &l, "s5-e", w2.as_str(), 10);

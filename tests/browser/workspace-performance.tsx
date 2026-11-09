@@ -198,8 +198,14 @@ const fixtureInvoke = async (
       binary: false,
       tooLarge: false,
     };
-  if (command === "resource_usage")
+  if (command === "resource_usage") {
+    // UI stalls alone can raise resource pressure on a loaded machine, and
+    // pressure evicts parked transcripts. A failed read adds no sample, so a
+    // test that needs its parked transcript to survive can opt out of sampling.
+    if (params.has("noResourcePressure"))
+      throw new Error("Resource sampling is off for this fixture");
     return { cpuPercent: 20, memoryPressure: 1 };
+  }
   if (command === "list_skills") return [];
   if (command === "git_branch") return "main";
   if (
