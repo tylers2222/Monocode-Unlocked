@@ -209,7 +209,7 @@ fn cli_name(provider: Provider) -> &'static str {
 pub(super) fn resolve(
     store: &SessionStore,
     session_id: &str,
-    window: &str,
+    window: Option<&str>,
     _provider: Option<Provider>,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {

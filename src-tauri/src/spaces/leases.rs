@@ -122,18 +122,19 @@ pub fn spaces_lease_release(
 
 /// The Space a helper of no stored session that keeps its caller's folder
 /// (the ownerless-helper rule, ADE-189) is judged as (ADE-209): `window`, the
-/// Space of the window that called, for a call that names no owner. One that
-/// names an `owner` that is no stored session (an unsaved tab) is in the
-/// Space that session's row would join ([`membership::space_for_row`]): its
-/// parent's, else `window`'s, the window that will save it (ADE-244). `None`
-/// when `owner` is a stored session: it is placed as one.
+/// Space of the window that called, for a call that names no owner, or Space
+/// 1 when that window shows no Space yet. One that names an `owner` that is
+/// no stored session (an unsaved tab) is in the Space that session's row
+/// would join ([`membership::space_for_row`]): its parent's, else `window`'s,
+/// the window that will save it (ADE-244). `None` when `owner` is a stored
+/// session: it is placed as one.
 pub(super) fn unsaved_space(
     store: &SessionStore,
     owner: Option<&str>,
-    window: &str,
+    window: Option<&str>,
 ) -> Result<Option<String>, String> {
     let Some(owner) = owner.map(crate::harness::child_session) else {
-        return Ok(Some(window.to_owned()));
+        return Ok(Some(window.unwrap_or(super::FIRST_SPACE).to_owned()));
     };
     with_conn(store, |conn| {
         if session_of(conn, owner)?.is_some() {

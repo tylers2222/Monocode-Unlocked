@@ -162,7 +162,7 @@ pub(crate) fn write_grant(
 pub(crate) fn grant_from_card(
     store: &SessionStore,
     request: &GrantRequest,
-    window: &str,
+    window: Option<&str>,
     now: i64,
 ) -> Result<RouteGrant, String> {
     let asked = SpawnTarget {
@@ -231,7 +231,7 @@ pub fn spaces_grant_save<R: Runtime>(
     request: GrantRequest,
 ) -> Result<RouteGrant, String> {
     let space = super::window_space(&store, window.label())?;
-    grant_from_card(&store, &request, &space, now_millis())
+    grant_from_card(&store, &request, space.as_deref(), now_millis())
 }
 
 #[tauri::command(async)]
@@ -292,8 +292,10 @@ pub(crate) fn check_app_turn<R: Runtime>(
 /// login: the transcript handoff moved the session to the granted one. The
 /// session's own child (its spawn id without `#n`) on any other login means
 /// the user moved it off the grant (Go back, or their own pick), which ends
-/// it; a helper child has another id, so it never does. A child on the granted login after
-/// the grant has ended is refused once, and the grant is removed.
+/// it. A helper passes its owner's id (`prepare_spawn`), a stored owner's or
+/// an unsaved one's, so a helper of the session on another login ends the
+/// session's grant too. A child on the granted login after the grant has
+/// ended is refused once, and the grant is removed.
 pub(super) fn route(
     store: &SessionStore,
     session_id: &str,

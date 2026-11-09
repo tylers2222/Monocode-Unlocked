@@ -1021,7 +1021,7 @@ pub fn harness_spawn<R: Runtime>(
     let crate::spaces::SpawnTarget { workdir, account } = crate::spaces::prepare_spawn(
         &store,
         child,
-        &crate::spaces::window_space(&store, window.label())?,
+        crate::spaces::window_space(&store, window.label())?.as_deref(),
         binary_provider
             .as_deref()
             .and_then(crate::spaces::Provider::parse),
@@ -1721,7 +1721,7 @@ pub async fn harness_exec<R: Runtime>(
                 owner: helper.as_ref().and_then(|helper| helper.owner.as_deref()),
                 neutral: &neutral,
             },
-            &space,
+            space.as_deref(),
             binary_provider
                 .as_deref()
                 .and_then(crate::spaces::Provider::parse),

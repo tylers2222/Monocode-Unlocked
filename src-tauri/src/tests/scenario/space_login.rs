@@ -85,7 +85,7 @@ fn save_run_session(conn: &Connection, id: &str, cwd: &str) {
         "automationId": format!("automation-{id}"),
     }))
     .unwrap();
-    session_store::upsert_session(conn, &session, FIRST_SPACE).unwrap();
+    session_store::upsert_session(conn, &session, Some(FIRST_SPACE)).unwrap();
 }
 
 /// A run of an automation in `cwd`: its run row first, then its session.
@@ -161,7 +161,7 @@ fn user_session_naming(world: &World, id: &str, space: &str) {
     }))
     .unwrap();
     let window = world.window_space();
-    session_store::upsert_session(&world.conn(), &session, &window).unwrap();
+    session_store::upsert_session(&world.conn(), &session, Some(&window)).unwrap();
 }
 
 /// Defect: a session or a Mono created while Space 2 is active, or a

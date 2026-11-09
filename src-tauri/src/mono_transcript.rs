@@ -325,7 +325,7 @@ pub fn mono_session_find(
 fn upsert_with_mode(
     conn: &Connection,
     session: &SessionUpsert,
-    window: &str,
+    window: Option<&str>,
     after: Option<&str>,
     from: Option<&str>,
     changed: bool,
@@ -434,7 +434,7 @@ pub fn mono_session_upsert<R: tauri::Runtime>(
     upsert_with_mode(
         &conn,
         &session,
-        &space,
+        space.as_deref(),
         after_block_id.as_deref(),
         from_block_id.as_deref(),
         blocks_changed,
@@ -458,7 +458,15 @@ mod tests {
         from: Option<&str>,
         changed: bool,
     ) -> rusqlite::Result<SessionSummary> {
-        upsert_with_mode(conn, session, FIRST_SPACE, after, from, changed, false)
+        upsert_with_mode(
+            conn,
+            session,
+            Some(FIRST_SPACE),
+            after,
+            from,
+            changed,
+            false,
+        )
     }
 
     fn sample(id: &str, turns: usize) -> SessionUpsert {
@@ -510,7 +518,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
         let empty = sample("new-mono", 0);
-        upsert_with_mode(&conn, &empty, FIRST_SPACE, None, None, true, false).unwrap();
+        upsert_with_mode(&conn, &empty, Some(FIRST_SPACE), None, None, true, false).unwrap();
         let stored = session_store::get_session_metadata(&conn, "new-mono")
             .unwrap()
             .expect("the chat is saved with no turns");
@@ -520,7 +528,7 @@ mod tests {
         );
         // Its first turn then appends onto the saved, empty transcript.
         let first = sample("new-mono", 1);
-        upsert_with_mode(&conn, &first, FIRST_SPACE, None, None, true, true).unwrap();
+        upsert_with_mode(&conn, &first, Some(FIRST_SPACE), None, None, true, true).unwrap();
         assert_eq!(page(&conn, "new-mono", None, None).unwrap().blocks.len(), 2);
     }
 
@@ -530,8 +538,8 @@ mod tests {
         let conn = store.lock_conn().unwrap();
         let mono = sample("mono", 25);
         let normal = sample("normal", 25);
-        session_store::upsert_session(&conn, &mono, FIRST_SPACE).unwrap();
-        session_store::upsert_session(&conn, &normal, FIRST_SPACE).unwrap();
+        session_store::upsert_session(&conn, &mono, Some(FIRST_SPACE)).unwrap();
+        session_store::upsert_session(&conn, &normal, Some(FIRST_SPACE)).unwrap();
         migrate_transcript(&conn, "mono").unwrap();
         let latest = page(&conn, "mono", None, None).unwrap();
         assert_eq!(latest.blocks.len(), 20);
@@ -686,7 +694,7 @@ mod tests {
         session.blocks = json!([]);
         upsert(&conn, &session, None, Some("u10"), true).unwrap();
         session.blocks = json!([{ "id":"fresh", "role":"user", "text":"Fresh" }]);
-        upsert_with_mode(&conn, &session, FIRST_SPACE, None, None, true, true).unwrap();
+        upsert_with_mode(&conn, &session, Some(FIRST_SPACE), None, None, true, true).unwrap();
         assert_eq!(
             page(&conn, "mono", None, Some("a0")).unwrap().blocks[1]["text"],
             "Answer 0"

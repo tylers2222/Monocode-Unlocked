@@ -785,7 +785,7 @@ fn spawn_on(world: &World, session: &str, provider: &str, login: &str) -> Result
     crate::spaces::prepare_spawn(
         world.store(),
         crate::spaces::Child::Session(session),
-        &world.window_space(),
+        Some(&world.window_space()),
         None,
         world.now(),
         target,
@@ -1165,8 +1165,13 @@ fn the_card_grants_another_spaces_login_from_the_resolved_one() {
             to_account_id: to.into(),
             ..request(GrantLength::OneHour, None)
         };
-        grants::grant_from_card(world.store(), &request, &world.window_space(), world.now())
-            .map(|grant| (grant.from_account_id, grant.to_account_id))
+        grants::grant_from_card(
+            world.store(),
+            &request,
+            Some(&world.window_space()),
+            world.now(),
+        )
+        .map(|grant| (grant.from_account_id, grant.to_account_id))
     };
     let from = |space_login: &str| Ok((space_login.to_owned(), "two".to_owned()));
     assert_eq!(
@@ -1916,7 +1921,14 @@ mod helpers {
                     owner: Some("ghost"),
                     neutral,
                 };
-                let _ = placed_tx.send(prepare_spawn(store, ghost, FIRST_SPACE, None, 0, target));
+                let _ = placed_tx.send(prepare_spawn(
+                    store,
+                    ghost,
+                    Some(FIRST_SPACE),
+                    None,
+                    0,
+                    target,
+                ));
             });
             let placed = placed_rx
                 .recv_timeout(std::time::Duration::from_secs(30))

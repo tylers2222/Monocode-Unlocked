@@ -581,13 +581,14 @@ fn window_spaces(store: &SessionStore) -> Result<MutexGuard<'_, HashMap<String, 
         .map_err(|_| "Window Spaces unavailable".into())
 }
 
-/// The Space window `label` shows. A window that never read the settings
-/// shows no Space yet, and is Space 1's, as every window was before Spaces.
-pub(crate) fn window_space(store: &SessionStore, label: &str) -> Result<String, String> {
-    Ok(window_spaces(store)?
-        .get(label)
-        .cloned()
-        .unwrap_or_else(|| FIRST_SPACE.to_owned()))
+/// The Space window `label` shows; `None` for a window that never read the
+/// settings, which shows no Space yet. Each reader picks its own fallback
+/// for that: a new row, and an unsaved session's login, take the app's
+/// active Space, as on main ([`membership::space_for_row`], ADE-244); the
+/// ownerless-helper guard takes Space 1, as every window was before Spaces
+/// ([`leases::unsaved_space`], ADE-209).
+pub(crate) fn window_space(store: &SessionStore, label: &str) -> Result<Option<String>, String> {
+    Ok(window_spaces(store)?.get(label).cloned())
 }
 
 /// Forgets a closed window's Space, so a later window never inherits it.
@@ -761,7 +762,7 @@ thread_local! {
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
     child: Child<'_>,
-    window: &str,
+    window: Option<&str>,
     provider: Option<Provider>,
     now: i64,
     target: SpawnTarget,

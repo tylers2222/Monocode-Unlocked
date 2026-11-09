@@ -10,16 +10,19 @@ use rusqlite::{Connection, OptionalExtension};
 /// names its leads and habit runs), else, for an automation run, which has
 /// no Mono owner, its automation's project's Space (`project_space`), else
 /// `window`, the Space of the window that saves it or acts for it
-/// ([`super::window_space`]). A row an agent started through `sessions.start`
+/// ([`super::window_space`]), else, for a window that shows no Space yet,
+/// the app's active Space. A row an agent started through `sessions.start`
 /// (it names a lead, or has an `app-<lead>-<request>` id) whose lead is not
-/// saved joins the app's active Space instead, as before ADE-244: the agent
-/// CLI and MCP have no window. The session and Mono inserts store it; the
-/// spawn hook reads it for a session that may not be saved yet.
+/// saved, such as a worker of a lead in `~`, joins the app's active Space,
+/// as on main, though the lead's window saves it (`control.rs` sends the
+/// start to that window); ADE-249 tracks moving it to the window's Space.
+/// The session and Mono inserts store it; the spawn hook reads it for a
+/// session that may not be saved yet.
 pub(crate) fn space_for_row(
     conn: &Connection,
     id: &str,
     lead: Option<&str>,
-    window: &str,
+    window: Option<&str>,
 ) -> rusqlite::Result<String> {
     for parent in [id].into_iter().chain(lead).chain(named_parents(id)) {
         let space = conn
@@ -40,7 +43,7 @@ pub(crate) fn space_for_row(
         return super::project_space_in(conn, &project)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()));
     }
-    if lead.is_none() && named_parents(id).next().is_none() {
+    if let Some(window) = window.filter(|_| lead.is_none() && named_parents(id).next().is_none()) {
         return Ok(window.to_owned());
     }
     conn.query_row(

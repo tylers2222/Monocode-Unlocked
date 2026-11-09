@@ -224,7 +224,7 @@ fn the_project_spaces_command_lists_every_space_a_project_is_in() {
     }))
     .unwrap();
     let mono = mono_roster::validate_create(mono).unwrap();
-    mono_roster::create(&store().lock_conn().unwrap(), &mono, &two.id).unwrap();
+    mono_roster::create(&store().lock_conn().unwrap(), &mono, Some(&two.id)).unwrap();
     assert_eq!(
         spaces_of("/work/a"),
         Ok(vec![FIRST_SPACE.to_owned(), two.id]),

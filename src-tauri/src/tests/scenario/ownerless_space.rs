@@ -8,9 +8,12 @@
 //! ADE-244: a new session or Mono row with no parent joins the Space of the
 //! window that saves it (`session_upsert`, `monos_create`), so it is listed
 //! where that window shows, and an unsaved tab's helper is judged by that
-//! same Space. A parent's Space still comes first, and a `sessions.start`
-//! row of the agent CLI or MCP whose lead is not saved still joins the app's
-//! active Space.
+//! same Space. An unsaved session's login is that Space's too. A parent's
+//! Space still comes first. A `sessions.start` row whose lead is not saved
+//! still joins the app's active Space, though the lead's window saves it
+//! (ADE-249). A window that never read the settings shows no Space: its new
+//! rows and unsaved logins take the app's active Space, and the
+//! ownerless-helper guard judges it as Space 1.
 
 use std::path::{Path, PathBuf};
 
@@ -103,6 +106,23 @@ fn helper_on(
     workdir: &Path,
     account: HarnessAccount,
 ) -> Result<String, String> {
+    let helper = Helper {
+        owner: owner.map(String::from),
+        key: None,
+    };
+    spawn(rig, window, key, workdir, account, Some(helper))
+}
+
+/// `harness_spawn` from `window` of child `key`, a session's own without
+/// `helper`. Returns the folder the command names, or the refusal.
+fn spawn(
+    rig: &Rig,
+    window: &WebviewWindow<MockRuntime>,
+    key: &str,
+    workdir: &Path,
+    account: HarnessAccount,
+    helper: Option<Helper>,
+) -> Result<String, String> {
     crate::harness::harness_spawn(
         rig.app.handle().clone(),
         window.clone(),
@@ -117,10 +137,7 @@ fn helper_on(
         None,
         None,
         None,
-        Some(Helper {
-            owner: owner.map(String::from),
-            key: None,
-        }),
+        helper,
     )
     .map(|spawned| spawned.cwd)
 }
@@ -299,6 +316,9 @@ esac"#,
     window_b_works_in_space_two(&rig);
     an_owned_helper_keeps_its_owners_space(&rig);
     an_unsaved_owner_is_checked_as_a_saved_one(&rig);
+    an_unsaved_session_takes_its_windows_login(&rig);
+    a_grant_is_judged_by_the_asking_windows_space(&rig);
+    a_window_with_no_space_saves_into_the_active_one(&rig);
     assert_eq!(held(), leased, "a call of no stored session took a lease");
     a_closed_window_forgets_its_space(&rig);
     let _ = std::fs::remove_dir_all(&root);
@@ -421,7 +441,7 @@ fn window_b_works_in_space_two(rig: &Rig) {
             owner: None,
             neutral: &neutral,
         },
-        TWO,
+        Some(TWO),
         Some(Provider::Claude),
         0,
         SpawnTarget {
@@ -534,11 +554,9 @@ fn an_owned_helper_keeps_its_owners_space(rig: &Rig) {
     );
 }
 
-/// What `window` saves for new session `id` in the project, naming `lead`
-/// (`session_upsert`): the Space its reply gives it, which the project's
-/// session list gives it too.
-fn save(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str, lead: Option<&str>) -> String {
-    let session: SessionUpsert = serde_json::from_value(json!({
+/// New session `id` in the project, naming `lead`.
+fn new_session(rig: &Rig, id: &str, lead: Option<&str>) -> SessionUpsert {
+    serde_json::from_value(json!({
         "id": id,
         "cwd": text(&rig.project),
         "harness": "codex",
@@ -549,7 +567,29 @@ fn save(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str, lead: Option<&
         "blocks": [{"id": "u1", "role": "user", "text": "Start"}],
         "leadSessionId": lead,
     }))
-    .unwrap();
+    .unwrap()
+}
+
+/// The Space of new Mono chat `id` that `window` saves (`mono_session_upsert`).
+fn save_mono_chat(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str) -> String {
+    crate::mono_transcript::mono_session_upsert(
+        window.clone(),
+        store(rig),
+        new_session(rig, id, None),
+        None,
+        None,
+        true,
+        false,
+    )
+    .unwrap()
+    .space_id
+}
+
+/// What `window` saves for new session `id` in the project, naming `lead`
+/// (`session_upsert`): the Space its reply gives it, which the project's
+/// session list gives it too.
+fn save(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str, lead: Option<&str>) -> String {
+    let session = new_session(rig, id, lead);
     let reply = session_store::session_upsert(window.clone(), store(rig), session).unwrap();
     let listed = session_store::session_list_by_project(store(rig), text(&rig.project)).unwrap();
     let row = listed.iter().find(|row| row.id == id);
@@ -595,6 +635,16 @@ fn new_rows_join_the_saving_windows_space(rig: &Rig) {
         save(rig, b, "row-b", None),
         TWO,
         "a session saved from window B is not in Space 2"
+    );
+    assert_eq!(
+        save_mono_chat(rig, a, "chat-a"),
+        FIRST_SPACE,
+        "a Mono chat saved from window A after B switched is not in the Space A shows"
+    );
+    assert_eq!(
+        save_mono_chat(rig, b, "chat-b"),
+        TWO,
+        "a Mono chat saved from window B is not in Space 2"
     );
     assert_eq!(
         create_mono(rig, a, "mono-a"),
@@ -688,17 +738,198 @@ fn an_unsaved_owner_is_checked_as_a_saved_one(rig: &Rig) {
     assert_eq!(grants::grant(&store(rig), "tab-granted"), Ok(None));
 }
 
+/// The login a stand-in wrote to `file`, as [`login`] gives it.
+fn ran_on(file: &Path) -> String {
+    wait_for(file).lines().nth(1).unwrap_or("").to_owned()
+}
+
+/// The `default` Claude login, as a window names it.
+fn default_login() -> HarnessAccount {
+    HarnessAccount {
+        provider: "claude".into(),
+        id: "default".into(),
+    }
+}
+
+/// After B's switch, a session with no row takes the login of the Space its
+/// row would join, from the window that asks (`account::resolve`): its
+/// non-kept helper and its own child run on the CLI's own login from A, and on
+/// `work2` from B. A stored Space 2 session's own child keeps its copy and its
+/// login from A.
+fn an_unsaved_session_takes_its_windows_login(rig: &Rig) {
+    let folder = rig.fx.with_file_name("own-child");
+    std::fs::create_dir_all(&folder).unwrap();
+    let two_login = login(rig, Some("work2"));
+    for (window, side, want) in [(&rig.a, "a", ""), (&rig.b, "b", two_login.as_str())] {
+        let key = format!("monocode-login-{side}");
+        let cwd = helper(
+            rig,
+            window,
+            &key,
+            Some("unsaved-owner"),
+            &rig.project,
+            "claude",
+        )
+        .map(PathBuf::from)
+        .unwrap();
+        assert_ne!(cwd, rig.project, "a non-kept helper stayed in the checkout");
+        assert_eq!(
+            ran_on(&cwd.join(&key)),
+            want,
+            "window {side}: an unsaved owner's helper did not take its window's login"
+        );
+        let key = format!("unsaved-child-{side}");
+        assert_eq!(
+            spawn(rig, window, &key, &folder, default_login(), None),
+            Ok(text(&folder)),
+            "window {side}: an unsaved session's child left its folder"
+        );
+        assert_eq!(
+            ran_on(&folder.join(&key)),
+            want,
+            "window {side}: an unsaved session's child did not take its window's login"
+        );
+    }
+    assert_eq!(
+        spawn(rig, &rig.a, "two", &rig.project, default_login(), None),
+        Ok(text(&rig.copy)),
+        "a stored Space 2 session left its copy from window A"
+    );
+    assert_eq!(
+        ran_on(&rig.copy.join("two")),
+        two_login,
+        "a stored Space 2 session took window A's login"
+    );
+}
+
+/// `spaces_grant_save` judges a stored session by its own Space from any
+/// window, and an unsaved one by the asking window's: `work2` is another
+/// Space's login only from A.
+fn a_grant_is_judged_by_the_asking_windows_space(rig: &Rig) {
+    let ask = |window: &WebviewWindow<MockRuntime>, session: &str| {
+        let request = grants::GrantRequest {
+            session_id: session.into(),
+            provider: Provider::Claude,
+            from_account_id: "default".into(),
+            to_account_id: "work2".into(),
+            length: grants::GrantLength::OneHour,
+            first_login_resets_at: None,
+        };
+        grants::spaces_grant_save(window.clone(), store(rig), request)
+    };
+    let own_space = |result: &Result<RouteGrant, String>| {
+        result
+            .as_ref()
+            .is_err_and(|error| error.contains("is not another Space's login"))
+    };
+    let result = ask(&rig.a, "two");
+    assert!(
+        own_space(&result),
+        "stored Space 2 session from A: {result:?}"
+    );
+    let result = ask(&rig.b, "unsaved-grant");
+    assert!(own_space(&result), "unsaved session from B: {result:?}");
+    let result = ask(&rig.a, "unsaved-grant");
+    assert!(result.is_ok(), "unsaved session from A: {result:?}");
+    grants::remove_grant(&store(rig), "unsaved-grant").unwrap();
+}
+
+/// A window that never read the settings shows no Space. Its new rows and an
+/// unsaved session's login take the app's active Space, Space 2 since B's
+/// switch, not Space 1. The ownerless-helper guard still judges it as Space 1
+/// (ADE-209).
+fn a_window_with_no_space_saves_into_the_active_one(rig: &Rig) {
+    let unread = window(&rig.app, "window-unread");
+    assert_eq!(spaces::window_space(&store(rig), "window-unread"), Ok(None));
+    assert_eq!(spaces::settings(&store(rig)).unwrap().active_space_id, TWO);
+    assert_eq!(
+        save(rig, &unread, "row-unread", None),
+        TWO,
+        "a session saved from a window with no Space left the app's active Space"
+    );
+    assert_eq!(
+        create_mono(rig, &unread, "mono-unread"),
+        TWO,
+        "a Mono created from a window with no Space left the app's active Space"
+    );
+    let folder = rig.fx.with_file_name("unread-child");
+    std::fs::create_dir_all(&folder).unwrap();
+    assert_eq!(
+        spawn(rig, &unread, "unread-child", &folder, default_login(), None),
+        Ok(text(&folder))
+    );
+    assert_eq!(
+        ran_on(&folder.join("unread-child")),
+        login(rig, Some("work2")),
+        "an unsaved session's login from a window with no Space is not the active Space's"
+    );
+    refused(
+        rig,
+        &unread,
+        "monocode-claude-text-unread",
+        None,
+        (&rig.copy, TWO),
+        FIRST_SPACE,
+        "the ownerless guard did not judge a window with no Space as Space 1",
+    );
+    assert_eq!(spaces::window_space(&store(rig), "window-unread"), Ok(None));
+}
+
 /// Closing window B (`destroy_window`, the end of every workspace window's
 /// close) forgets its Space, and A keeps its own.
 fn a_closed_window_forgets_its_space(rig: &Rig) {
     crate::window::destroy_window(rig.b.clone(), store(rig)).unwrap();
     assert_eq!(
         spaces::window_space(&store(rig), "window-b"),
-        Ok(FIRST_SPACE.to_owned()),
+        Ok(None),
         "a closed window's Space outlived it"
     );
     assert_eq!(
         spaces::window_space(&store(rig), "window-a"),
-        Ok(FIRST_SPACE.to_owned())
+        Ok(Some(FIRST_SPACE.to_owned()))
     );
+}
+
+/// `monos_import_legacy` racing the window's first settings read (m2 of the
+/// ADE-244 review): the one-shot import joins the app's active Space, not
+/// Space 1. It runs alone, as it imports only into an empty roster.
+#[test]
+fn a_legacy_import_before_the_first_read_joins_the_active_space() {
+    let root = temp_root("ade244-import");
+    let data = root.join("app-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let app = mock_app(&data);
+    let project = git_project(&root);
+    let store = app.state::<SessionStore>();
+    two_spaces(&store, &project);
+    let switcher = window(&app, "window-switched");
+    let patch = SettingsPatch {
+        active_space_id: Some(TWO.to_owned()),
+        route_grant_ttl_ms: None,
+    };
+    spaces::spaces_settings_set(switcher, app.state::<SessionStore>(), patch).unwrap();
+    let mono: MonoCreate = serde_json::from_value(json!({
+        "id": "legacy",
+        "role": "mono",
+        "data": {"name": "legacy"},
+        "sortOrder": 0,
+    }))
+    .unwrap();
+    let roster = mono_roster::monos_import_legacy(
+        app.handle().clone(),
+        window(&app, "window-unread"),
+        app.state::<SessionStore>(),
+        vec![mono],
+    )
+    .unwrap();
+    assert_eq!(
+        roster
+            .monos
+            .iter()
+            .map(|row| row.space_id.as_str())
+            .collect::<Vec<_>>(),
+        [TWO],
+        "a legacy import from a window with no Space left the app's active Space"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

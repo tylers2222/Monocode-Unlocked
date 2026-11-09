@@ -45,7 +45,12 @@ impl World {
             "sortOrder": 0,
         }))
         .unwrap();
-        mono_roster::create(&conn, &mono_roster::validate_create(mono).unwrap(), &window).unwrap();
+        mono_roster::create(
+            &conn,
+            &mono_roster::validate_create(mono).unwrap(),
+            Some(&window),
+        )
+        .unwrap();
         let session: SessionUpsert = serde_json::from_value(json!({
             "id": chat,
             "cwd": "/",
@@ -57,7 +62,7 @@ impl World {
             "blocks": [],
         }))
         .unwrap();
-        session_store::upsert_session(&conn, &session, &window).unwrap();
+        session_store::upsert_session(&conn, &session, Some(&window)).unwrap();
         Mono {
             id: MonoId::parse(id).unwrap(),
             chat: SessionId::parse(&chat).unwrap(),
@@ -80,7 +85,7 @@ impl World {
         }))
         .unwrap();
         let window = self.window_space();
-        session_store::upsert_session(&self.conn(), &session, &window).unwrap();
+        session_store::upsert_session(&self.conn(), &session, Some(&window)).unwrap();
         SessionId::parse(id).unwrap()
     }
 
