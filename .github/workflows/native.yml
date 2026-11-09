@@ -32,11 +32,10 @@ jobs:
         id: paths
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 scripts/process/ci_changes.py github "$EVENT" "$BASE" "$HEAD" | tee -a "$GITHUB_OUTPUT"
+          python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"
 
   core:
     name: Core (${{ matrix.os }})

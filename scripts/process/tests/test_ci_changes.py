@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -35,30 +36,53 @@ def git(repo: Path, *args: str) -> str:
 
 
 class Repo:
-    """A scratch git repo whose base commit holds one file and whose head commit adds the given files."""
+    """A scratch git repo shaped like a pull_request run: `head` adds the given files on a PR
+    branch, `base_later` then adds its files to the base branch, and `merge` merges the PR
+    into the base. `lower` adds its files to the base before the PR forks, as a stacked PR's
+    lower branch does. `moves` maps old paths to new ones, moved by `head` with git mv. `fork`
+    is the commit the PR forked from: a stale base.sha."""
 
-    def __init__(self, files: list[str]):
+    def __init__(self, files: list[str], base_later: Sequence[str] = (), lower: Sequence[str] = (),
+                 moves: Mapping[str, str] | None = None):
         self.dir = tempfile.TemporaryDirectory()
         self.path = Path(self.dir.name)
-        git(self.path, "init", "-q")
+        git(self.path, "init", "-q", "-b", "base")
         git(self.path, "config", "user.email", "t@example.invalid")
         git(self.path, "config", "user.name", "t")
-        (self.path / "seed").write_text("seed\n")
-        git(self.path, "add", "-A")
-        git(self.path, "commit", "-qm", "base")
-        self.base = git(self.path, "rev-parse", "HEAD")
+        self.commit(["seed"], "root")
+        self.root = git(self.path, "rev-parse", "HEAD")
+        self.commit(lower, "lower branch")
+        self.fork = git(self.path, "rev-parse", "HEAD")
+        git(self.path, "switch", "-qc", "pr")
+        for old, new in (moves or {}).items():
+            (self.path / new).parent.mkdir(parents=True, exist_ok=True)
+            git(self.path, "mv", old, new)
+        self.commit(files, "head")
+        self.head = git(self.path, "rev-parse", "HEAD")
+        git(self.path, "switch", "-q", "base")
+        self.commit(base_later, "base moved on")
+        git(self.path, "merge", "-q", "--no-ff", "--no-edit", "pr")
+        self.merge = git(self.path, "rev-parse", "HEAD")
+
+    def commit(self, files: Sequence[str], message: str) -> None:
         for name in files:
             (self.path / name).parent.mkdir(parents=True, exist_ok=True)
-            (self.path / name).write_text("changed\n")
+            (self.path / name).write_text(f"{message}\n")
         git(self.path, "add", "-A")
-        git(self.path, "commit", "-qm", "head", "--allow-empty")
-        self.head = git(self.path, "rev-parse", "HEAD")
+        git(self.path, "commit", "-qm", message, "--allow-empty")
 
-    def select(self, event: str, base: str | None) -> tuple[dict[str, str], str]:
+    def select(self, event: str = "pull_request", merge: str | None = None, cwd: Path | None = None) -> tuple[dict[str, str], str]:
         """ci_changes.py's outputs (job -> "true"/"false") and its reason line."""
-        run = subprocess.run([sys.executable, str(SCRIPT), "github", event, self.base if base is None else base, self.head],
-                             cwd=self.path, check=True, capture_output=True, text=True)
+        run = subprocess.run([sys.executable, str(SCRIPT), "github", event, self.merge if merge is None else merge],
+                             cwd=cwd or self.path, check=True, capture_output=True, text=True)
         return dict(line.split("=", 1) for line in run.stdout.splitlines()), run.stderr.strip().splitlines()[-1]
+
+    def clone(self, depth: int) -> Path:
+        """A clone holding only the last depth commits, as actions/checkout's fetch-depth does."""
+        target = Path(self.dir.name) / f"clone-{depth}"
+        subprocess.run(["git", "clone", "-q", f"--depth={depth}", "--branch=base", self.path.as_uri(), str(target)],
+                       check=True, capture_output=True)
+        return target
 
 
 def classes(paths: list[str]) -> dict[str, str]:
@@ -68,10 +92,10 @@ def classes(paths: list[str]) -> dict[str, str]:
 
 
 class SelectorOnRealDiffs(unittest.TestCase):
-    def runs(self, files: list[str], event: str = "pull_request", base: str | None = None) -> tuple[set[str], str]:
+    def runs(self, files: list[str], event: str = "pull_request", merge: str | None = None) -> tuple[set[str], str]:
         repo = Repo(files)
         self.addCleanup(repo.dir.cleanup)
-        outputs, reason = repo.select(event, base)
+        outputs, reason = repo.select(event, merge)
         self.assertEqual(list(outputs), JOBS, "one output line per job in the map, in map order")
         return {job for job, on in outputs.items() if on == "true"}, reason
 
@@ -131,10 +155,77 @@ class SelectorOnRealDiffs(unittest.TestCase):
 
     def test_a_diff_that_cannot_be_read_runs_every_job(self):
         no_diff = "ci-changes: no diff could be read (failed or empty): every job runs"
-        for base in ["", "0" * 40, "deadbeef" * 5]:
-            with self.subTest(base=base):
-                self.assertEqual(self.runs(PR_429_SCRIPT, base=base), (EVERY_JOB, no_diff))
+        for merge in ["", "0" * 40, "deadbeef" * 5]:
+            with self.subTest(merge=merge):
+                self.assertEqual(self.runs(PR_429_SCRIPT, merge=merge), (EVERY_JOB, no_diff))
         self.assertEqual(self.runs([]), (EVERY_JOB, no_diff))
+
+
+class FirstParentDiff(unittest.TestCase):
+    """The diff runs from the merge's first parent: the base's later changes are not the PR's."""
+    NO_DIFF = "ci-changes: no diff could be read (failed or empty): every job runs"
+    WORKFLOW = ".github/workflows/ci.yml"
+
+    def repo(self, *args: list[str], **kwargs: Sequence[str] | Mapping[str, str]) -> Repo:
+        repo = Repo(*args, **kwargs)
+        self.addCleanup(repo.dir.cleanup)
+        return repo
+
+    def jobs(self, repo: Repo, **kwargs: str | Path) -> tuple[set[str], str]:
+        outputs, reason = repo.select(**kwargs)
+        return {job for job, on in outputs.items() if on == "true"}, reason
+
+    def test_a_pr_behind_a_base_that_changed_github_skips_what_it_should(self):
+        repo = self.repo(PR_429_SCRIPT, base_later=[self.WORKFLOW])
+        # The old two-dot diff from a stale base.sha sees the workflow, which ran every job.
+        self.assertIn(self.WORKFLOW, git(repo.path, "diff", "--name-only", repo.fork, repo.merge))
+        self.assertEqual(self.jobs(repo), (set(), "ci-changes: 2 changed files; runs: no gated job"))
+
+    def test_a_pr_with_its_own_src_change_still_runs_its_jobs_when_behind(self):
+        src = ["src/features/monos/model/monoMessages.ts"]
+        behind, _ = self.jobs(self.repo(src, base_later=[self.WORKFLOW]))
+        self.assertEqual(behind, self.jobs(self.repo(src))[0])
+        self.assertIn("check", behind)
+        self.assertNotEqual(behind, EVERY_JOB)
+
+    def test_a_prs_own_file_in_the_all_list_runs_every_job(self):
+        repo = self.repo(["docs/notes.md", self.WORKFLOW], base_later=["docs/other.md"])
+        self.assertEqual(self.jobs(repo), (EVERY_JOB, f"ci-changes: {self.WORKFLOW} is in the map's all list: every job runs"))
+
+    def test_a_stacked_pr_counts_only_its_own_files(self):
+        repo = self.repo(["docs/notes.md"], base_later=[self.WORKFLOW], lower=["src-tauri/src/lib.rs"])
+        self.assertIn("src-tauri/src/lib.rs", git(repo.path, "diff", "--name-only", repo.root, repo.merge))
+        self.assertEqual(self.jobs(repo), (set(), "ci-changes: 1 changed files; runs: no gated job"))
+
+    def test_a_missing_first_parent_runs_every_job(self):
+        repo = self.repo(PR_429_SCRIPT)
+        self.assertEqual(self.jobs(repo, cwd=repo.clone(depth=1)), (EVERY_JOB, self.NO_DIFF))
+
+    def test_a_shallow_clone_that_holds_the_first_parent_reads_the_diff(self):
+        repo = self.repo(PR_429_SCRIPT, base_later=[self.WORKFLOW])
+        self.assertEqual(self.jobs(repo, cwd=repo.clone(depth=2))[0], set())
+
+    def test_a_commit_that_is_no_merge_runs_every_job(self):
+        repo = self.repo(["docs/notes.md"])
+        octopus = git(repo.path, "commit-tree", f"{repo.merge}^{{tree}}", "-m", "three parents",
+                      "-p", f"{repo.merge}^1", "-p", repo.head, "-p", repo.root)
+        for merge in [repo.head, repo.root, octopus]:
+            with self.subTest(merge=merge):
+                self.assertEqual(self.jobs(repo, merge=merge), (EVERY_JOB, self.NO_DIFF))
+
+    def test_a_merge_with_an_empty_diff_runs_every_job(self):
+        self.assertEqual(self.jobs(self.repo([], base_later=[self.WORKFLOW])), (EVERY_JOB, self.NO_DIFF))
+
+    def test_a_file_moved_out_of_a_gated_folder_still_runs_its_jobs(self):
+        repo = self.repo([], lower=["src/a.ts"], moves={"src/a.ts": "docs/a.ts"})
+        self.assertEqual(git(repo.path, "diff", "--name-only", "-M", f"{repo.merge}^1", repo.merge), "docs/a.ts",
+                         "git sees a rename, so only the old path can run the jobs")
+        self.assertEqual(self.jobs(repo), ({"browser", "host", "check", "e2e-linux", "e2e-macos", "mobile"},
+                                           "ci-changes: 2 changed files; runs: browser host check e2e-linux e2e-macos mobile"))
+
+    def test_the_old_form_with_a_base_argument_is_a_usage_error(self):
+        run = subprocess.run([sys.executable, str(SCRIPT), "github", "pull_request", "aaa", "bbb"], capture_output=True, text=True)
+        self.assertEqual((run.returncode, run.stdout), (2, ""), "exit 2 turns the changes job red; no job line reaches GITHUB_OUTPUT")
 
 
 class FileClasses(unittest.TestCase):
@@ -171,6 +262,18 @@ class WorkflowWiring(unittest.TestCase):
         for name, body in text.items():
             with self.subTest(workflow=name):
                 self.assertNotRegex(body, r"(?m)^\s+paths(-ignore)?:", "workflow-level paths filters leave required checks pending")
+
+    def test_every_changes_job_passes_the_merge_and_no_base_sha(self):
+        callers = {path.name: path.read_text() for path in WORKFLOWS.glob("*.yml") if "ci_changes.py github" in path.read_text()}
+        self.assertEqual(set(callers), {"ci.yml", "e2e.yml", "native.yml"})
+        for name, body in callers.items():
+            with self.subTest(workflow=name):
+                self.assertIn("          EVENT: ${{ github.event_name }}\n"
+                              "          HEAD: ${{ github.sha }}\n"
+                              "        run: |\n"
+                              "          set -euo pipefail\n"
+                              '          python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"\n', body)
+                self.assertNotIn("pull_request.base.sha", body)
 
 
 if __name__ == "__main__":
