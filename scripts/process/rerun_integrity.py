@@ -45,14 +45,16 @@ def resolve_pr(prs, sha):
 def pick(runs, jobs_by_run, job_name):
     """What to re-run once every run of the head has completed: ('job', job id, run id)
     in the newest run (by id) that has the job and whose other jobs all succeeded, else
-    ('run', run id) for the newest run whole. Runs started in the same second (an open
+    ('run', run id) for the newest run that has the job, whole, else None. A run for a
+    label no gate check reads has no such job. Runs started in the same second (an open
     and a label) can be cancelled in either order, so the newest is not always usable."""
     for run in sorted(runs, key=lambda run: -run['id']):
         jobs = jobs_by_run[run['id']]
         job = next((j for j in jobs if j['name'] == job_name), None)
         if job and all(j['conclusion'] == 'success' for j in jobs if j is not job):
             return 'job', job['id'], run['id']
-    return 'run', max(run['id'] for run in runs)
+    usable = [run['id'] for run in runs if any(j['name'] == job_name for j in jobs_by_run[run['id']])]
+    return ('run', max(usable)) if usable else None
 
 
 def gh(*args):
@@ -79,7 +81,7 @@ def main():
         print(f'rerun: {event_sha} is not the head of #{pr} ({head}); nothing to re-run')
         return 0
     def head_runs():
-        return json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={head}&event={trigger}&per_page=20',
+        return json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={head}&event={trigger}&per_page=100',
                              '--jq', '[.workflow_runs[] | {id, status}]'))
     runs = head_runs()
     if not runs:
@@ -106,6 +108,9 @@ def main():
     jobs_by_run = {run['id']: json.loads(gh('api', f'repos/{repo}/actions/runs/{run["id"]}/jobs',
                                             '--jq', '[.jobs[] | {id, name, conclusion}]')) for run in runs}
     choice = pick(runs, jobs_by_run, job_name)
+    if choice is None:
+        print(f'rerun: no {workflow} run for {head} has the job {job_name}')
+        return 1
     if choice[0] == 'job':
         gh('api', '-X', 'POST', f'repos/{repo}/actions/jobs/{choice[1]}/rerun')
         print(f'rerun: re-ran {job_name} (job {choice[1]}) of run {choice[2]} for {head}')
