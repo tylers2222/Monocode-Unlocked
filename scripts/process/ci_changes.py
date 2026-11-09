@@ -2,11 +2,16 @@
 """ci-changes: which path-gated CI jobs a change runs, from ci-map.toml beside this script.
 
 Usage:
-  ci_changes.py github <event> <base> <head>
-      For the `changes` jobs of ci.yml and e2e.yml. Prints one `<job>=true|false` line per
-      job in the map (for GITHUB_OUTPUT) and the reason and each changed file on stderr.
-      Every job runs for any event but pull_request, when `git diff <base> <head>` fails or
-      is empty, and when a changed file is in the map's `all` list or matches no glob.
+  ci_changes.py github <event> <merge>
+      For the `changes` jobs of ci.yml, e2e.yml and native.yml. <merge> is github.sha, on a
+      pull request the test merge of the PR's head into its base. Prints one
+      `<job>=true|false` line per job in the map (for GITHUB_OUTPUT) and the reason and each
+      changed file on stderr. The PR's changes are the diff from the merge's first parent to
+      the merge. pull_request.base.sha is not used: it can be older than the first parent,
+      and the base's own later changes would then count as the PR's.
+      Every job runs for any event but pull_request, when <merge> is not a commit with
+      exactly two readable parents, when the diff fails or is empty, and when a changed file
+      is in the map's `all` list or matches no glob.
   ci_changes.py files
       Reads repo-relative paths from stdin and prints `<path><TAB><class>` for each: `all`,
       `unmatched`, `none`, or the comma-separated jobs it runs. box-ci.sh reads this.
@@ -87,8 +92,14 @@ def select(ci_map: CiMap, event: str, changed: Iterable[str] | None) -> tuple[di
     return run, f"{len(paths)} changed files; runs: {' '.join(job for job, on in run.items() if on) or 'no gated job'}"
 
 
-def diff(base: str, head: str) -> list[str] | None:
-    result = subprocess.run(["git", "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", base, head],
+def diff(merge: str) -> list[str] | None:
+    """What the merge adds to its first parent. None when it cannot be read, also when merge
+    is no two-parent merge: the diff from a lone parent is not the whole PR's change."""
+    commits = subprocess.run(["git", "rev-list", "--parents", "-n", "1", merge], capture_output=True, text=True)
+    shas = commits.stdout.split()
+    if commits.returncode != 0 or len(shas) != 3:
+        return None
+    result = subprocess.run(["git", "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", shas[1], merge],
                             capture_output=True, text=True)
     return result.stdout.splitlines() if result.returncode == 0 else None
 
@@ -99,9 +110,9 @@ def describe(kind: str | frozenset[str]) -> str:
 
 def main(argv: list[str]) -> int:
     ci_map = parse(MAP.read_text())
-    if argv[:1] == ["github"] and len(argv) == 4:
-        _, event, base, head = argv
-        changed = diff(base, head) if event == "pull_request" else []
+    if argv[:1] == ["github"] and len(argv) == 3:
+        _, event, merge = argv
+        changed = diff(merge) if event == "pull_request" else []
         run, reason = select(ci_map, event, changed)
         for path in changed or ():
             print(f"  {path}: {describe(classify(ci_map, path))}", file=sys.stderr)
