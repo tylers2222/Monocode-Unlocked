@@ -23,6 +23,8 @@
 // or "action", "input", "result"}).
 // Each exec runs in the agent's folder without a shell and logs {"exec", "code",
 // "stdout", "bytes", "stderr"}.
+// timing.jsonl gets {"event", "at", "pid"} when the agent starts and when it reads
+// `initialize`. The start line adds "origin", when Node began (ADE-273).
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -44,6 +46,16 @@ if (args[0] === "--help") {
   process.exit(0);
 }
 if (args[0] !== "acp") process.exit(1);
+/** A diagnostic: a failed write must not change how the agent starts. */
+const stamp = (event, extra) => {
+  try {
+    appendFileSync(
+      join(dir, "timing.jsonl"),
+      `${JSON.stringify({ event, at: Date.now(), pid: process.pid, ...extra })}\n`,
+    );
+  } catch {}
+};
+stamp("start", { origin: Math.round(performance.timeOrigin) });
 // While $HOME/.puppet/hold-start exists, a new agent reads no request, so the
 // app's prompt stays unread (app.sh r9 kills the app in that gap).
 while (existsSync(join(dir, "hold-start"))) spawnSync("sleep", ["0.2"]);
@@ -224,7 +236,10 @@ async function runTurn(text, steer) {
 
 let turns = 0;
 const handlers = {
-  initialize: () => ({ protocolVersion: 1, agentCapabilities: {} }),
+  initialize: () => {
+    stamp("initialize");
+    return { protocolVersion: 1, agentCapabilities: {} };
+  },
   "session/new": () => ({ sessionId: `puppet-${process.pid}-${Date.now()}` }),
   "session/set_config_option": () => ({}),
   "session/set_mode": () => ({}),

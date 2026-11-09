@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
@@ -256,5 +256,84 @@ describe("fx live turn sequence", () => {
     ).toBe(true);
     expect(turn1Events.some((e) => e.type === "session.ended")).toBe(false);
     await stopFxSession("t2");
+  });
+});
+
+describe("fx startup timeout (ADE-273)", () => {
+  const AUTH_FIX =
+    "Run `fx login` (or `fx setup`) in a terminal, or export AI_GATEWAY_API_KEY " +
+    "so it does not depend on the macOS Keychain.";
+
+  beforeEach(() => {
+    sent.length = 0;
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Starts a turn; `settled.error` is set when it fails. */
+  function startTurn(sessionId: string) {
+    const settled: { error?: Error } = {};
+    void sendFxTurn({
+      sessionId,
+      cwd: "/repo",
+      model: "fx:zai/glm-5.2",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      text: "hey",
+      attachments: [],
+      onEvent: () => undefined,
+    } as never).catch((error: Error) => {
+      settled.error = error;
+    });
+    return settled;
+  }
+  const initializeCalls = () =>
+    parse().filter((message) => message.method === "initialize");
+
+  it("takes an answer that comes just before 30 s", async () => {
+    const settled = startTurn("slow-start");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled.error).toBeUndefined();
+
+    reply(initializeCalls()[0].id, { protocolVersion: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(parse().map((message) => message.method)).toContain("session/new");
+
+    onExit!(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled.error?.message).toBe("fx exited");
+  });
+
+  it("fails once at 30 s, and names a credential only as a possible cause", async () => {
+    const settled = startTurn("no-answer");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(settled.error?.message).toBe(
+      "fx did not answer initialize within 30s. The cause is not known. " +
+        "One possible cause is a Vercel AI Gateway credential fx cannot read from here. " +
+        AUTH_FIX,
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(initializeCalls()).toHaveLength(1);
+  });
+
+  it("states the credential problem when fx itself reports one", async () => {
+    const settled = startTurn("no-credential");
+    await vi.advanceTimersByTimeAsync(0);
+    onLine!(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: initializeCalls()[0].id,
+        error: { code: -32000, message: "Fx needs access to the Keychain" },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled.error?.message).toBe(
+      "Fx needs access to the Keychain\n\n" +
+        "fx has no Vercel AI Gateway credential it can read from here. " +
+        AUTH_FIX,
+    );
   });
 });

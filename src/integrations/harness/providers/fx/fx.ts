@@ -58,17 +58,18 @@ type Resume = {
 };
 
 // fx answers `initialize` in well under a second when it can reach a
-// credential. A long wait means it is blocked reading the macOS Keychain, not
-// working — so fail fast with something actionable instead of stalling.
-const INIT_TIMEOUT_MS = 12_000;
+// credential. A long wait can mean it is blocked reading the macOS Keychain, but
+// a puppet that reads no credential also missed a 12 s limit on CI (ADE-273, cause
+// not known). A turn that fails here is not retried, so the limit stays generous.
+const INIT_TIMEOUT_MS = 30_000;
 const SESSION_TIMEOUT_MS = 45_000;
 const CONTROL_TIMEOUT_MS = 15_000;
 const PROMPT_TIMEOUT_MS = 30 * 60_000;
 
-const AUTH_HELP =
-  "fx has no Vercel AI Gateway credential it can read from here. " +
+const AUTH_FIX =
   "Run `fx login` (or `fx setup`) in a terminal, or export AI_GATEWAY_API_KEY " +
   "so it does not depend on the macOS Keychain.";
+const AUTH_HELP = `fx has no Vercel AI Gateway credential it can read from here. ${AUTH_FIX}`;
 
 /** fx rejects `initialize` itself when it cannot read a credential. */
 function fxStartupError(error: unknown): Error {
@@ -78,7 +79,8 @@ function fxStartupError(error: unknown): Error {
   }
   if (/timed out/i.test(detail)) {
     return new Error(
-      `fx did not answer initialize within ${INIT_TIMEOUT_MS / 1000}s. ${AUTH_HELP}`,
+      `fx did not answer initialize within ${INIT_TIMEOUT_MS / 1000}s. The cause is not known. ` +
+        `One possible cause is a Vercel AI Gateway credential fx cannot read from here. ${AUTH_FIX}`,
     );
   }
   return new Error(`fx did not start. ${detail}`);

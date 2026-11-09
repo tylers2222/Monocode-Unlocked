@@ -56,6 +56,18 @@ q() {
   sqlite3 "file:$DB?mode=ro" ".backup '$copy'" && sqlite3 "$copy" "$1"
 }
 
+# Each chat's system notices, to the job log: a turn that failed at startup
+# shows only there (ADE-273). Reads a copy of the DB and never stops the run.
+print_notices() {
+  local notices
+  notices="$(q "SELECT s.title || ' (' || s.id || '): ' || substr(json_extract(b.value, '$.text'), 1, 500)
+    FROM sessions s, json_each(s.blocks_json) b
+    WHERE json_extract(b.value, '$.role') = 'system' AND json_extract(b.value, '$.interjection') IS NULL
+    ORDER BY s.id, b.key" 2>/dev/null)" || notices="(the sessions table could not be read)"
+  log "system notices at the timeout:"
+  printf '%s\n' "${notices:-(none)}" >&2
+}
+
 # wait_until <seconds> <what> <command...>: until the command succeeds, or
 # the run stops with "timed out".
 wait_until() {
@@ -65,6 +77,7 @@ wait_until() {
     "$@" && return 0
     sleep 1
   done
+  print_notices
   die "timed out after $secs s: $what"
 }
 
@@ -164,6 +177,7 @@ install_puppet_bin() {
   cp "$SCENARIOS/puppet/puppet.mjs" "$EVAL_HOME/.local/bin/fx"
   chmod +x "$EVAL_HOME/.local/bin/fx"
   : >"$PUPPET/log.jsonl"
+  : >"$PUPPET/timing.jsonl"
 }
 
 install_puppet() {
