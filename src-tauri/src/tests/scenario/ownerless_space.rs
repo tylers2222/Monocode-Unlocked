@@ -9,9 +9,9 @@
 //! window that saves it (`session_upsert`, `monos_create`), so it is listed
 //! where that window shows, and an unsaved tab's helper is judged by that
 //! same Space. An unsaved session's login is that Space's too. A parent's
-//! Space still comes first. A `sessions.start` row whose lead is not saved
-//! still joins the app's active Space, though the lead's window saves it
-//! (ADE-249). A window that never read the settings shows no Space: its new
+//! Space still comes first. A `sessions.start` row whose lead never ran joins
+//! the window's Space too (`space_caller.rs` has the lead that ran). A window
+//! that never read the settings shows no Space: its new
 //! rows and unsaved logins take the app's active Space, and the
 //! ownerless-helper guard judges it as Space 1.
 
@@ -611,9 +611,14 @@ fn create_mono(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str) -> Stri
         "sortOrder": 0,
     }))
     .unwrap();
-    let roster =
-        mono_roster::monos_create(rig.app.handle().clone(), window.clone(), store(rig), mono)
-            .unwrap();
+    let roster = mono_roster::monos_create(
+        rig.app.handle().clone(),
+        window.clone(),
+        store(rig),
+        mono,
+        None,
+    )
+    .unwrap();
     let row = roster.monos.into_iter().find(|row| row.id == id).unwrap();
     row.space_id
 }
@@ -622,7 +627,7 @@ fn create_mono(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str) -> Stri
 /// with no parent that A saves joins Space 1, the Space A shows, and one B
 /// saves joins Space 2. A parent's Space comes first from either window. A
 /// `sessions.start` row (an `app-<lead>-<request>` id, or a lead) whose lead
-/// is not saved joins the app's active Space, as before ADE-244.
+/// is not saved and never ran joins the window's Space too.
 fn new_rows_join_the_saving_windows_space(rig: &Rig) {
     let (a, b) = (&rig.a, &rig.b);
     assert_eq!(
@@ -668,13 +673,13 @@ fn new_rows_join_the_saving_windows_space(rig: &Rig) {
     );
     assert_eq!(
         save(rig, a, "app-gone-r1", None),
-        TWO,
-        "an agent's start whose lead is not saved left the app's active Space"
+        FIRST_SPACE,
+        "an agent's start whose lead never ran took the app's active Space"
     );
     assert_eq!(
         save(rig, a, "worker-of-gone", Some("gone")),
-        TWO,
-        "a worker whose lead is not saved left the app's active Space"
+        FIRST_SPACE,
+        "a worker whose lead never ran took the app's active Space"
     );
 }
 

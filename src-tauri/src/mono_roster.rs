@@ -488,17 +488,25 @@ pub fn monos_list(store: State<'_, SessionStore>) -> Result<Roster, String> {
 }
 
 /// A new Mono joins the Space of `window`, the window that creates it
-/// (ADE-244).
+/// (ADE-244). An agent's `monos.create` names `caller_session_id`, its own
+/// session: the Mono then joins the agent's Space, whatever the window shows.
 #[tauri::command(async)]
 pub fn monos_create<R: tauri::Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     mono: MonoCreate,
+    caller_session_id: Option<String>,
 ) -> Result<Roster, String> {
     let mono = validate_create(mono)?;
-    let space = crate::spaces::window_space(&store, window.label())?;
+    let window = crate::spaces::window_space(&store, window.label())?;
     write(&app, &store, |conn| {
+        let space = crate::spaces::membership::acting_space(
+            conn,
+            caller_session_id.as_deref(),
+            window.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         create(conn, &mono, space.as_deref()).map(|()| true)
     })
 }
