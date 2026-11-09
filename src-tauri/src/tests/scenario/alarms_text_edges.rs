@@ -69,12 +69,22 @@ fn linked_reply_before_the_delivery_stamp_is_not_no() {
     scene.lead_says("reply");
     let reply = scene.message_id("reply");
     link_reply(&scene, &reply, &ask);
+    // Addressed to a chat the sender has since left: only the link says it.
+    scene
+        .world
+        .conn()
+        .execute(
+            "UPDATE mono_messages SET to_mono_id = NULL, to_session_id = 'an-older-chat'
+              WHERE id = ?1",
+            [&reply],
+        )
+        .unwrap();
     scene.world.advance(MINUTE);
     scene.world.end_turn(&lead_id, "t7", true);
     turn(&mut scene.world, &lead_id, "t7", false);
     scene.world.advance(N);
     let said = replied(&scene);
-    assert!(!said.starts_with("no ("), "a row names the reply: {said}");
+    assert_eq!(said, format!("yes ({ask}, by {reply})."));
 }
 
 // Defect: the stale-row test is `delivered > updated_wall`. A row
