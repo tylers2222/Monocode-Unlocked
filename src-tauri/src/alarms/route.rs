@@ -168,25 +168,34 @@ pub(crate) fn session_of(conn: &Connection, actor: &Actor) -> rusqlite::Result<O
     })
 }
 
+/// A fact the text can do without. The alarm must still go out, and escalate,
+/// when a row cannot be read, so it says what is unknown instead.
+fn or_unknown<T>(fact: rusqlite::Result<T>, unknown: T) -> T {
+    fact.unwrap_or_else(|error| {
+        eprintln!("An alarm could not read one of its facts: {error}");
+        unknown
+    })
+}
+
 pub(crate) fn who(conn: &Connection, actor: &Actor) -> rusqlite::Result<Who> {
-    let label: Option<String> = match actor {
+    let label: rusqlite::Result<Option<String>> = match actor {
         Actor::Mono(mono) => conn
             .query_row(
                 "SELECT name FROM monos WHERE id = ?1",
                 [mono.as_str()],
                 |row| row.get(0),
             )
-            .optional()?,
+            .optional(),
         Actor::Session(session) => conn
             .query_row(
                 "SELECT title FROM sessions WHERE id = ?1",
                 [session.as_str()],
                 |row| row.get(0),
             )
-            .optional()?,
+            .optional(),
     };
     Ok(Who {
-        label: label
+        label: or_unknown(label, None)
             .map(|label| short(&label, 80))
             .filter(|label| !label.is_empty())
             .unwrap_or_else(|| actor.to_string()),
@@ -270,7 +279,7 @@ fn last_tool(blocks_json: &str) -> Option<String> {
     Some(format!(
         "{} ({})",
         short(title, 120),
-        tool["status"].as_str().unwrap_or("unknown")
+        short(tool["status"].as_str().unwrap_or("unknown"), 40)
     ))
 }
 
@@ -312,7 +321,9 @@ fn dialog_kind(conn: &Connection, actor: &Actor) -> rusqlite::Result<Option<Stri
         .flatten())
 }
 
-/// What every level says about the stalled agent, read now.
+/// What every level says about the stalled agent, read now. A row it cannot
+/// read makes that fact unknown, never an error: an error here would stop the
+/// episode opening or escalating.
 pub(crate) fn stall(
     conn: &Connection,
     episode: &EpisodeRow,
@@ -321,7 +332,7 @@ pub(crate) fn stall(
 ) -> rusqlite::Result<Stall> {
     let minutes = (active - episode.stalled_since_active) / MINUTE_MS;
     let dialog = if episode.cause == "dialog" {
-        let kind = dialog_kind(conn, &episode.actor)?;
+        let kind = or_unknown(dialog_kind(conn, &episode.actor), None);
         Some(DialogLine {
             kind_unknown: kind.is_none(),
             kind: kind.unwrap_or_else(|| "permission".into()),
@@ -335,10 +346,13 @@ pub(crate) fn stall(
         episode: episode.id.clone(),
         cause: episode.cause.clone(),
         agent: who(conn, &episode.actor)?,
-        since: clock(conn, episode.stalled_since_wall)?,
+        since: or_unknown(clock(conn, episode.stalled_since_wall), "unknown".into()),
         minutes,
-        open_work: work_lines(conn, &episode.open_work_json, active)?,
-        last_activity: last_activity(conn, &episode.actor)?,
+        open_work: or_unknown(
+            work_lines(conn, &episode.open_work_json, active),
+            vec!["unknown".into()],
+        ),
+        last_activity: or_unknown(last_activity(conn, &episode.actor), None),
         dialog,
         stuck: stuck::read(conn, episode, active),
         escalate_minutes: settings.escalate_minutes,

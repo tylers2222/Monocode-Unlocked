@@ -167,9 +167,19 @@ impl Activity {
     }
 }
 
-/// The agent's last delivered message: id, turn, whether it wants a reply (an
-/// ask wants its ack), when it was delivered, and its sender's Mono and session.
-type LastMessage = (String, Option<String>, bool, i64, Option<String>, String);
+/// The agent's last delivered message.
+struct LastMessage {
+    id: String,
+    turn: Option<String>,
+    /// An ask wants its ack, though its row says it wants no reply.
+    wanted: bool,
+    created: i64,
+    delivered: i64,
+    from_mono: Option<String>,
+    from_session: String,
+    /// How many of the agent's messages were delivered at that same moment.
+    together: i64,
+}
 
 /// A listed ask that is still open, as the rows hold it.
 struct Ask {
@@ -227,7 +237,9 @@ fn gather(conn: &Connection, episode: &EpisodeRow, active: i64) -> rusqlite::Res
         conn,
         episode,
         active,
-        wall: episode.stalled_since_wall + active - episode.stalled_since_active,
+        wall: episode
+            .stalled_since_wall
+            .saturating_add(active.saturating_sub(episode.stalled_since_active)),
         session,
         activity,
     };
@@ -247,11 +259,11 @@ fn gather(conn: &Connection, episode: &EpisodeRow, active: i64) -> rusqlite::Res
 
 impl Reader<'_> {
     fn minutes_since(&self, active: i64) -> i64 {
-        ((self.active - active) / MINUTE_MS).max(0)
+        (self.active.saturating_sub(active) / MINUTE_MS).max(0)
     }
 
     fn minutes_since_wall(&self, wall: i64) -> i64 {
-        ((self.wall - wall) / MINUTE_MS).max(0)
+        (self.wall.saturating_sub(wall) / MINUTE_MS).max(0)
     }
 
     fn label(&self, actor: &str) -> rusqlite::Result<String> {
@@ -547,7 +559,7 @@ impl Reader<'_> {
                 let age = self.minutes_since(self.episode.stalled_since_active);
                 Item::aged("its unfinished todo list", Some(age)).at(entry)
             }
-            None => Item::gone("open work"),
+            None => Item::aged("open work, which item unknown", None),
         })
     }
 
@@ -698,53 +710,70 @@ impl Reader<'_> {
         })
     }
 
-    /// `Yes` only on a row linked to the message: its `reply_to`, or an event
-    /// of the ask it is. `No` only once the turn is over, the rows have seen
-    /// the turn that took the message, and it wrote nothing to the sender since.
+    /// `Yes` only on a row of the agent's linked to the message: its
+    /// `reply_to`, or its own event on the ask the message is. `No` only once
+    /// the turn is over, the rows have seen the turn that took the message, and
+    /// the agent wrote nothing to the sender since it was created.
     fn replied(&self) -> rusqlite::Result<Replied> {
         let Some(session) = &self.session else {
             return Ok(Replied::Unknown("no session on record".into()));
         };
-        let last: Option<LastMessage> = self
+        let last = self
             .conn
             .query_row(
                 "SELECT id, turn_id,
                         wanting_reply OR EXISTS (SELECT 1 FROM mono_asks a WHERE a.id = m.id),
-                        delivered_at, from_mono_id, from_session_id
+                        created_at, delivered_at, from_mono_id, from_session_id,
+                        (SELECT COUNT(*) FROM mono_messages o
+                          WHERE o.handled_by_session = m.handled_by_session
+                            AND o.delivered_at = m.delivered_at)
                    FROM mono_messages m
                   WHERE handled_by_session = ?1 AND delivered_at IS NOT NULL
                   ORDER BY delivered_at DESC, id DESC LIMIT 1",
                 [session.as_str()],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
+                    Ok(LastMessage {
+                        id: row.get(0)?,
+                        turn: row.get(1)?,
+                        wanted: row.get(2)?,
+                        created: row.get(3)?,
+                        delivered: row.get(4)?,
+                        from_mono: row.get(5)?,
+                        from_session: row.get(6)?,
+                        together: row.get(7)?,
+                    })
                 },
             )
             .optional()?;
-        let Some((id, turn, wanted, delivered, from_mono, from_session)) = last else {
+        let Some(last) = last else {
             return Ok(Replied::Unknown("no delivered message on record".into()));
         };
+        let id = &last.id;
+        if last.together > 1 {
+            return Ok(Replied::Unknown(format!(
+                "{id} and {} more delivered at the same moment, so which came last is unknown",
+                last.together - 1
+            )));
+        }
         let reply: Option<(String, bool)> = self
             .conn
             .query_row(
                 "SELECT id, COALESCE(reply_to = ?2, 0) OR id IN (
                           SELECT message_id FROM mono_ask_events
-                           WHERE ask_id = ?2 AND message_id IS NOT NULL) AS linked
+                           WHERE ask_id = ?2 AND message_id IS NOT NULL
+                             AND kind IN ('ack', 'question', 'update')) AS linked
                    FROM mono_messages
-                  WHERE created_at >= ?1 AND status NOT IN ('rejected', 'dropped')
+                  WHERE from_session_id = ?3 AND status NOT IN ('rejected', 'dropped')
                     AND tool IN ('send_message', 'reply')
-                    AND (reply_to = ?2
-                         OR id IN (SELECT message_id FROM mono_ask_events
-                                    WHERE ask_id = ?2 AND message_id IS NOT NULL)
-                         OR (from_session_id = ?3 AND (to_mono_id = ?4 OR to_session_id = ?5)))
+                    AND (linked OR (created_at >= ?1 AND (to_mono_id = ?4 OR to_session_id = ?5)))
                   ORDER BY linked DESC, created_at, id LIMIT 1",
-                params![delivered, id, session.as_str(), from_mono, from_session],
+                params![
+                    last.created,
+                    id,
+                    session.as_str(),
+                    last.from_mono,
+                    last.from_session
+                ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
@@ -764,13 +793,13 @@ impl Reader<'_> {
         if activity.running {
             return Ok(Replied::Unknown(format!("{id}, its turn still runs")));
         }
-        let took = turn.is_some() && turn == activity.turn_id;
-        if !took && delivered > activity.updated_wall {
+        let took = last.turn.is_some() && last.turn == activity.turn_id;
+        if !took && last.delivered >= activity.updated_wall {
             return Ok(Replied::Unknown(format!(
                 "{id}, the turn that took it is not recorded yet"
             )));
         }
-        let why = match (wanted, took) {
+        let why = match (last.wanted, took) {
             (false, _) => "it wanted no reply",
             (true, false) => "its last turn did not take it",
             (true, true) => "its last turn took it",
