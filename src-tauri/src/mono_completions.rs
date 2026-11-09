@@ -12,7 +12,7 @@
 //! Rust except for its request id, its Mono, its session, its notice and
 //! whether it has a result. A row without one is a turn that still runs, or
 //! one that stopped with no watcher left to report it (the stall detector's
-//! `Rows::load`, ADE-271).
+//! `owed_results`, ADE-271).
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
