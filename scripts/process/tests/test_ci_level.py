@@ -104,8 +104,9 @@ class Main(unittest.TestCase):
             stale = self.run_script(repo, "pull_request", "false", "1", "o/r", "b" * 40)
             self.assertEqual(stale.returncode, 1)
             # The output comes first, so the full set still runs and `ci` reports the red.
-            self.assertTrue(stale.stdout.startswith("level=full\n"), stale.stdout)
-            self.assertIn(head, stale.stdout)
+            # Exactly that line: anything else on stdout voids GITHUB_OUTPUT (PR #592 run 42585298831).
+            self.assertEqual(stale.stdout, "level=full\n")
+            self.assertIn(head, stale.stderr)
 
     def test_a_push_needs_no_merge_ref(self):
         with tempfile.TemporaryDirectory() as repo:
