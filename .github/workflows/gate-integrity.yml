@@ -10,11 +10,11 @@ name: gate-integrity
 # body and label checks see the new state. NON-INPUT below is the one exception.
 #
 # NON-INPUT: adding or removing a label on this short list runs nothing, because no gate
-# check reads it (tests/test_stop_useless_runs.py). Any other label re-runs the gate, so
-# a new label fails safe. The expression is repeated because `if`, `name` and `concurrency`
-# cannot share one. github.event.label is empty on every other action, so the list never
-# matches them. The jobs of such a run must not keep their required names: a skipped
-# required check counts as passed, and it would replace a red gate/integrity.
+# check reads it (scripts/process/tests/test_stop_useless_runs.py). Any other label re-runs
+# the gate, so a new label fails safe. github.event.label is empty on every other action, so
+# the list never matches them. The jobs of such a run must not keep their required names: a
+# skipped required check counts as passed, and it would replace a red gate/integrity. GitHub
+# lists a skipped job under the unevaluated name expression, which is not a required name.
 on:
   pull_request_target:
     branches: [tyler/main]
