@@ -825,6 +825,72 @@ it("offers cascade deletion for a session-linked worktree but not the main copy"
   );
 });
 
+it("refuses a worktree another Space's session uses before the dialog opens (T18)", async () => {
+  vi.mocked(listWorktrees).mockResolvedValue({
+    worktrees: [
+      { ...tree, path: "/repo", branch: "main", isMain: true },
+      {
+        ...tree,
+        sessionIds: ["mine"],
+        otherSpaceSessions: [{ sessionId: "theirs", spaceId: "space-1" }],
+      },
+    ],
+    defaultRoot: "/repo-worktrees",
+  });
+  const onDeleteSessions = vi.fn().mockResolvedValue(true);
+  const onRemove = vi.fn().mockResolvedValue(undefined);
+  await act(async () =>
+    root.render(
+      createElement(WorktreesPage, { cwd: "/repo", onDeleteSessions, onRemove }),
+    ),
+  );
+  await act(async () =>
+    document
+      .querySelector<HTMLButtonElement>('[aria-label="Delete feature"]')!
+      .click(),
+  );
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+    "A session in space-1 uses this worktree.",
+  );
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(onDeleteSessions).not.toHaveBeenCalled();
+  expect(onRemove).not.toHaveBeenCalled();
+});
+
+it("shows a backend's T18 recheck in the dialog's error line, deleting nothing", async () => {
+  vi.mocked(listWorktrees).mockResolvedValue({
+    worktrees: [
+      { ...tree, path: "/repo", branch: "main", isMain: true },
+      { ...tree, sessionIds: ["mine"] },
+    ],
+    defaultRoot: "/repo-worktrees",
+  });
+  const message = "A session in Space 1 uses this worktree.";
+  const onCheckRemove = vi.fn().mockRejectedValue(message);
+  const onDeleteSessions = vi.fn().mockResolvedValue(true);
+  await act(async () =>
+    root.render(
+      createElement(WorktreesPage, {
+        cwd: "/repo",
+        onCheckRemove,
+        onDeleteSessions,
+        onRemove: vi.fn(),
+      }),
+    ),
+  );
+  await act(async () =>
+    document
+      .querySelector<HTMLButtonElement>('[aria-label="Delete feature"]')!
+      .click(),
+  );
+  await act(async () =>
+    document.querySelector<HTMLButtonElement>('[role="switch"]')!.click(),
+  );
+  await act(async () => button("Delete worktree and session").click());
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(message);
+  expect(onDeleteSessions).not.toHaveBeenCalled();
+});
+
 it.each(["file", "terminal", "native"] as const)(
   "keeps every session when a %s blocker prevents worktree deletion",
   async (blocker) => {

@@ -1,3 +1,4 @@
+import type { Space } from "../../spaces/model/spaces";
 import { invoke } from "@tauri-apps/api/core";
 import { appendReadyHandoff, buildDeterministicHandoff } from "../../sessions/model/handoff";
 import {
@@ -20,7 +21,10 @@ export type Worktree = {
   missing: boolean;
   dirty: boolean | null;
   unpushed: number | null;
+  /** The calling window's Space's sessions on this worktree. */
   sessionIds: string[];
+  /** Every other Space's: they refuse the delete (spec T18). */
+  otherSpaceSessions?: { sessionId: string; spaceId: string }[];
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
@@ -164,16 +168,30 @@ export function worktreeSessionIds(
   >[],
 ) {
   const ids = new Set(tree.sessionIds);
+  const others = new Set(tree.otherSpaceSessions?.map((row) => row.sessionId));
   for (const session of sessions) {
     // Live sessions override their last saved context.
     ids.delete(session.id);
     if (
+      !others.has(session.id) &&
       !session.worktreeRemoved &&
       isEqualOrInside(session.worktreeCwd || session.cwd, tree.path)
     )
       ids.add(session.id);
   }
   return [...ids];
+}
+
+/** Why this worktree may not be deleted from this Space (T18), or undefined. */
+export function worktreeRefusal(
+  tree: Worktree,
+  spaces: readonly Pick<Space, "id" | "name">[],
+): string | undefined {
+  const other = tree.otherSpaceSessions?.[0];
+  if (!other) return undefined;
+  const name =
+    spaces.find((space) => space.id === other.spaceId)?.name ?? other.spaceId;
+  return `A session in ${name} uses this worktree.`;
 }
 
 export const NO_BRANCH_LABEL = "No branch selected";

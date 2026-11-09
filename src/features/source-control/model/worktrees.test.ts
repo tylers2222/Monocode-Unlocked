@@ -10,6 +10,7 @@ import {
   detachSessionWorktree,
   assertWorktreeFilesClosed,
   worktreeDeletedExternally,
+  worktreeRefusal,
   worktreeSessionIds,
   type Worktree,
 } from "./worktrees";
@@ -253,5 +254,29 @@ describe("worktrees removed outside the app", () => {
     // An unmounted volume takes the parent with it; keep the session bound.
     dirs.delete("/repo-worktrees");
     expect(await worktreeDeletedExternally(tree.path)).toBe(false);
+  });
+});
+
+describe("a worktree other Spaces use (T18)", () => {
+  const shared: Worktree = {
+    ...tree,
+    sessionIds: ["mine"],
+    otherSpaceSessions: [{ sessionId: "theirs", spaceId: "space-1" }],
+  };
+  const live = (id: string) => ({ id, cwd: tree.path });
+
+  it("counts only this Space's sessions, even when another Space's is open", () => {
+    expect(worktreeSessionIds(shared, [live("theirs"), live("mine")])).toEqual(["mine"]);
+  });
+
+  it("names the Space that refuses the delete", () => {
+    const spaces = [{ id: "space-1", name: "Space 1" }];
+    expect(worktreeRefusal(shared, spaces)).toBe(
+      "A session in Space 1 uses this worktree.",
+    );
+    expect(worktreeRefusal(shared, [])).toBe(
+      "A session in space-1 uses this worktree.",
+    );
+    expect(worktreeRefusal(tree, spaces)).toBeUndefined();
   });
 });

@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "../../../shared/ui/icons";
 import { revealPath } from "../../../platform/tauri/fs";
+import { spacesView } from "../../spaces/model/activeSpace";
 import { useProjectWorktrees } from "../hooks/useProjectWorktrees";
 import { isEqualOrInside, pathKey, prettyCwd, projectName } from "../../../shared/lib/paths";
 import {
@@ -22,6 +23,7 @@ import {
 import type { Session } from "../../sessions/model/session";
 import {
   checkWorktreeRemoval,
+  worktreeRefusal,
   worktreeSessionIds,
   type RemoveWorktree,
   type Worktree,
@@ -219,8 +221,9 @@ export function WorktreesPage({
                   aria-label={`Delete ${tree.branch ?? "worktree"}`}
                   title={blocked ?? "Delete worktree"}
                   onClick={() => {
-                    setError(undefined);
-                    setDeleting(tree);
+                    const refusal = worktreeRefusal(tree, spacesView().spaces);
+                    setError(refusal);
+                    if (!refusal) setDeleting(tree);
                   }}
                   className="rounded-md p-1.5 text-content/40 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-25"
                 >
