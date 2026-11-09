@@ -631,3 +631,5 @@ export function noticeSentence(notice: MonoNotice): {
     text: `${notice.recipient} ${words.verb} “${notice.line}${cut}”`,
   };
 }
+
+// Scratch line for a CI probe. Never merged.
