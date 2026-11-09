@@ -127,6 +127,7 @@ SOURCE_SPACES = {
     "provider_accounts": f"id <> '{DEFAULT_LOGIN}'",
     "space_accounts": "1",
     "space_projects": "1",
+    "space_project_links": "1",
     "space_project_accounts": "1",
     "account_route_grants": "1",
 }
