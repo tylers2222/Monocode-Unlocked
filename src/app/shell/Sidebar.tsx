@@ -203,6 +203,7 @@ import {
   ProjectPickerPopover,
   SearchableProjectPicker,
 } from "../../features/projects/ui/SearchableProjectPicker";
+import { AddFromSpaceEntry } from "../../features/projects/ui/AddFromSpaceEntry";
 import { useRailTooltip } from "./RailTooltip";
 import { useProjectMenu } from "./useProjectMenu";
 import { SessionFiltersMenu } from "../../features/sessions/ui/SessionFiltersMenu";
@@ -2228,6 +2229,7 @@ function SidebarComponent({
                 onDismiss={onClose}
                 onSelectProject={onSelectProject}
                 onOpenProject={onOpenProject}
+                footerAction={addFromSpaceAction}
                 onProjectContextMenu={headerProjectMenu.open}
                 projectMenuActive={headerProjectMenu.isActive}
               />
@@ -3463,6 +3465,15 @@ export function noteProjectStep(to: string, delta: number) {
 
 export const Sidebar = memo(SidebarComponent);
 
+/** "Add from another Space…" in a picker's footer, beside "New project". */
+const addFromSpaceAction = (close: () => void) => (
+  <AddFromSpaceEntry
+    className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content"
+    iconClassName="size-4 shrink-0"
+    onAdded={close}
+  />
+);
+
 /** Project picker whose rows open the shared project context menu. */
 function SearchableProjectPickerWithMenu({
   onRemoveProject,
@@ -3483,6 +3494,7 @@ function SearchableProjectPickerWithMenu({
     <>
       <SearchableProjectPicker
         {...pickerProps}
+        footerAction={pickerProps.onOpenProject ? addFromSpaceAction : undefined}
         onProjectContextMenu={projectMenu.open}
         projectMenuActive={projectMenu.isActive}
       />

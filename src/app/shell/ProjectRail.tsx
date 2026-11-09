@@ -96,6 +96,10 @@ import { GithubStarPrompt } from "./GithubStarPrompt";
 import { Popover } from "../../shared/ui/Popover";
 import { OPEN_REMOTE_PROJECT_EVENT } from "../../features/connections/model/connections";
 import {
+  ADD_FROM_SPACE_FLYOUT,
+  AddFromSpaceEntry,
+} from "../../features/projects/ui/AddFromSpaceEntry";
+import {
   useRemoteMachineOnline,
   useRemoteMachines,
 } from "../../features/connections/model/connections";
@@ -1298,6 +1302,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
           onDismiss={() => setOpen(false)}
           role="menu"
           aria-label="Open project"
+          ignore={ADD_FROM_SPACE_FLYOUT}
           className="p-1"
         >
           <button
@@ -1324,6 +1329,12 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
             <Internet className="size-3.5 shrink-0" strokeWidth={1.75} />
             Open folder on a machine…
           </button>
+          <AddFromSpaceEntry
+            menuItem
+            className={`${item} aria-expanded:bg-content/8 aria-expanded:text-content`}
+            iconClassName="size-3.5 shrink-0"
+            onAdded={() => setOpen(false)}
+          />
         </Popover>
       ) : null}
     </>
