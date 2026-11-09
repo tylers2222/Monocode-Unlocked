@@ -268,8 +268,11 @@ class WorkflowWiring(unittest.TestCase):
         self.assertEqual(set(callers), {"ci.yml", "e2e.yml", "native.yml"})
         for name, body in callers.items():
             with self.subTest(workflow=name):
-                self.assertIn('ci_changes.py github "$EVENT" "$HEAD"', body)
-                self.assertIn("HEAD: ${{ github.sha }}", body)
+                self.assertIn("          EVENT: ${{ github.event_name }}\n"
+                              "          HEAD: ${{ github.sha }}\n"
+                              "        run: |\n"
+                              "          set -euo pipefail\n"
+                              '          python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"\n', body)
                 self.assertNotIn("pull_request.base.sha", body)
 
 
