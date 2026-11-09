@@ -71,14 +71,11 @@ class ParseLive(unittest.TestCase):
 
 class StaleReason(unittest.TestCase):
     def test_a_merge_commit_holding_the_head_is_fine(self):
-        self.assertIsNone(stale_reason("pull_request", HEAD, HEAD))
+        self.assertIsNone(stale_reason(HEAD, HEAD))
 
     def test_another_head_no_parent_or_no_head_is_stale(self):
         for head, held in ((HEAD, "b" * 40), (HEAD, None), ("", ""), ("", None)):
-            self.assertIn("merge commit", stale_reason("pull_request", head, held))
-
-    def test_only_pull_requests_have_a_merge_ref(self):
-        self.assertIsNone(stale_reason("push", "", None))
+            self.assertIn("merge commit", stale_reason(head, held))
 
 
 class Main(unittest.TestCase):
