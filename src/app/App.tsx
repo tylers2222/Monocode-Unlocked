@@ -502,28 +502,22 @@ import {
   rebasePath,
   resolveWorkspacePath,
 } from "../shared/lib/paths";
-import {
-  rebaseProjectData,
-  removeProjectData,
-} from "../features/projects/model/projectData";
+import { rebaseProjectData } from "../features/projects/model/projectData";
+import { useProjectWindowRemoval } from "./model/useProjectWindowRemoval";
 import { spacesView } from "../features/spaces/model/activeSpace";
 import {
-  archiveProjectInSpace,
   listProjectInSpace,
   openListedProjects,
-  projectAfterLeaving,
   restoreProjectInSpace,
   shownProjects,
 } from "../features/spaces/model/spaceProjects";
 import * as milestones from "../features/milestones/model/milestones";
 import * as approvals from "../features/approvals/model/approvals";
 import {
-  forgetProjectLocation,
   rememberProjectLocation,
   synchronizeProjectLocation,
 } from "../features/projects/model/projectLocation";
 import {
-  forgetProject,
   lastProjectPath,
   loadRecents,
   loadPinnedProjects,
@@ -6826,140 +6820,29 @@ function Workspace({
     [],
   );
 
-  const onRemoveProject = useCallback(
-    (path: string, options: { purgeData: boolean }) => {
-      const normalized = normalizeProjectPath(path);
-      const wasCurrent = sameProjectPath(projectCwdRef.current, normalized);
-      const remaining = options.purgeData
-        ? forgetProject(normalized)
-        : archiveProjectInSpace(normalized);
-      if (options.purgeData) {
-        forgetProjectLocation(normalized);
-        setSidebarTabSelection((current) =>
-          sameProjectPath(current.project, normalized)
-            ? { project: "~", tab: loadProjectSidebarTab("~") }
-            : current,
-        );
-      }
-      setRecents(remaining);
-
-      const tabs = tabsRef.current;
-      const sessions = sessionsRef.current;
-      const projectTabs = filterTabsForProject(tabs, sessions, normalized);
-      const projectTabIds = new Set(projectTabs.map((tab) => tab.id));
-      const projectSessions = sessions.filter((session) =>
-        sameProjectPath(session.cwd, normalized),
-      );
-      const projectSessionIds = new Set(
-        projectSessions.map((session) => session.id),
-      );
-
-      if (options.purgeData) {
-        const cachedOrLoading = new Set([
-          ...loadedSessionCache.current.keys(),
-          ...sessionLoads.current.keys(),
-        ]);
-        for (const sessionId of cachedOrLoading) {
-          invalidateLoadedSession(sessionId);
-        }
-        for (const session of projectSessions) {
-          pendingPersist.current.delete(session.id);
-          for (const queued of session.queuedMessages ?? [])
-            turnWatchers.current.cancel(queued.id);
-          if (session.busy) {
-            const gen = (turnGen.current.get(session.id) ?? 0) + 1;
-            turnGen.current.set(session.id, gen);
-            // Nothing runs under this gen; settling it refuses a late attach.
-            turnWatchers.current.settle(session.id, gen, {
-              status: "cancelled",
-              text: "",
-            });
-            for (const id of sessionChildHarnesses(session)) {
-              void cancelHarnessTurn(id, session.id);
-            }
-          }
-          for (const id of sessionChildHarnesses(session)) {
-            void forgetHarnessSession(id, session.id);
-          }
-          lastPersisted.current.delete(session.id);
-        }
-        void removeProjectData(normalized);
-      } else {
-        for (const session of projectSessions) {
-          if (session.busy) continue;
-          // The session leaves memory, so its queue no longer drains here.
-          for (const queued of session.queuedMessages ?? [])
-            turnWatchers.current.cancel(queued.id, QUEUED_FOLLOW_UP_ARCHIVED);
-          if (shouldPersistSession(session)) {
-            rememberLoadedSession(loadedSessionCache.current, session);
-          }
-          persistSession(session);
-          pendingPersist.current.delete(session.id);
-          for (const id of sessionChildHarnesses(session)) {
-            void forgetHarnessSession(id, session.id);
-          }
-        }
-      }
-
-      let nextTabs = tabs.filter((tab) => !projectTabIds.has(tab.id));
-      let nextSessions = sessions.filter((session) => {
-        if (!projectSessionIds.has(session.id)) return true;
-        return !options.purgeData && session.busy;
-      });
-      let nextActiveTabId = activeTabIdRef.current;
-
-      if (nextTabs.length === 0) {
-        const fallback = nextSessions[0];
-        const session = newDefaultSession("~", fallback?.runtimeMode);
-        const tab = newTab(session.id);
-        nextSessions = [...nextSessions, session];
-        nextTabs = [tab];
-        nextActiveTabId = tab.id;
-      } else if (projectTabIds.has(nextActiveTabId)) {
-        nextActiveTabId = nextTabs[0]?.id ?? nextActiveTabId;
-      }
-
-      sessionsRef.current = nextSessions;
-      tabsRef.current = nextTabs;
-      activeTabIdRef.current = nextActiveTabId;
-      setSessions(nextSessions);
-      setTabs(nextTabs);
-      if (nextActiveTabId !== activeTabId) {
-        setActiveTabId(nextActiveTabId);
-      }
-      setDirtyFiles((prev) => {
-        const updated = new Set(prev);
-        for (const tab of projectTabs) {
-          for (const file of [
-            ...tab.editorPanes.flatMap((pane) => pane.files),
-            ...(tab.terminalPanes ?? []).flatMap((pane) => pane.files),
-          ]) {
-            updated.delete(file.id);
-          }
-        }
-        return updated;
-      });
-      setProjectTerminals((prev) =>
-        prev.filter((dock) => !sameProjectPath(dock.projectPath, normalized)),
-      );
-
-      if (wasCurrent) {
-        const next = projectAfterLeaving(
-          remaining,
-          normalized,
-          spacesView().projectList,
-        );
-        if (next) {
-          onSelectProject(next.path);
-          setProjectCwd(next.path);
-        } else {
-          setProjectCwd("~");
-          setComposerFocused(true);
-        }
-      }
-    },
-    [activeTabId, invalidateLoadedSession, onSelectProject, persistSession],
-  );
+  const onRemoveProject = useProjectWindowRemoval({
+    tabsRef,
+    sessionsRef,
+    activeTabIdRef,
+    projectCwdRef,
+    pendingPersist,
+    lastPersisted,
+    loadedSessionCache,
+    turnWatchers,
+    invalidateLoadedSession,
+    persistSession,
+    onSelectProject,
+    setRecents,
+    setSessions,
+    setTabs,
+    setActiveTabId,
+    setDirtyFiles,
+    setProjectTerminals,
+    setSidebarTabSelection,
+    setHistory,
+    setProjectCwd,
+    setComposerFocused,
+  });
 
   const onRestoreProject = useCallback(
     (path: string) => {
