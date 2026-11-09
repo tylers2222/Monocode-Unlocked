@@ -460,6 +460,7 @@ fn a_missed_notice_names_the_session_its_result_came_from() {
         .unwrap();
     turn(&mut scene.world, &child, "c1", true);
     ran_a_turn(&mut scene.world, &chat);
+    scene.world.advance(MINUTE);
     turn(&mut scene.world, &child, "c1", false);
     let conn_row = finished(&scene.mono, "req-1", &child, Some("notice-1"));
     mono_completions::hold(&scene.world.conn(), WINDOW, &[conn_row]).unwrap();
