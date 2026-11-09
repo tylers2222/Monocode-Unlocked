@@ -3,7 +3,7 @@ use std::process::Command;
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
+use tauri::{Manager, Runtime, State, WebviewWindow};
 
 use crate::fs::{expand_home, git_checked, git_diff_files_for, path_to_js, resolve_repo_path};
 use crate::session_store::SessionStore;
@@ -924,11 +924,12 @@ pub fn git_worktree_remove<R: Runtime>(
     Ok(removed)
 }
 
-/// A lead's window may show another Space, so the Space here is the Space of
-/// the worktree's own sessions: only sessions of two Spaces refuse (T18).
+/// S is the calling window's Space, as for the page's removal (T18). A lead's
+/// cleanup from a window on another Space is refused and the worktree stays; the
+/// orchestrator records the refusal on the task and carries on.
 #[tauri::command(async)]
 pub fn git_orchestration_worktree_remove<R: Runtime>(
-    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     cwd: String,
     path: String,
     store: State<'_, SessionStore>,
@@ -943,14 +944,11 @@ pub fn git_orchestration_worktree_remove<R: Runtime>(
     }
     let tree = removal_target(&root, &path)?;
     let branch = tree.branch.clone();
+    let space = crate::spaces::window_space(&store, window.label())?;
     let conn = store.lock_conn()?;
-    let on_it = sessions_on(&conn, &path)?;
-    let space = on_it
-        .first()
-        .map_or("", |session| session.space_id.as_str());
-    let removed = remove_with_sessions(&conn, &root, &path, space, true, true)?;
+    let removed = remove_with_sessions(&conn, &root, &path, &space, true, true)?;
     drop(conn);
-    crate::spaces::projects::emit_changed(&app);
+    crate::spaces::projects::emit_changed(window.app_handle());
     if let Some(branch) = branch {
         if branch.starts_with("mc/orch-") {
             if let Err(error) = git(Path::new(&removed.project_cwd), &["branch", "-D", &branch]) {
@@ -1276,6 +1274,12 @@ mod tests {
         let removed = remove_with_sessions(&conn, &root, path, "space-2", true, true).unwrap();
         assert_eq!(removed.session_ids, ["two-shared"]);
         assert!(!path.exists());
+        conn.execute_batch("ALTER TABLE sessions RENAME TO gone")
+            .unwrap();
+        assert!(
+            refuse_other_space(&conn, path, "space-2").is_err(),
+            "a failed read passed the guard"
+        );
     }
 
     #[test]

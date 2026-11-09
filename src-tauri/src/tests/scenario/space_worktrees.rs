@@ -89,13 +89,34 @@ impl Rig {
 
     fn remove_for_a_lead(&self) -> Result<worktrees::WorktreeRemoval, String> {
         worktrees::git_orchestration_worktree_remove(
-            self.app.handle().clone(),
+            super::agent_sandbox::main_window(&self.app),
             self.cwd.clone(),
             self.path.clone(),
             self.app.state(),
             self.app.state(),
             self.app.state(),
         )
+    }
+
+    fn check(&self) -> Result<(), String> {
+        worktrees::git_worktree_check_remove(
+            super::agent_sandbox::main_window(&self.app),
+            self.cwd.clone(),
+            self.path.clone(),
+            true,
+            self.app.state(),
+            self.app.state(),
+        )
+    }
+
+    /// The window's own switch, which moves its Space and the active one.
+    fn show(&self, space: &str) {
+        let patch = SettingsPatch {
+            active_space_id: Some(space.into()),
+            ..SettingsPatch::default()
+        };
+        let window = super::agent_sandbox::main_window(&self.app);
+        spaces::spaces_settings_set(window, self.app.state(), patch).unwrap();
     }
 
     fn delete_row(&self, id: &str) {
@@ -152,16 +173,8 @@ fn a_window_sees_and_removes_only_for_its_own_space() {
     let json = serde_json::to_value(tree).unwrap();
     assert_eq!(json["otherSpaceSessions"][0]["spaceId"], TWO);
 
-    let check = worktrees::git_worktree_check_remove(
-        window,
-        rig.cwd.clone(),
-        rig.path.clone(),
-        true,
-        rig.app.state(),
-        rig.app.state(),
-    );
     assert_eq!(
-        check,
+        rig.check(),
         Err(REFUSAL.to_owned()),
         "T18 refuses before any delete"
     );
@@ -170,21 +183,16 @@ fn a_window_sees_and_removes_only_for_its_own_space() {
     assert_eq!(rig.events(), 0, "a refusal tells no window");
 
     rig.delete_row("one-a");
-    let window = super::agent_sandbox::main_window(&rig.app);
-    let patch = SettingsPatch {
-        active_space_id: Some(TWO.into()),
-        ..SettingsPatch::default()
-    };
-    spaces::spaces_settings_set(window, rig.app.state(), patch).unwrap();
+    rig.show(TWO);
     rig.remove().expect("Space 2 removes its own worktree");
     assert!(!rig.worktree.exists());
     assert_eq!(rig.events(), 1, "a removal tells the windows");
 }
 
-/// Defect: an orchestration worktree in a Space the window does not show cannot
-/// be cleaned up, or sessions of two Spaces do not stop it.
+/// B1. Defect: a lead's cleanup removes a worktree used only by another Space's
+/// sessions, with `force`, because S comes from anywhere but the calling window.
 #[test]
-fn a_leads_cleanup_stops_only_for_sessions_of_two_spaces() {
+fn a_leads_cleanup_answers_for_the_calling_windows_space() {
     let rig = Rig::new();
     assert_eq!(
         rig.remove_for_a_lead().err().as_deref(),
@@ -192,8 +200,62 @@ fn a_leads_cleanup_stops_only_for_sessions_of_two_spaces() {
         "sessions of two Spaces stop the lead's cleanup too"
     );
     rig.delete_row("one-a");
+    assert_eq!(
+        rig.remove_for_a_lead().err().as_deref(),
+        Some(REFUSAL),
+        "a window on Space 1 removed a worktree only Space 2 uses"
+    );
+    assert!(rig.worktree.exists(), "the worktree went");
+    assert_eq!(rig.events(), 0, "a refusal tells no window");
+
+    rig.show(TWO);
     rig.remove_for_a_lead()
-        .expect("a window on Space 1 cleans up a Space 2 lead's worktree");
+        .expect("a window on Space 2 cleans up Space 2's worktree");
     assert!(!rig.worktree.exists());
     assert_eq!(rig.events(), 1);
+}
+
+/// B2. Defect: a failed read of the sessions counts as no sessions, so the check
+/// passes and the page goes on to delete conversations.
+#[test]
+fn a_failed_session_read_refuses() {
+    let rig = Rig::new();
+    let store: tauri::State<'_, SessionStore> = rig.app.state();
+    store
+        .lock_conn()
+        .unwrap()
+        .execute_batch("ALTER TABLE sessions RENAME TO gone")
+        .unwrap();
+    assert!(rig.check().is_err(), "the check passed on a failed read");
+    assert!(rig.remove().is_err(), "the removal passed on a failed read");
+    assert!(
+        rig.remove_for_a_lead().is_err(),
+        "the lead's cleanup passed on a failed read"
+    );
+    assert!(rig.worktree.exists(), "the worktree went");
+    assert_eq!(rig.events(), 0);
+}
+
+/// B3. Defect: a removal reads the app's active Space, which another window's
+/// switch moves, not the calling window's.
+#[test]
+fn another_windows_switch_does_not_move_a_removal() {
+    let rig = Rig::new();
+    rig.show(FIRST_SPACE);
+    let store: tauri::State<'_, SessionStore> = rig.app.state();
+    let patch = SettingsPatch {
+        active_space_id: Some(TWO.into()),
+        ..SettingsPatch::default()
+    };
+    spaces::set_settings(&store, &patch).unwrap();
+
+    let window = super::agent_sandbox::main_window(&rig.app);
+    let listed = worktrees::git_worktrees(window, rig.cwd.clone(), rig.app.state()).unwrap();
+    let tree = listed.worktrees.iter().find(|tree| !tree.is_main).unwrap();
+    assert_eq!(tree.session_ids, ["one-a"], "it listed the active Space's");
+    assert_eq!(tree.other_space_sessions[0].space_id, TWO);
+    assert_eq!(rig.check(), Err(REFUSAL.to_owned()));
+    assert_eq!(rig.remove().err().as_deref(), Some(REFUSAL));
+    assert_eq!(rig.remove_for_a_lead().err().as_deref(), Some(REFUSAL));
+    assert!(rig.worktree.exists());
 }
