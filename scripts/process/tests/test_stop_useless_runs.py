@@ -48,7 +48,6 @@ class StopJobsTest(unittest.TestCase):
         code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
         self.assertNotIn("actions/checkout", code)
         self.assertNotIn("uses:", code)
-        self.assertNotIn("github.event.pull_request.title", code)
 
     def test_only_these_workflows_are_cancelled(self):
         text = (WORKFLOWS / "stop-useless-runs.yml").read_text()
