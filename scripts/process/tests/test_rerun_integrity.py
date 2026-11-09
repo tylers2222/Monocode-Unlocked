@@ -56,14 +56,6 @@ class RerunRulesTest(unittest.TestCase):
                 11: []}
         self.assertEqual(pick(runs, jobs, "gate/integrity"), ("job", 103, 10))
 
-    def test_a_run_for_a_label_no_gate_check_reads_is_never_picked(self):
-        noop = [{"id": 1, "name": "no gate input changed (tier)", "conclusion": "skipped"},
-                {"id": 2, "name": "no gate input changed", "conclusion": "skipped"}]
-        runs = [{"id": 10}, {"id": 11}]
-        self.assertEqual(pick(runs, {10: self.jobs("success"), 11: noop}, "gate/integrity"), ("job", 2, 10))
-        self.assertEqual(pick(runs, {10: self.jobs("cancelled"), 11: noop}, "gate/integrity"), ("run", 10), "the whole re-run needs the job too")
-        self.assertIsNone(pick(runs, {10: noop, 11: noop}, "gate/integrity"))
-
     def test_no_usable_run_reruns_the_newest_whole(self):
         runs = [{"id": 10}, {"id": 11}]
         self.assertEqual(pick(runs, {10: self.jobs("cancelled"), 11: self.jobs("failure")}, "gate/integrity"), ("run", 11))

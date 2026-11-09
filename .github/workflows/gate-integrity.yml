@@ -7,24 +7,18 @@ name: gate-integrity
 # is fetched as git objects for `git diff` and never checked out, installed, built
 # or sourced. The scripts it runs come from the default-branch checkout too.
 # A label or body change re-runs the gate: a hand-set tier label is put back, and the
-# body and label checks see the new state. NON-INPUT below is the one exception.
-#
-# NON-INPUT: adding or removing a label on this short list runs nothing, because no gate
-# check reads it (scripts/process/tests/test_stop_useless_runs.py). Any other label re-runs
-# the gate, so a new label fails safe. github.event.label is empty on every other action, so
-# the list never matches them. The jobs of such a run must not keep their required names: a
-# skipped required check counts as passed, and it would replace a red gate/integrity. GitHub
-# lists a skipped job under the unevaluated name expression, which is not a required name.
+# body and label checks see the new state.
 on:
   pull_request_target:
     branches: [tyler/main]
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
-# One run at a time per head, and an event never cancels a running gate. Its run waits and
-# starts after the running one ends, so the last result read the last state; GitHub
-# replaces a waiting run with a newer one. A run on an older head reports on that head only.
+# One run at a time per head, and no pull request event cancels a running gate. Its run
+# waits and starts after the running one ends, so the last result read the last state;
+# GitHub replaces a waiting run with a newer one. A run on an older head reports on that
+# head only. rerun_integrity.py still cancels a run it is about to re-run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ contains(fromJSON('["process-fix", "test-only"]'), github.event.label.name) && github.run_id || github.event.pull_request.head.sha }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -32,8 +26,7 @@ permissions:
 
 jobs:
   tier:
-    name: ${{ contains(fromJSON('["process-fix", "test-only"]'), github.event.label.name) && 'no gate input changed (tier)' || 'gate/tier' }}
-    if: ${{ !contains(fromJSON('["process-fix", "test-only"]'), github.event.label.name) }}
+    name: gate/tier
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,11 +48,11 @@ jobs:
         run: python3 scripts/process/tier.py "$PR" --apply
 
   integrity:
-    name: ${{ contains(fromJSON('["process-fix", "test-only"]'), github.event.label.name) && 'no gate input changed' || 'gate/integrity' }}
+    name: gate/integrity
     needs: tier
     # A skipped required check counts as passed, so this job runs even when
-    # gate/tier fails, and its last step fails it. Only NON-INPUT skips it, under another name.
-    if: ${{ !cancelled() && !contains(fromJSON('["process-fix", "test-only"]'), github.event.label.name) }}
+    # gate/tier fails, and its last step fails it.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
