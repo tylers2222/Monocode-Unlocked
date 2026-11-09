@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -39,9 +39,11 @@ class Repo:
     """A scratch git repo shaped like a pull_request run: `head` adds the given files on a PR
     branch, `base_later` then adds its files to the base branch, and `merge` merges the PR
     into the base. `lower` adds its files to the base before the PR forks, as a stacked PR's
-    lower branch does. `fork` is the commit the PR forked from: a stale base.sha."""
+    lower branch does. `moves` maps old paths to new ones, moved by `head` with git mv. `fork`
+    is the commit the PR forked from: a stale base.sha."""
 
-    def __init__(self, files: list[str], base_later: Sequence[str] = (), lower: Sequence[str] = ()):
+    def __init__(self, files: list[str], base_later: Sequence[str] = (), lower: Sequence[str] = (),
+                 moves: Mapping[str, str] | None = None):
         self.dir = tempfile.TemporaryDirectory()
         self.path = Path(self.dir.name)
         git(self.path, "init", "-q", "-b", "base")
@@ -52,6 +54,9 @@ class Repo:
         self.commit(lower, "lower branch")
         self.fork = git(self.path, "rev-parse", "HEAD")
         git(self.path, "switch", "-qc", "pr")
+        for old, new in (moves or {}).items():
+            (self.path / new).parent.mkdir(parents=True, exist_ok=True)
+            git(self.path, "mv", old, new)
         self.commit(files, "head")
         self.head = git(self.path, "rev-parse", "HEAD")
         git(self.path, "switch", "-q", "base")
@@ -161,7 +166,7 @@ class FirstParentDiff(unittest.TestCase):
     NO_DIFF = "ci-changes: no diff could be read (failed or empty): every job runs"
     WORKFLOW = ".github/workflows/ci.yml"
 
-    def repo(self, *args: list[str], **kwargs: list[str]) -> Repo:
+    def repo(self, *args: list[str], **kwargs: Sequence[str] | Mapping[str, str]) -> Repo:
         repo = Repo(*args, **kwargs)
         self.addCleanup(repo.dir.cleanup)
         return repo
@@ -201,13 +206,26 @@ class FirstParentDiff(unittest.TestCase):
         self.assertEqual(self.jobs(repo, cwd=repo.clone(depth=2))[0], set())
 
     def test_a_commit_that_is_no_merge_runs_every_job(self):
-        repo = self.repo(PR_429_SCRIPT)
-        for merge in [repo.head, repo.root]:
+        repo = self.repo(["docs/notes.md"])
+        octopus = git(repo.path, "commit-tree", f"{repo.merge}^{{tree}}", "-m", "three parents",
+                      "-p", f"{repo.merge}^1", "-p", repo.head, "-p", repo.root)
+        for merge in [repo.head, repo.root, octopus]:
             with self.subTest(merge=merge):
                 self.assertEqual(self.jobs(repo, merge=merge), (EVERY_JOB, self.NO_DIFF))
 
     def test_a_merge_with_an_empty_diff_runs_every_job(self):
         self.assertEqual(self.jobs(self.repo([], base_later=[self.WORKFLOW])), (EVERY_JOB, self.NO_DIFF))
+
+    def test_a_file_moved_out_of_a_gated_folder_still_runs_its_jobs(self):
+        repo = self.repo([], lower=["src/a.ts"], moves={"src/a.ts": "docs/a.ts"})
+        self.assertEqual(git(repo.path, "diff", "--name-only", "-M", f"{repo.merge}^1", repo.merge), "docs/a.ts",
+                         "git sees a rename, so only the old path can run the jobs")
+        self.assertEqual(self.jobs(repo), ({"browser", "host", "check", "e2e-linux", "e2e-macos", "mobile"},
+                                           "ci-changes: 2 changed files; runs: browser host check e2e-linux e2e-macos mobile"))
+
+    def test_the_old_form_with_a_base_argument_is_a_usage_error(self):
+        run = subprocess.run([sys.executable, str(SCRIPT), "github", "pull_request", "aaa", "bbb"], capture_output=True, text=True)
+        self.assertEqual((run.returncode, run.stdout), (2, ""), "exit 2 turns the changes job red; no job line reaches GITHUB_OUTPUT")
 
 
 class FileClasses(unittest.TestCase):
