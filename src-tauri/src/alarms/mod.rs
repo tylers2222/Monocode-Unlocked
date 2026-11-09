@@ -125,11 +125,7 @@ pub(crate) mod test_taps {
     pub(crate) use super::text::Replied;
 
     /// What episode `id`'s alarm would say it is stuck on at `active`.
-    pub(crate) fn stuck(
-        conn: &rusqlite::Connection,
-        id: &str,
-        active: i64,
-    ) -> super::text::Stuck {
+    pub(crate) fn stuck(conn: &rusqlite::Connection, id: &str, active: i64) -> super::text::Stuck {
         let episode = super::route::episode(conn, id).unwrap().unwrap();
         super::stuck::read(conn, &episode, active)
     }
