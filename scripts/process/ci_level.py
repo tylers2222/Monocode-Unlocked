@@ -98,7 +98,8 @@ def main(argv: Sequence[str]) -> int:
     print(f"level={'full' if full else 'fast'}")
     stale = stale_reason(head, merge_head()) if event == "pull_request" else None
     if stale:
-        print(f"::error::ci-level: {stale}. Push again or wait for GitHub to update the merge ref.")
+        # On stderr: stdout goes to GITHUB_OUTPUT, and a line like this would void the file.
+        print(f"::error::ci-level: {stale}. Push again or wait for GitHub to update the merge ref.", file=sys.stderr)
         return 1
     return 0
 
