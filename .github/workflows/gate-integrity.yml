@@ -13,9 +13,13 @@ on:
     branches: [tyler/main]
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
+# One run at a time per head, and no pull request event cancels a running gate. Its run
+# waits and starts after the running one ends, so the last result read the last state;
+# GitHub replaces a waiting run with a newer one. A run on an older head reports on that
+# head only. rerun_integrity.py still cancels a run it is about to re-run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

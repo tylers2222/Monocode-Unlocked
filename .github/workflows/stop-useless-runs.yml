@@ -1,0 +1,44 @@
+name: stop-useless-runs
+
+# Called by a job in ci.yml, e2e.yml or gate.yml when a required job of a pull request
+# failed: that head cannot merge, so the other jobs on it cannot change the result. This
+# cancels the CI, E2E and gate-mutation runs of the head.
+#
+# A cancel never makes a check pass: in a cancelled run, `ci` and `gate/mutation` report
+# failure (if: always()) and e2e-linux reports cancelled. gate/lint and gate/integrity are
+# not on the list: gate/lint lists every problem in one run, and gate/integrity must always
+# report. A failed gate/mutation does not call this: mutation-exempt tickets may merge with it.
+#
+# This job holds an actions: write token, so it checks out nothing and runs no pull
+# request code. A fork's token is read-only: the cancel then warns and the run goes on.
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          SELF: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # A run whose pull_requests names only other PRs (one branch, two bases) is kept.
+          ids=$(gh api -X GET "repos/$REPO/actions/runs" -f head_sha="$HEAD_SHA" -f event=pull_request -F per_page=100 \
+            --jq ".workflow_runs[] | select(.status != \"completed\")
+              | select(.path | IN(\".github/workflows/ci.yml\", \".github/workflows/e2e.yml\", \".github/workflows/gate-mutation.yml\"))
+              | select((.pull_requests | length) == 0 or any(.pull_requests[]; .number == $PR)) | .id")
+          # This run last: cancelling it ends this step.
+          for id in $(grep -vx "$SELF" <<<"$ids" || true) $(grep -x "$SELF" <<<"$ids" || true); do
+            # A run can finish between the list and the cancel; that is not an error.
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null && echo "cancelled $id" \
+              || echo "::warning::run $id was not cancelled"
+          done
