@@ -167,8 +167,8 @@ impl Activity {
     }
 }
 
-/// The agent's last delivered message: id, turn, whether it wants a reply,
-/// when it was delivered, and its sender's Mono and session.
+/// The agent's last delivered message: id, turn, whether it wants a reply (an
+/// ask wants its ack), when it was delivered, and its sender's Mono and session.
 type LastMessage = (String, Option<String>, bool, i64, Option<String>, String);
 
 /// A listed ask that is still open, as the rows hold it.
@@ -525,7 +525,7 @@ impl Reader<'_> {
         let last = self.last_turn();
         let stuck = asks
             .iter()
-            .max_by_key(|ask| (ask.taken_in(last), ask.created_wall));
+            .max_by_key(|ask| (ask.taken_in(last), ask.created_wall, ask.id.clone()));
         if let Some(ask) = stuck {
             let what = format!(
                 "{}, from {}",
@@ -707,8 +707,10 @@ impl Reader<'_> {
         let last: Option<LastMessage> = self
             .conn
             .query_row(
-                "SELECT id, turn_id, wanting_reply, delivered_at, from_mono_id, from_session_id
-                   FROM mono_messages
+                "SELECT id, turn_id,
+                        wanting_reply OR EXISTS (SELECT 1 FROM mono_asks a WHERE a.id = m.id),
+                        delivered_at, from_mono_id, from_session_id
+                   FROM mono_messages m
                   WHERE handled_by_session = ?1 AND delivered_at IS NOT NULL
                   ORDER BY delivered_at DESC, id DESC LIMIT 1",
                 [session.as_str()],

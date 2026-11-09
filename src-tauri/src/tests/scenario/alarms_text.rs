@@ -14,7 +14,7 @@ use super::world::World;
 use crate::alarms::taps::Pipe;
 use crate::alarms::test_taps;
 use crate::mono_completions::{self, Owner};
-use crate::mono_messages::{Body, SessionId};
+use crate::mono_messages::{self, Body, SessionId};
 use crate::mono_roster::MonoRole;
 
 const DAY: i64 = 24 * 60 * MINUTE;
@@ -152,6 +152,7 @@ fn an_old_open_ask_not_tied_to_the_stuck_item_is_only_counted() {
     scene.ask("old-1", "Old work one");
     scene.world.jump_wall(30 * DAY);
     scene.ask("fresh", "Fresh work");
+    scene.world.jump_wall(MINUTE);
     scene.ask("same-turn", "Same turn work");
     scene.takes_a_turn("t1");
     scene.world.advance(N);
@@ -241,30 +242,32 @@ fn idle_open_work_names_the_child_result_then_the_ask_then_the_todo() {
 // one; the other result is not counted.
 #[test]
 fn the_child_result_that_ended_last_is_the_stuck_item() {
-    let mut world = World::new("att-results");
-    world.add_mono_in("atr-general", MonoRole::Giga, &[P]);
-    let mono = world.add_mono_in("atr-mono", MonoRole::Mono, &[P]);
-    let older = world.add_session("atr-older", P, Some(mono.chat.as_str()));
-    let newer = world.add_session("atr-newer", P, Some(mono.chat.as_str()));
-    align(&mut world);
-    ran_a_turn(&mut world, &mono.chat);
-    ran_a_turn(&mut world, &older);
-    world.advance(4 * MINUTE);
-    ran_a_turn(&mut world, &newer);
-    world.advance(N);
-    let open: Vec<_> = episodes(&world)
-        .into_iter()
-        .filter(|episode| episode.open)
-        .collect();
-    let [episode] = <[_; 1]>::try_from(open).unwrap();
-    let stuck = test_taps::stuck(&world.conn(), &episode.id, world.active_ms());
+    let mut scene = lead("att-results");
+    let older = scene
+        .world
+        .add_session("atr-older", P, Some(scene.lead.as_str()));
+    let newer = scene
+        .world
+        .add_session("atr-newer", P, Some(scene.lead.as_str()));
+    align(&mut scene.world);
+    ran_a_turn(&mut scene.world, &scene.lead.clone());
+    ran_a_turn(&mut scene.world, &older);
+    scene.world.advance(4 * MINUTE);
+    ran_a_turn(&mut scene.world, &newer);
+    scene.world.advance(N);
+
+    let episode = scene.episode();
+    let stuck = test_taps::stuck(&scene.world.conn(), &episode, scene.world.active_ms());
     assert!(stuck.item.starts_with("the result of "), "{}", stuck.item);
     assert!(
         stuck.item.ends_with("its last turn ended 15 min ago"),
         "{}",
         stuck.item
     );
-    assert_eq!(stuck.work.unwrap().other, vec![("child result", 1)]);
+    assert_eq!(
+        stuck.work.unwrap().other,
+        vec![("ask", 1), ("child result", 1)]
+    );
 }
 
 // Defect (ADE-277): a wake_missed alarm does not say which message waits,
@@ -447,8 +450,20 @@ fn a_missed_notice_names_the_session_its_result_came_from() {
     align(&mut scene.world);
     let chat = scene.mono.chat.clone();
     let child = scene.lead.clone();
+    let start: String = scene
+        .world
+        .conn()
+        .query_row("SELECT id FROM mono_asks", [], |row| row.get(0))
+        .unwrap();
     turn(&mut scene.world, &child, "c1", true);
     ran_a_turn(&mut scene.world, &chat);
+    scene.world.tool(
+        &session_caller(&child, P),
+        "acked",
+        "ack",
+        json!({"ask_id": start, "message": "Done"}),
+        &[&chat],
+    );
     turn(&mut scene.world, &child, "c1", false);
     let conn_row = finished(&scene.mono, "req-1", &child, Some("notice-1"));
     mono_completions::hold(&scene.world.conn(), WINDOW, &[conn_row]).unwrap();
@@ -534,6 +549,7 @@ fn a_hung_turn_is_the_item_and_only_its_ask_is_tied() {
     align(&mut scene.world);
     scene.world.start_turn(&lead, "t1");
     turn(&mut scene.world, &lead, "t1", true);
+    mono_messages::confirm_openers(&scene.world.conn(), &lead, "t1", scene.world.now()).unwrap();
     claude.line(Pipe::Stdout, SAID);
     scene.world.advance(MINUTE);
     claude.line(Pipe::Stdout, SAID);
@@ -774,13 +790,10 @@ fn the_moved_line_gives_its_own_session_and_those_it_started() {
         .find(|episode| episode.actor == format!("session:{}", scene.lead.as_str()))
         .unwrap();
     let stuck = test_taps::stuck(&scene.world.conn(), &opened.id, scene.world.active_ms());
-    assert!(
-        stuck.moved.ends_with("; sessions it started 5 min ago")
-            || stuck.moved.ends_with("; sessions it started 10 min ago"),
-        "{}",
-        stuck.moved
+    assert_eq!(
+        stuck.moved, "its own 17 min ago; sessions it started 15 min ago",
+        "the lone session moved 10 min ago and is not its own"
     );
-    assert!(stuck.moved.starts_with("its own "), "{}", stuck.moved);
 }
 
 fn insert_episode(world: &World, id: &str, actor: &str, cause: &str, text: Option<&str>) {
