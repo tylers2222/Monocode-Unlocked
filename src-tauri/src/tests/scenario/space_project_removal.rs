@@ -87,7 +87,7 @@ impl Rig {
     fn automation(&self, id: &str, name: &str, cwd: &str) {
         self.sql(
             "INSERT INTO automations (id, definition_json, enabled, next_run_at, updated_at)
-             VALUES (?1, ?2, 1, NULL, 1)",
+             VALUES (?1, ?2, 1, 1, 1)",
             params![id, json!({ "name": name, "cwd": cwd }).to_string()],
         );
     }
