@@ -401,6 +401,34 @@ describe("writes around the delete (G10)", () => {
     expect(commands()).toContain("spaces_project_delete");
   });
 
+  it("does not write back a row saved while another write holds the flush open (R18)", async () => {
+    vi.useFakeTimers();
+    try {
+      db.rows.push({ id: "fresh-flush", cwd: P, spaceId: "space-2" });
+      let release = () => {};
+      db.saveGate = new Promise((done) => (release = done));
+      const holding = upsertSession(session("one-a"));
+      const deleting = deleteProjectInSpace(P, ["fresh-flush"]);
+      await vi.advanceTimersByTimeAsync(0);
+      const saving = upsertSession(session("fresh-flush"));
+      await vi.advanceTimersByTimeAsync(0);
+      const beforeRelease = commands();
+      release();
+      await Promise.all([holding, deleting, saving]);
+
+      expect(beforeRelease).not.toContain("spaces_project_delete");
+      expect(commands()).toContain("spaces_project_delete");
+      const saved = vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "session_upsert")
+        .map(([, args]) => (args as { session: { id: string } }).session.id);
+      expect(saved).toEqual(["one-a"]);
+      expect(db.rows.map((row) => row.id)).not.toContain("fresh-flush");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("takes only this Space's rows out of saving while the delete runs", async () => {
     db.rows.push({ id: "fresh-chats", cwd: P, spaceId: "space-2" });
     let release = () => {};
