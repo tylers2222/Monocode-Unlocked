@@ -14,6 +14,7 @@ use super::state::{
 };
 use super::tree::{self, Edge, Edges};
 use super::unseen;
+use super::wake_retry;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
@@ -73,7 +74,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            actor         TEXT PRIMARY KEY,
            stall_minutes INTEGER NOT NULL CHECK (stall_minutes BETWEEN 5 AND 240)
          );",
-    )
+    )?;
+    wake_retry::ensure_table(conn)
 }
 
 /// The indexes the pass's queries on other modules' tables use, so a pass
@@ -477,6 +479,7 @@ pub(crate) fn outbox_key(episode: &str, level: i64) -> String {
 struct Pass<'a> {
     tx: &'a Connection,
     rows: &'a Rows,
+    live: &'a Live,
     counted: HashSet<(String, String)>,
     settings: Settings,
     active: i64,
@@ -666,6 +669,22 @@ impl Pass<'_> {
                 },
                 _,
             ) => {
+                let now = (self.active, self.wall);
+                let stall = (cause, stalled_since);
+                // Neither writes an episode: the next pass judges the agent
+                // again, so a stall that lasts still opens and escalates.
+                if wake_retry::moved_on(tx, self.live, &row.session, stall, now)
+                    || (cause == Cause::WakeMissed
+                        && wake_retry::held(
+                            tx,
+                            &mut self.notices,
+                            (actor, &row.session),
+                            stalled_since,
+                            (self.active, limits.wake_ms),
+                        ))
+                {
+                    return Ok(());
+                }
                 let wakes = self.wakes(actor, &row.session, facts.gone);
                 self.open(actor, facts, row, &wakes, (cause, stalled_since))
             }
@@ -698,6 +717,18 @@ pub(crate) fn run(
         sources.live.put_back(taken);
     }
     passed
+}
+
+/// A pass that took the hub just before a record landed: the record waits in
+/// the hub while the pass runs. Only a thread race reaches this in the app.
+#[cfg(test)]
+pub(crate) fn pass_before_record(
+    conn: &Connection,
+    active_ms: i64,
+    wall_ms: i64,
+    sources: &Sources,
+) -> rusqlite::Result<Notices> {
+    pass(conn, active_ms, wall_ms, &Taken::default(), sources)
 }
 
 fn pass(
@@ -746,6 +777,7 @@ fn pass(
     let mut pass = Pass {
         tx: &tx,
         rows: &rows,
+        live: sources.live,
         counted: counted(&tx, &waiting_on)?,
         settings: Settings::load(&tx)?,
         active: active_ms,

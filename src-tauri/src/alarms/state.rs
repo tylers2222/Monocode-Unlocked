@@ -380,7 +380,7 @@ impl Status {
 /// Whether the agent moved since its episode's stall began: a turn started
 /// or ended after it, a hung turn printed or ran a tool, or the dialog it
 /// was stuck on was answered or withdrawn.
-fn progressed(facts: &Facts, episode: &Episode) -> bool {
+pub(crate) fn progressed(facts: &Facts, episode: &Episode) -> bool {
     let since = episode.stalled_since;
     let boundary = match facts.turn {
         Turn::Idle {

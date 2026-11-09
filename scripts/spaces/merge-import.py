@@ -121,6 +121,7 @@ KEEP = {
     "mono_completions": "MonoCode 2's windows at quit",
     "space_settings": "the target's own settings",
     "alarm_settings": "the target's own alarm settings",
+    "alarm_wake_retries": "one wake retry again on Space 1's clock costs nothing",
     "checkout_leases": "the app takes a lease again on the next start",
 }
 # Spaces tables in a source that a Spaces build opened: rows matching the

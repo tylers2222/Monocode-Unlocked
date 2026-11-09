@@ -22,6 +22,9 @@ const HOUR: i64 = 60 * MINUTE;
 pub(super) const N: i64 = 15 * MINUTE;
 /// The detector runs once per 5 s of active time.
 pub(super) const PASS: i64 = 5 * SECOND;
+/// The default wake threshold, which a missed wake's one retry also waits
+/// (ADE-276).
+const WAKE: i64 = 2 * MINUTE;
 
 /// `mono` starts lead `id` with the longest deadline, so no ask reminder
 /// waits for it during a scenario.
@@ -289,8 +292,9 @@ fn a_message_not_taken_for_two_minutes_is_wake_missed() {
         "wanting_reply": false, "intent": "new",
     });
     world.call(&giga, "g1", "wake-1", Tool::SendMessage, input, &mono);
-    // First seen at the next pass, one slice on.
-    world.advance(2 * MINUTE);
+    // First seen at the next pass, one slice on; then the threshold and the
+    // wait of its one retry (ADE-276).
+    world.advance(2 * WAKE);
     assert_eq!(episodes(&world), Vec::new());
     world.advance(PASS);
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
@@ -625,7 +629,7 @@ fn a_paused_chat_misses_no_wake_on_any_path() {
         assert_eq!(episodes(&world), Vec::new(), "{kind}: paused on purpose");
 
         set_queue_status(&world, &mono.chat, "active");
-        world.advance(2 * MINUTE + 2 * PASS);
+        world.advance(2 * WAKE + 2 * PASS);
         let causes: Vec<String> = episodes(&world)
             .into_iter()
             .map(|episode| episode.cause)
@@ -705,7 +709,7 @@ fn a_queued_item_no_turn_took_is_wake_missed_once() {
         json!([{"id": "notice-1", "text": "The lead finished"}]),
         "active",
     );
-    world.advance(2 * MINUTE);
+    world.advance(2 * WAKE);
     assert_eq!(episodes(&world), Vec::new());
     world.advance(PASS);
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
@@ -757,7 +761,7 @@ fn a_completion_result_alarms_once_and_only_for_a_live_mono_chat() {
             )
             .unwrap();
     }
-    world.advance(2 * MINUTE + PASS);
+    world.advance(2 * WAKE + PASS);
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
     assert_eq!(
         (episode.actor.as_str(), episode.cause.as_str()),

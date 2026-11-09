@@ -201,7 +201,7 @@ fn a_mono_monitoring_a_running_session_misses_no_wake() {
     turn(&mut world, &lead, "lead-turn", true);
     hold(&world, &[watching(&mono, "req-1", &lead)]);
     ran_a_turn(&mut world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "first hand-off");
 
     hold(
@@ -212,7 +212,7 @@ fn a_mono_monitoring_a_running_session_misses_no_wake() {
         ],
     );
     ran_a_turn(&mut world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "second hand-off");
 }
 
@@ -247,7 +247,8 @@ fn a_finished_result_no_turn_took_is_wake_missed() {
         world.advance(2 * MINUTE - PASS);
         assert_eq!(episodes(&world), Vec::new(), "{stage}: under two minutes");
 
-        world.advance(3 * PASS);
+        // Past the threshold and the wait of its one retry (ADE-276).
+        world.advance(2 * MINUTE + 3 * PASS);
         let [episode] = <[_; 1]>::try_from(episodes(&world)).unwrap();
         assert_eq!(
             (
