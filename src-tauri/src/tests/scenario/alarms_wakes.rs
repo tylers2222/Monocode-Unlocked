@@ -403,7 +403,7 @@ fn a_continue_that_opens_its_turn_does_not_alarm() {
 fn a_stop_its_live_watcher_delivers_does_not_alarm() {
     for (stage, wait) in [
         ("the next pass", PASS),
-        ("just under two minutes", 2 * MINUTE - 2 * PASS),
+        ("just under four minutes", 4 * MINUTE - 2 * PASS),
     ] {
         let name = format!("alarm-live-watcher-{}", wait / PASS);
         let (mut world, mono, lead) = monitoring_a_running_session(&name);
@@ -487,6 +487,15 @@ fn counted_before_this_build(world: &World, request: &str) {
         .unwrap();
 }
 
+/// The Mono's own episodes. The waits here take the lead's open ask past N, and
+/// that lead's correct `idle_open_work` alarm is not what these scenarios count.
+fn monos_episodes(world: &World) -> Vec<super::alarms_stall::Episode> {
+    episodes(world)
+        .into_iter()
+        .filter(|episode| episode.actor == "mono:alb-mono")
+        .collect()
+}
+
 fn listed_sorted(world: &World) -> Vec<String> {
     let mut listed = listed_notices(world);
     listed.sort();
@@ -503,7 +512,11 @@ fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() 
     counted_before_this_build(&world, "req-1");
     turn(&mut world, &lead, "lead-turn", false);
     world.advance(4 * MINUTE + 2 * PASS);
-    assert_eq!(episodes(&world).len(), 1, "the counted row stays silent");
+    assert_eq!(
+        monos_episodes(&world).len(),
+        1,
+        "the counted row stays silent"
+    );
 
     let new_session = start_lead(&world, &mono, "alb-new");
     let still_running = start_lead(&world, &mono, "alb-running");
@@ -519,7 +532,7 @@ fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() 
     world.advance(2 * PASS);
     turn(&mut world, &new_session, "new-turn", false);
     world.advance(4 * MINUTE + 2 * PASS);
-    let all = episodes(&world);
+    let all = monos_episodes(&world);
     assert_eq!(all.len(), 2, "the new request alarms");
     assert!(all[1].open && all[1].cause == "wake_missed", "{all:?}");
     assert_eq!(
@@ -530,11 +543,19 @@ fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() 
 
     ran_a_turn(&mut world, &mono.chat);
     world.advance(4 * MINUTE + 2 * PASS);
-    assert_eq!(episodes(&world).len(), 2, "the new request alarms once");
+    assert_eq!(
+        monos_episodes(&world).len(),
+        2,
+        "the new request alarms once"
+    );
 
     turn(&mut world, &still_running, "running-turn", false);
     world.advance(4 * MINUTE + 2 * PASS);
-    assert_eq!(episodes(&world).len(), 3, "the running row was not counted");
+    assert_eq!(
+        monos_episodes(&world).len(),
+        3,
+        "the running row was not counted"
+    );
     assert_eq!(
         listed_sorted(&world),
         ["req-1", "req-2", "req-3"],

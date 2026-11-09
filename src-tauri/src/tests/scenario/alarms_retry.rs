@@ -249,12 +249,13 @@ fn a_retry_that_errors_still_alarms() {
     assert_eq!(world.store().alarms.last_fault(), None);
 }
 
-// Defect: an agent that cannot start a turn goes silent. The window holds a
-// usage limit, a dead provider or a removed worktree; here no window starts
-// the turn, and the row says what it can.
+// Defect (review M1): a removed worktree with items queued goes silent. The
+// window saves that queue paused, so a row with only `worktree_removed` set
+// hides it.
 #[test]
-fn an_agent_that_cannot_start_a_turn_still_alarms() {
+fn a_removed_worktree_with_a_queue_still_alarms() {
     let (mut world, _, mono) = message_waiting("alarm-retry-no-start");
+    save_queue(&world, &mono.chat, json!([{"id": "left-1"}]), "paused");
     world
         .conn()
         .execute(
@@ -264,6 +265,79 @@ fn an_agent_that_cannot_start_a_turn_still_alarms() {
         .unwrap();
     world.advance(2 * WAKE + PASS);
     assert_one_alarm_from_the_first_sight(&world, &mono.chat, WAKE);
+    assert_eq!(sends(&world), [GIGA]);
+}
+
+/// What `session.error` leaves after the retried turn: the rest of the queue
+/// paused, with reason `error`, or with the failed item's own error.
+fn the_provider_failed_the_turn(world: &mut World, chat: &SessionId, items: serde_json::Value) {
+    world.start_turn(chat, "retried");
+    turn(world, chat, "retried", true);
+    world.advance(PASS);
+    save_queue(world, chat, items, "paused");
+    turn(world, chat, "retried", false);
+    world.end_turn(chat, "retried", true);
+}
+
+// Defect (review B1): the retry's turn fails, the window pauses what is left,
+// and the detector reads that as a pause on purpose: no wake, no alarm, nobody
+// told, where the old code alarmed at 2 minutes.
+#[test]
+fn a_queue_a_failed_turn_paused_still_alarms_and_escalates() {
+    for (stage, reason, items) in [
+        ("error pause", Some("error"), json!([{"id": "left-1"}])),
+        (
+            "failed item",
+            None,
+            json!([{"id": "left-1", "error": "no"}]),
+        ),
+    ] {
+        let name = format!("alarm-retry-failed-{}", stage.replace(' ', "-"));
+        let (mut world, _, mono) = message_waiting(&name);
+        assert_eq!(named(&mut world, WAKE + PASS, &mono.chat), 1, "{stage}");
+        the_provider_failed_the_turn(&mut world, &mono.chat, items);
+        world
+            .conn()
+            .execute(
+                "UPDATE sessions SET queue_pause = ?2 WHERE id = ?1",
+                rusqlite::params![mono.chat.as_str(), reason],
+            )
+            .unwrap();
+        assert_eq!(named(&mut world, WAKE + PASS, &mono.chat), 1, "{stage}");
+        assert_eq!(episodes(&world), Vec::new(), "{stage}: its own retry first");
+        world.advance(WAKE);
+        assert_eq!(sends(&world), [GIGA], "{stage}");
+        world.advance(ESCALATE);
+        assert_eq!(sends(&world), [GIGA, "tyler"], "{stage}");
+    }
+}
+
+// Limit, by ruling: a queue the user stopped waits on purpose and opens no
+// alarm, even with items in it. An agent with open work still alarms at N.
+#[test]
+fn a_queue_the_user_stopped_opens_no_alarm() {
+    let (mut world, _, mono) = message_waiting("alarm-retry-user-stop");
+    save_queue(&world, &mono.chat, json!([{"id": "left-1"}]), "paused");
+    world.advance(4 * N);
+    assert_eq!(episodes(&world), Vec::new());
+}
+
+// Defect: the detector cannot see a chat with no activity row, and a queue the
+// window paused keeps it from getting one (`unseen` repeats the paused rule).
+#[test]
+fn a_chat_with_no_row_and_an_error_paused_queue_still_alarms() {
+    let mut world = World::new("alarm-retry-unseen-error");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    save_queue(&world, &mono.chat, json!([{"id": "left-1"}]), "paused");
+    world
+        .conn()
+        .execute(
+            "UPDATE sessions SET queue_pause = 'error' WHERE id = ?1",
+            [mono.chat.as_str()],
+        )
+        .unwrap();
+    world.advance(2 * WAKE + 2 * PASS);
     assert_eq!(sends(&world), [GIGA]);
 }
 
@@ -528,7 +602,8 @@ fn nothing_new_in_the_hub_drops_nothing() {
 
 // Limit, as the rest of the detector rules it (`next_state`): an archived
 // session is gone on purpose, and a gone agent opens nothing. This test holds
-// that the retry changes neither way, and that the row goes with the agent.
+// that the retry changes neither way, and that the activity row goes with the
+// agent. Its retry row stays: a returning agent has a new stalled-since.
 #[test]
 fn an_agent_archived_during_the_wait_keeps_the_gone_rule() {
     let (mut world, _, mono) = message_waiting("alarm-retry-gone");

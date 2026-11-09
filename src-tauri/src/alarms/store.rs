@@ -20,6 +20,16 @@ use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
 pub(super) const MINUTE_MS: i64 = 60_000;
 
+/// SQL on session `s`: its queue waits by the user's choice. A queue the window
+/// paused because a turn failed or an item could not be sent, or because the
+/// worktree went, waits on nobody's choice, and with no alarm it would wait for
+/// ever (ADE-276).
+pub(super) const PAUSED_ON_PURPOSE: &str = "s.queue_status IS 'paused'
+    AND s.queue_pause IS NOT 'error' AND s.worktree_removed IS NOT 1
+    AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(s.queued_messages_json)
+                      THEN s.queued_messages_json ELSE '[]' END) q
+                     WHERE json_type(q.value, '$.error') = 'text')";
+
 /// The per-agent stall threshold's bounds (section 9).
 pub(crate) const STALL_MINUTES: std::ops::RangeInclusive<i64> = 5..=240;
 
@@ -206,8 +216,8 @@ struct Rows {
     asks: Vec<(String, String, String)>,
     /// Whom each agent started or asked.
     edges: Edges,
-    /// The watched sessions whose queue the user paused: nothing waits for
-    /// their provider (review F1).
+    /// The watched sessions paused on purpose (`PAUSED_ON_PURPOSE`): nothing
+    /// waits for their provider (review F1).
     paused: HashSet<String>,
     /// The sessions a message waits for that no provider took.
     untaken: HashSet<String>,
@@ -342,8 +352,10 @@ impl Rows {
         let edges = edges(conn, &asks)?;
         let paused = strings(
             conn,
-            "SELECT s.id FROM agent_activity a JOIN sessions s ON s.id = a.session_id
-              WHERE s.queue_status = 'paused'",
+            &format!(
+                "SELECT s.id FROM agent_activity a JOIN sessions s ON s.id = a.session_id
+                  WHERE {PAUSED_ON_PURPOSE}"
+            ),
             [],
         )?
         .into_iter()
