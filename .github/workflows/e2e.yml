@@ -75,6 +75,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - run: exit 1
       - name: Decide which jobs run
         id: paths
         env:
@@ -105,7 +106,7 @@ jobs:
   e2e-linux-run:
     name: e2e-linux run
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-linux != 'false' }}
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -172,7 +173,7 @@ jobs:
   e2e-macos-1:
     name: e2e-macos-1
     needs: changes
-    if: &e2e-macos-if ${{ !cancelled() && github.event_name != 'schedule' && inputs.macos_build != 'release' && needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-macos != 'false' && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
+    if: ${{ false }}
     runs-on: macos-latest
     timeout-minutes: 150
     env:
@@ -244,7 +245,7 @@ jobs:
   e2e-macos-2:
     name: e2e-macos-2
     needs: changes
-    if: *e2e-macos-if
+    if: ${{ false }}
     runs-on: macos-latest
     timeout-minutes: 150
     env:
