@@ -233,6 +233,7 @@ class Workflows(unittest.TestCase):
         self.assertIn(f"&& {FULL} && needs.changes.outputs.e2e-macos != 'false' &&", self.job("e2e.yml", "e2e-macos-1"))
         self.assert_lines("e2e.yml", "e2e-macos-2", "if: *e2e-macos-if")
         self.assert_lines("native.yml", "desktop", f"if: ${{{{ !cancelled() && {FULL} && needs.changes.outputs.native != 'false' }}}}")
+        self.assert_lines("native.yml", "core", "if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}")
 
     def test_the_fast_level_keeps_only_ubuntu_legs(self):
         self.assertIn("needs.changes.outputs.level == 'fast' && fromJSON('[\"ubuntu-latest\"]') || "
