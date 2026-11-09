@@ -379,6 +379,36 @@ fn a_missed_reminder_names_its_ask_and_ties_it() {
     );
 }
 
+// Defect: with two wakes waiting, the newer is named as the stuck item, or
+// the older leaves the count.
+#[test]
+fn the_oldest_wake_is_the_stuck_item_and_the_other_is_counted() {
+    let mut scene = lead("att-oldest");
+    let start: String = scene
+        .world
+        .conn()
+        .query_row("SELECT id FROM mono_asks", [], |row| row.get(0))
+        .unwrap();
+    align(&mut scene.world);
+    ran_a_turn(&mut scene.world, &scene.lead.clone());
+    let key = format!("reminder:{start}:t5");
+    let recipient = format!("session:{}", scene.lead.as_str());
+    reminder(&scene.world, &key, &recipient, Some(&start));
+    scene.world.advance(MINUTE);
+    scene.tell("newer", "A newer message");
+    scene.world.advance(MINUTE + PASS);
+
+    let text = scene.alarm();
+    assert_eq!(
+        line(&text, "Stuck item: "),
+        format!("Stuck item: t5 reminder of ask {start}, 2 min old.")
+    );
+    assert_eq!(
+        line(&text, "Other open work: "),
+        "Other open work: 1 not tied to it (1 message)."
+    );
+}
+
 fn finished(mono: &Mono, request: &str, session: &SessionId, notice: Option<&str>) -> Value {
     let mut row = json!({
         "origin": {"monoId": mono.chat.as_str(), "turn": 1},
