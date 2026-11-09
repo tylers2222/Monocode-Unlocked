@@ -51,6 +51,8 @@ mod space_rows;
 mod space_scope;
 #[cfg(unix)]
 mod space_shared;
+#[cfg(unix)]
+mod space_worktrees;
 mod spaces;
 #[cfg(not(windows))]
 mod spaces_commands;
