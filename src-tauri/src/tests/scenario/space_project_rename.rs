@@ -290,3 +290,65 @@ fn a_lease_moves_with_its_folder_and_only_then() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// B1. Defect: the rekey commits apart from the rest of the rename, so a late
+/// failure leaves Mono lists, logins and a lease on the new path while the
+/// sessions and milestones stay on the old one.
+#[test]
+fn a_failed_rename_leaves_every_store_as_it_was() {
+    let rig = Rig::new();
+    let root = std::env::temp_dir().join(format!("ade263-t12-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("new")).unwrap();
+    let real = root.canonicalize().unwrap();
+    let old = real.join("old").to_string_lossy().into_owned();
+    let new = real.join("new").to_string_lossy().into_owned();
+
+    rig.assign(&old, TWO);
+    rig.link(FIRST_SPACE, &old);
+    rig.login(&old, "work");
+    rig.mono("holder", &json!([old]));
+    rig.sql(
+        "INSERT INTO automations (id, definition_json, enabled, next_run_at, updated_at)
+         VALUES ('nightly', ?1, 1, 1, 1)",
+        [json!({"name": "n", "cwd": old}).to_string()],
+    );
+    rig.sql(
+        "INSERT INTO checkout_leases (checkout_path, space_id, leased_at) VALUES (?1, ?2, 1)",
+        params![old, TWO],
+    );
+    rig.sql(
+        "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+         VALUES ('s', ?1, 'codex', 'm', 'auto', 't', 1, 1)",
+        [&old],
+    );
+    rig.sql(
+        "INSERT INTO milestones (id, project_path, title, status, sort_order, created_by, created_at, updated_at)
+         VALUES (?1, ?2, 'goal', 'idea', 0, 'user', 1, 1)",
+        params!["a".repeat(36), old],
+    );
+    let everything = || {
+        [
+            "SELECT project_path || ' ' || space_id FROM space_projects",
+            "SELECT space_id || ' ' || project_path FROM space_project_links",
+            "SELECT project_path || ' ' || account_id FROM space_project_accounts",
+            "SELECT id || ' ' || data_json FROM monos",
+            "SELECT id || ' ' || definition_json FROM automations",
+            "SELECT checkout_path || ' ' || space_id FROM checkout_leases",
+            "SELECT id || ' ' || cwd FROM sessions",
+            "SELECT id || ' ' || project_path FROM milestones",
+        ]
+        .map(|sql| rig.strings(sql))
+    };
+    let before = everything();
+    assert!(
+        before.iter().all(|rows| !rows.is_empty()),
+        "a store has no row to protect: {before:?}"
+    );
+
+    // The trailing slash breaks the milestones CHECK, after the rekey has run.
+    let error =
+        rebase_project(&rig.store.lock_conn().unwrap(), &old, &format!("{new}/")).unwrap_err();
+    assert!(error.to_string().contains("CHECK"), "{error}");
+    assert_eq!(everything(), before, "a failed rename changed a store");
+    std::fs::remove_dir_all(&root).unwrap();
+}
