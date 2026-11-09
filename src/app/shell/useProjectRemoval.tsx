@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   checkProjectArchive,
   checkProjectDelete,
 } from "../../features/projects/model/projectDeleteCheck";
 import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
+import { refusalMessage } from "../../features/spaces/model/spaces";
 
 type Point = { x: number; y: number };
 type RemovalTarget = Point & { path: string; projectKey: string; name: string };
@@ -14,17 +15,17 @@ type RemovalTarget = Point & { path: string; projectKey: string; name: string };
  * reopens the menu with it, since the menu has closed by then.
  */
 export function useProjectRemoval({
-  menuPath,
   closeMenu,
   reopenMenu,
   showRefusal,
   restoreFocus,
   onRemoveProject,
 }: {
-  menuPath: string | undefined;
-  closeMenu: () => void;
+  /** Closes this project's menu, if it is still the one open. */
+  closeMenu: (path: string) => void;
   reopenMenu: (menu: Point & { path: string; projectKey: string }, refusal: string) => void;
-  showRefusal: (refusal: string) => void;
+  /** Shows the refusal in this project's menu, if it is still the one open. */
+  showRefusal: (path: string, refusal: string) => void;
   restoreFocus: () => void;
   onRemoveProject: (
     path: string,
@@ -32,10 +33,6 @@ export function useProjectRemoval({
   ) => void | Promise<string | null>;
 }) {
   const [removing, setRemoving] = useState<RemovalTarget | null>(null);
-  const openMenuPath = useRef(menuPath);
-  useEffect(() => {
-    openMenuPath.current = menuPath;
-  }, [menuPath]);
 
   const whenAllowed = (
     check: (path: string) => Promise<string | null>,
@@ -43,34 +40,37 @@ export function useProjectRemoval({
     proceed: () => void,
   ) => {
     void check(path).then((refusal) => {
-      // The user closed or moved the menu while the check ran.
-      if (openMenuPath.current !== path) return;
-      if (refusal) showRefusal(refusal);
-      else proceed();
+      if (refusal !== null) {
+        showRefusal(path, refusal);
+        return;
+      }
+      closeMenu(path);
+      proceed();
     });
   };
 
   const confirmDelete = ({ x, y, path, projectKey }: RemovalTarget) => {
+    const reopen = (refusal: string) =>
+      reopenMenu({ x, y, path, projectKey }, refusal);
     const purge = onRemoveProject(path, { purgeData: true });
     setRemoving(null);
     restoreFocus();
-    void Promise.resolve(purge).then((refusal) => {
-      if (refusal) reopenMenu({ x, y, path, projectKey }, refusal);
-    });
+    void Promise.resolve(purge).then(
+      (refusal) => {
+        if (typeof refusal === "string") reopen(refusal);
+      },
+      (error: unknown) => reopen(refusalMessage(error)),
+    );
   };
 
   return {
     archive: (path: string) =>
       whenAllowed(checkProjectArchive, path, () => {
-        closeMenu();
         restoreFocus();
         onRemoveProject(path, { purgeData: false });
       }),
     askToDelete: (target: RemovalTarget) =>
-      whenAllowed(checkProjectDelete, target.path, () => {
-        closeMenu();
-        setRemoving(target);
-      }),
+      whenAllowed(checkProjectDelete, target.path, () => setRemoving(target)),
     dismiss: () => setRemoving(null),
     isRemoving: removing != null,
     dialog: removing ? (

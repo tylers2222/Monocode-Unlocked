@@ -5,7 +5,7 @@ import {
   type SessionSummary,
 } from "../../sessions/data/sessionStore";
 import type { Session } from "../../sessions/model/session";
-import { spacesView } from "../../spaces/model/activeSpace";
+import { loadSpaces, spacesView } from "../../spaces/model/activeSpace";
 import {
   checkProjectArchive as checkArchive,
   previewProjectDelete,
@@ -23,6 +23,9 @@ import { isRemoteProjectPath, sameProjectPath } from "./recents";
  * window knows, its queued messages and busy remote sessions.
  */
 type OpenSession = Session;
+
+export const SPACE_UNREAD_REFUSAL =
+  "This window's Space could not be read. Try again.";
 
 let openSessions = (): readonly OpenSession[] => [];
 
@@ -45,8 +48,8 @@ export function projectDisplayName(path: string): string {
 /**
  * T8's window half. The backend reads running turns; only the window knows its
  * queued messages and its busy remote sessions, which have no row. A queue
- * counts unless a stored row says it is another Space's. `anySpace` (T9) counts
- * every running session, and names the Space when none is here.
+ * counts unless a stored row says it is another Space's. `anySpace` (T9, T11)
+ * counts every running session, and names the Space when none is here.
  */
 export function windowRunningRefusal(
   path: string,
@@ -83,18 +86,30 @@ function spaceName(id: string): string {
 }
 
 /**
+ * The Space this window shows. It reads again if no read has succeeded, and
+ * throws if it still has no answer: a guard never passes for lack of one.
+ */
+async function readWindowSpace(): Promise<string> {
+  if (!spacesView().loaded) await loadSpaces();
+  const { loaded, activeSpaceId } = spacesView();
+  if (!loaded) throw new Error(SPACE_UNREAD_REFUSAL);
+  return activeSpaceId;
+}
+
+/**
  * Why Delete is refused right now, before its dialog opens and again before the
  * delete. The backend answers first: a Mono's refusal comes before a running
- * session's.
+ * session's. On the last Space (T11) a session running in any Space refuses.
  */
 export async function checkProjectDelete(path: string): Promise<string | null> {
   try {
-    await previewProjectDelete(path);
+    const { lastSpace } = await previewProjectDelete(path);
     return windowRunningRefusal(
       path,
-      spacesView().activeSpaceId,
+      await readWindowSpace(),
       await listSessionsByProject(path),
       openSessions(),
+      lastSpace,
     );
   } catch (error) {
     return refusalMessage(error);
@@ -110,7 +125,7 @@ export async function checkProjectArchive(path: string): Promise<string | null> 
     await checkArchive(path);
     return windowRunningRefusal(
       path,
-      spacesView().activeSpaceId,
+      await readWindowSpace(),
       await listSessionsByProject(path),
       openSessions(),
       true,

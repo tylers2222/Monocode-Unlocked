@@ -1,12 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
-import { __spacesTestReset, loadSpaces } from "../../spaces/model/activeSpace";
+import {
+  __spacesTestReset,
+  loadSpaces,
+  spacesView,
+} from "../../spaces/model/activeSpace";
 import {
   checkProjectArchive,
   checkProjectDelete,
   readProjectDeletePrompt,
   setOpenSessionsSource,
+  SPACE_UNREAD_REFUSAL,
 } from "./projectDeleteCheck";
 import {
   checkProjectArchive as checkArchive,
@@ -26,6 +31,8 @@ const db = {
   refusal: undefined as unknown,
   archiveRefusal: undefined as unknown,
   lastSpace: false,
+  /** Reads of the Spaces fail while this is set. */
+  loginsFail: false,
   otherSpaces: ["space-1"],
 };
 
@@ -43,6 +50,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "spaces_settings_get":
         return { activeSpaceId: db.active, routeGrantTtlMs: 1 };
       case "spaces_logins_list":
+        if (db.loginsFail) throw "database is locked";
         return [];
       case "session_list_by_project":
         return db.rows.filter((row) => row.cwd === args.cwd);
@@ -100,6 +108,7 @@ beforeEach(async () => {
   db.refusal = undefined;
   db.archiveRefusal = undefined;
   db.lastSpace = false;
+  db.loginsFail = false;
   db.otherSpaces = ["space-1"];
   __spacesTestReset();
   await loadSpaces();
@@ -148,6 +157,27 @@ describe("refusals (T7, T8, Mono chat)", () => {
     await expect(checkProjectDelete(P)).resolves.toBeNull();
   });
 
+  it("counts a session whose path is written another way", async () => {
+    const queuedMessages = [{ id: "q" }] as Session["queuedMessages"];
+    setOpenSessionsSource(() => [session("two-a", { cwd: `${P}/`, queuedMessages })]);
+    await expect(checkProjectDelete(P)).resolves.toBe(
+      "A session is running in vibtra here. Stop it first.",
+    );
+    await expect(checkProjectArchive(P)).resolves.toBe(
+      "A session is running in vibtra here. Stop it first.",
+    );
+  });
+
+  it("T11: refuses on a queue in another Space's session on the last Space", async () => {
+    db.lastSpace = true;
+    db.otherSpaces = [];
+    const queuedMessages = [{ id: "q" }] as Session["queuedMessages"];
+    setOpenSessionsSource(() => [session("one-a", { queuedMessages })]);
+    await expect(checkProjectDelete(P)).resolves.toBe(
+      "A session is running in vibtra in Space 1. Stop it first.",
+    );
+  });
+
   it("ignores a session in another project", async () => {
     setOpenSessionsSource(() => [
       session("two-a", { cwd: "/code/other", busy: true }),
@@ -160,6 +190,61 @@ describe("refusals (T7, T8, Mono chat)", () => {
     await expect(checkProjectDelete(P)).resolves.toBe("database is locked");
     db.refusal = new Error("gone");
     await expect(checkProjectDelete(P)).resolves.toBe("gone");
+  });
+});
+
+describe("a window whose Space read failed (B2)", () => {
+  const queuedMessages = [{ id: "q" }] as Session["queuedMessages"];
+  const unread = async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    __spacesTestReset();
+    db.loginsFail = true;
+    await loadSpaces();
+    expect(spacesView()).toMatchObject({ loaded: false, activeSpaceId: "space-1" });
+    setOpenSessionsSource(() => [session("two-a", { queuedMessages })]);
+  };
+
+  it("reads again and sees its own Space's queue", async () => {
+    await unread();
+    db.loginsFail = false;
+    await expect(checkProjectDelete(P)).resolves.toBe(
+      "A session is running in vibtra here. Stop it first.",
+    );
+    expect(spacesView().activeSpaceId).toBe("space-2");
+  });
+
+  it("reads again for Archive too", async () => {
+    await unread();
+    db.loginsFail = false;
+    await expect(checkProjectArchive(P)).resolves.toBe(
+      "A session is running in vibtra here. Stop it first.",
+    );
+  });
+
+  it("refuses Delete if the read still fails, even with nothing running", async () => {
+    await unread();
+    setOpenSessionsSource(() => []);
+    await expect(checkProjectDelete(P)).resolves.toBe(SPACE_UNREAD_REFUSAL);
+  });
+
+  it("refuses Archive if the read still fails", async () => {
+    await unread();
+    setOpenSessionsSource(() => []);
+    await expect(checkProjectArchive(P)).resolves.toBe(SPACE_UNREAD_REFUSAL);
+  });
+
+  it("does not read again once a read has succeeded", async () => {
+    vi.mocked(invoke).mockClear();
+    await checkProjectDelete(P);
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain(
+      "spaces_list",
+    );
+  });
+
+  it("puts the backend's refusal before a failed read", async () => {
+    await unread();
+    db.refusal = { code: "monoHeld", message: "Take it off." };
+    await expect(checkProjectDelete(P)).resolves.toBe("Take it off.");
   });
 });
 

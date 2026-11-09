@@ -31,13 +31,10 @@ const spies = {
   onRemoveProject: vi.fn(),
 };
 
-function Harness({ menuPath }: { menuPath: string | undefined }) {
-  removal = useProjectRemoval({ menuPath, ...spies });
+function Harness() {
+  removal = useProjectRemoval(spies);
   return removal.dialog;
 }
-
-const render = (menuPath: string | undefined) =>
-  act(async () => root.render(createElement(Harness, { menuPath })));
 
 const dialog = () => document.querySelector('[role="dialog"]');
 const press = (label: string) =>
@@ -55,7 +52,7 @@ beforeEach(async () => {
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await render(P);
+  await act(async () => root.render(createElement(Harness)));
 });
 
 afterEach(() => {
@@ -68,7 +65,7 @@ describe("Archive (T9)", () => {
   it("archives once the check passes, closing the menu first", async () => {
     await act(async () => removal.archive(P));
     expect(checkProjectArchive).toHaveBeenCalledWith(P);
-    expect(spies.closeMenu).toHaveBeenCalled();
+    expect(spies.closeMenu).toHaveBeenCalledWith(P);
     expect(spies.restoreFocus).toHaveBeenCalled();
     expect(spies.onRemoveProject).toHaveBeenCalledWith(P, { purgeData: false });
     expect(spies.showRefusal).not.toHaveBeenCalled();
@@ -77,21 +74,16 @@ describe("Archive (T9)", () => {
   it("shows a refusal and archives nothing", async () => {
     vi.mocked(checkProjectArchive).mockResolvedValue("A session is running.");
     await act(async () => removal.archive(P));
-    expect(spies.showRefusal).toHaveBeenCalledWith("A session is running.");
+    expect(spies.showRefusal).toHaveBeenCalledWith(P, "A session is running.");
     expect(spies.onRemoveProject).not.toHaveBeenCalled();
     expect(spies.closeMenu).not.toHaveBeenCalled();
   });
 
-  it("does nothing if the menu closed or moved while it checked", async () => {
-    let answer: (refusal: string | null) => void = () => {};
-    vi.mocked(checkProjectArchive).mockReturnValue(
-      new Promise((done) => (answer = done)),
-    );
-    act(() => removal.archive(P));
-    await render("/code/other");
-    await act(async () => answer(null));
+  it("treats an empty refusal text as a refusal", async () => {
+    vi.mocked(checkProjectArchive).mockResolvedValue("");
+    await act(async () => removal.archive(P));
+    expect(spies.showRefusal).toHaveBeenCalledWith(P, "");
     expect(spies.onRemoveProject).not.toHaveBeenCalled();
-    expect(spies.showRefusal).not.toHaveBeenCalled();
   });
 });
 
@@ -99,14 +91,14 @@ describe("Delete", () => {
   it("opens no dialog on a refusal, and shows it in the footer", async () => {
     vi.mocked(checkProjectDelete).mockResolvedValue("Take it off that Mono first.");
     await act(async () => removal.askToDelete(TARGET));
-    expect(spies.showRefusal).toHaveBeenCalledWith("Take it off that Mono first.");
+    expect(spies.showRefusal).toHaveBeenCalledWith(P, "Take it off that Mono first.");
     expect(dialog()).toBeNull();
     expect(removal.isRemoving).toBe(false);
   });
 
   it("closes the menu and opens the dialog once the check passes", async () => {
     await act(async () => removal.askToDelete(TARGET));
-    expect(spies.closeMenu).toHaveBeenCalled();
+    expect(spies.closeMenu).toHaveBeenCalledWith(P);
     expect(dialog()).not.toBeNull();
     expect(removal.isRemoving).toBe(true);
   });
@@ -130,6 +122,33 @@ describe("Delete", () => {
       { x: 4, y: 8, path: P, projectKey: P },
       "A session is running.",
     );
+  });
+
+  it("reopens the menu with the message when the delete itself rejects", async () => {
+    spies.onRemoveProject.mockRejectedValue({ code: "failed", message: "disk full" });
+    await act(async () => removal.askToDelete(TARGET));
+    await press("Delete");
+    expect(spies.reopenMenu).toHaveBeenCalledWith(
+      { x: 4, y: 8, path: P, projectKey: P },
+      "disk full",
+    );
+  });
+
+  it("treats an empty refusal after confirm as a refusal", async () => {
+    spies.onRemoveProject.mockResolvedValue("");
+    await act(async () => removal.askToDelete(TARGET));
+    await press("Delete");
+    expect(spies.reopenMenu).toHaveBeenCalledWith(
+      { x: 4, y: 8, path: P, projectKey: P },
+      "",
+    );
+  });
+
+  it("reopens nothing when the handler answers with no refusal text", async () => {
+    spies.onRemoveProject.mockReturnValue(undefined);
+    await act(async () => removal.askToDelete(TARGET));
+    await press("Delete");
+    expect(spies.reopenMenu).not.toHaveBeenCalled();
   });
 
   it("deletes nothing on cancel, and gives focus back", async () => {
