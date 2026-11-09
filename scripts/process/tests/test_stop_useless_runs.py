@@ -81,6 +81,7 @@ class CancelStepTest(unittest.TestCase):
     ]
     FAKE_GH = """#!/bin/bash
 printf '%s\\n' "$*" >> "$GH_LOG"
+[[ -n "$GH_LIST_FAILS" && "$*" == *"-X GET"* ]] && exit 1
 if [[ "$*" == *"-X POST"* ]]; then
   [[ "$*" == *"/runs/$GH_REFUSE/cancel"* ]] && exit 1
   exit 0
@@ -94,7 +95,7 @@ done
     def step(self):
         return job("stop-useless-runs.yml", "cancel")
 
-    def run_step(self, refuse=""):
+    def run_step(self, refuse="", list_fails=""):
         with tempfile.TemporaryDirectory() as folder:
             tmp = Path(folder)
             fake = tmp / "gh"
@@ -102,7 +103,7 @@ done
             fake.chmod(0o755)
             (tmp / "runs.json").write_text(json.dumps({"workflow_runs": self.RUNS}))
             log = tmp / "gh.log"
-            env = {**os.environ, "PATH": f"{tmp}{os.pathsep}{os.environ['PATH']}", "GH_LOG": str(log), "GH_REFUSE": refuse,
+            env = {**os.environ, "PATH": f"{tmp}{os.pathsep}{os.environ['PATH']}", "GH_LOG": str(log), "GH_REFUSE": refuse, "GH_LIST_FAILS": list_fails,
                    "GH_FIXTURE": str(tmp / "runs.json"), "REPO": "o/r", "HEAD_SHA": self.HEAD, "PR": str(self.PR), "SELF": str(self.SELF)}
             done = subprocess.run(["bash", "-c", run_block(self.step())], env=env, capture_output=True, text=True)
             return done, log.read_text().splitlines()
@@ -129,6 +130,12 @@ done
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("::warning::run 101 was not cancelled", done.stdout)
         self.assertEqual(self.cancelled(calls)[-1], self.SELF)
+
+    def test_a_failed_list_fails_the_step_and_cancels_nothing(self):
+        done, calls = self.run_step(list_fails="1")
+        self.assertNotEqual(done.returncode, 0, "a stop that read no runs must not look like a stop that worked")
+        self.assertEqual(self.cancelled(calls), [])
+        self.assertEqual(run_block(self.step()).splitlines()[0], "set -euo pipefail")
 
     def test_it_reads_the_pr_head_with_a_write_token_and_no_pull_request_code(self):
         block = self.step()
@@ -161,6 +168,13 @@ class RequiredChecksTest(unittest.TestCase):
         block = job("ci.yml", "ci")
         self.assertEqual(setting(block, "if"), "always()")
         self.assertEqual(setting(block, "needs"), "[changes, mobile, browser, host, check, appimage, rpm, rpm-clean-install]")
+
+    def test_e2e_linux_is_never_skipped_by_a_failed_changes_job_or_a_pull_request_stop(self):
+        block = job("e2e.yml", "e2e-linux")
+        self.assertEqual(setting(block, "name"), "e2e-linux")
+        self.assertEqual(setting(block, "needs"), "changes")
+        self.assertEqual(setting(block, "if"),
+                         "${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.e2e-linux != 'false' }}")
 
     def test_a_cancelled_mutation_job_fails_gate_mutation(self):
         block = job("gate-mutation.yml", "gate")
