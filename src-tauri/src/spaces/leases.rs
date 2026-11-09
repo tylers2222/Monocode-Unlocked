@@ -343,6 +343,30 @@ fn key(path: &Path) -> String {
     crate::mono_gate::path_key(&crate::fs::path_to_js(path))
 }
 
+/// T12, the one event that moves a lease: the stored key of the moved folder,
+/// to the new path resolved (the old one no longer exists). A stale lease would
+/// otherwise hand the folder to its assigned Space. A lease taken through a
+/// symlink has another key and stays; so does one when the new path is not a
+/// folder. A lease the new path already has wins.
+pub(super) fn move_with_folder(
+    tx: &Connection,
+    from_key: &str,
+    to_path: &str,
+) -> rusqlite::Result<()> {
+    let Some(to) = resolve(Path::new(to_path)).map(|real| key(&real)) else {
+        return Ok(());
+    };
+    tx.execute(
+        "UPDATE OR IGNORE checkout_leases SET checkout_path = ?2 WHERE checkout_path = ?1",
+        params![from_key, to],
+    )?;
+    tx.execute(
+        "DELETE FROM checkout_leases WHERE checkout_path = ?1",
+        [from_key],
+    )
+    .map(drop)
+}
+
 /// The one key of a leased folder: resolved, so a symlink, `..` or a
 /// trailing slash names the folder `place` looks up. A folder that does not
 /// exist has no such key, so it is refused.

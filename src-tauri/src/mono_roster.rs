@@ -458,7 +458,7 @@ fn snapshot(conn: &Connection, revision: u64) -> Result<Roster, String> {
 
 /// Runs a write under the lock. When it changed the roster, raises the
 /// revision and tells every window the new roster.
-fn write<R: tauri::Runtime>(
+pub(crate) fn write<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &SessionStore,
     apply: impl FnOnce(&Connection) -> Result<bool, String>,
