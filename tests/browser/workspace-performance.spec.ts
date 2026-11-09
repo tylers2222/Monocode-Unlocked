@@ -197,7 +197,11 @@ test("preserves following and a reader's position through real file-pane resizin
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
-  await page.goto("/tests/browser/workspace-performance.html");
+  // This covers a cached transcript's return. Under resource pressure the pool
+  // evicts it, and the return is a new mount that pins to the bottom instead.
+  await page.goto(
+    "/tests/browser/workspace-performance.html?noResourcePressure",
+  );
   const pane = page.locator('[data-session-drop="workspace-session-0"]');
   await expect(pane).toBeVisible({ timeout: 60_000 });
   await page.keyboard.press("Meta+t");
