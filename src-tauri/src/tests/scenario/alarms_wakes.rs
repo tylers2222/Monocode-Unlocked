@@ -475,16 +475,6 @@ fn counted_before_this_build(world: &World, request: &str) {
             [listed],
         )
         .unwrap();
-    // It told its provisioner, as every episode of such a build did.
-    world
-        .conn()
-        .execute_batch(
-            "INSERT INTO alarm_sends (episode_id, level, recipient, outbox_key, created_active_ms)
-             VALUES ('al_old', 1, 'mono:alb-general', 'alarm-al_old-1', 0);
-             INSERT INTO alarm_prompts (outbox_key, episode_id, text)
-             VALUES ('alarm-al_old-1', 'al_old', '<mono_alarm>');",
-        )
-        .unwrap();
 }
 
 /// The Mono's own episodes. The waits here take the lead's open ask past N, and

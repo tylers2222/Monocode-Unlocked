@@ -14,7 +14,7 @@ use super::alarms_stall::{
 };
 use super::world::World;
 use crate::alarms::taps::Pipe;
-use crate::alarms::wake_retry::{drops_alarm_of, pass_before_record};
+use crate::alarms::wake_retry::{moved_on, pass_before_record, Cause};
 use crate::alarms::Sources;
 use crate::mono_messages::{self, SessionId, Tool};
 use crate::mono_roster::MonoRole;
@@ -356,17 +356,15 @@ fn an_agent_that_goes_busy_before_the_send_gets_no_alarm() {
             crate::alarms::Edge::Started,
         );
     });
-    assert_eq!(told(&world), 0, "dropped before the send");
-    world.advance(PASS);
+    assert_eq!(episodes(&world), Vec::new(), "dropped before the send");
+    assert_eq!(sends(&world), Vec::<String>::new());
     assert_eq!(told(&world), 0);
-    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
-    assert!(!episode.open, "its turn closed the episode");
+    world.advance(PASS);
+    assert_eq!(episodes(&world), Vec::new(), "its turn runs");
 }
 
 // Defect: a dropped alarm ends detection: the record that dropped it was lost,
-// no turn ever ran, and the agent stays stalled with nobody told. Level 1 stays
-// unsent for its 15 minutes; its row stands and the next level tells the next
-// provisioner.
+// no turn ever ran, and the agent stays stalled with nobody told.
 #[test]
 fn a_dropped_alarm_comes_back_and_escalates_when_the_agent_is_still_stalled() {
     let (mut world, _, mono) = message_waiting("alarm-retry-comes-back");
@@ -378,7 +376,7 @@ fn a_dropped_alarm_comes_back_and_escalates_when_the_agent_is_still_stalled() {
             crate::alarms::Edge::Started,
         );
     });
-    assert_eq!(told(&world), 0, "dropped");
+    assert_eq!(episodes(&world), Vec::new(), "dropped");
     world.store().alarms.take();
 
     assert_eq!(named(&mut world, PASS, &mono.chat), 0, "no second retry");
@@ -386,12 +384,61 @@ fn a_dropped_alarm_comes_back_and_escalates_when_the_agent_is_still_stalled() {
     assert_eq!(sends(&world), [GIGA]);
     world.advance(ESCALATE);
     assert_eq!(sends(&world), [GIGA, "tyler"]);
-    assert_eq!(episodes(&world).len(), 1, "the same episode");
 }
 
-// Defect (the ADE-278 seam): a dropped message also skips level 1's send row.
-// `chain` reads the rows by position, so with level 1's row gone the Giga's
-// level reads as the last before Tyler, and the climb stops short of Tyler.
+// Defect: repeated drops silence a stall for ever (the orchestrator's third
+// condition). A drop keeps no state, so however many pass while the rows do not
+// move, the next pass with nothing new opens from the original start.
+#[test]
+fn repeated_drops_on_a_stall_that_never_moves_still_open_from_its_start() {
+    let (mut world, _, mono) = message_waiting("alarm-retry-repeated-drops");
+    world.advance(2 * WAKE);
+    for flip in 0..5 {
+        pass_racing(&mut world, |world| {
+            world.store().alarms.turn(
+                mono.chat.as_str(),
+                &format!("flip-{flip}"),
+                crate::alarms::Edge::Started,
+            );
+        });
+        assert_eq!(episodes(&world), Vec::new(), "dropped {flip}");
+        world.store().alarms.take();
+    }
+    world.advance(PASS);
+    assert_one_alarm_from_the_first_sight(&world, &mono.chat, WAKE);
+    world.advance(ESCALATE);
+    assert_eq!(sends(&world), [GIGA, "tyler"]);
+}
+
+// Limit, stated in the PR body: real turns move the stall by the detector's own
+// rule (`wake_missed` counts from the turn end), so an agent whose turns keep
+// running while one item stays stuck alarms only once the turns stop, from the
+// last turn's end, and then escalates.
+#[test]
+fn an_agent_that_flips_busy_and_idle_alarms_from_its_last_turn_end() {
+    let mut world = World::new("alarm-retry-flips");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
+    for flip in 0..3 {
+        world.advance(2 * WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("flip-{flip}"));
+        assert_eq!(episodes(&world), Vec::new(), "turn {flip} moved the stall");
+    }
+    world.advance(2 * WAKE + 2 * PASS);
+    assert_eq!(sends(&world), [GIGA], "the item alarms once the turns stop");
+    world.advance(ESCALATE);
+    assert_eq!(sends(&world), [GIGA, "tyler"]);
+}
+
+fn ran_a_turn_named(world: &mut World, session: &SessionId, name: &str) {
+    turn(world, session, name, true);
+    world.advance(MINUTE);
+    turn(world, session, name, false);
+}
+
+// The climb after a drop reaches each provisioner on its own clock.
 #[test]
 fn a_dropped_alarm_escalates_to_each_next_provisioner_on_schedule() {
     let mut world = World::new("alarm-recheck-chain");
@@ -407,45 +454,14 @@ fn a_dropped_alarm_escalates_to_each_next_provisioner_on_schedule() {
             .turn(lead.as_str(), "never-ran", crate::alarms::Edge::Started);
     });
     world.store().alarms.take();
-    assert_eq!(told(&world), 0, "dropped");
-    assert_eq!(sends(&world), ["mono:art-mono"]);
+    assert_eq!(episodes(&world), Vec::new(), "dropped");
 
-    // The racing pass ran one slice ahead of the clock.
-    world.advance(ESCALATE);
-    assert_eq!(sends(&world), ["mono:art-mono"], "not before its clock");
     world.advance(PASS);
+    assert_eq!(sends(&world), ["mono:art-mono"]);
+    world.advance(ESCALATE);
     assert_eq!(sends(&world), ["mono:art-mono", GIGA]);
-    assert_eq!(told(&world), 1, "the Giga is told");
     world.advance(ESCALATE);
     assert_eq!(sends(&world), ["mono:art-mono", GIGA, "tyler"]);
-}
-
-// Defect: the re-check stops a level that goes to Tyler, who has no later level
-// to reach him if the stall lasts.
-#[test]
-fn an_alarm_to_tyler_is_never_dropped() {
-    let mut world = World::new("alarm-recheck-tyler");
-    let (giga, _) = add_monos(&world);
-    align(&mut world);
-    ran_a_turn(&mut world, &giga.chat);
-    save_queue(&world, &giga.chat, json!([{"id": "stuck-1"}]), "active");
-    world.advance(2 * WAKE);
-    pass_racing(&mut world, |world| {
-        world.store().alarms.turn(
-            giga.chat.as_str(),
-            "never-ran",
-            crate::alarms::Edge::Started,
-        );
-    });
-    world.store().alarms.take();
-    assert_eq!(sends(&world), ["tyler"]);
-    let mut shown = 0;
-    crate::alarms::notify_tyler(world.store(), (world.active_ms(), world.now()), |_| {
-        shown += 1;
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(shown, 1, "Tyler is shown it");
 }
 
 // Defect: a dropped alarm uses up its stuck item: the turn that dropped it ran
@@ -470,17 +486,15 @@ fn an_item_a_quick_turn_left_behind_still_alarms_after_a_drop() {
             .alarms
             .turn(mono.chat.as_str(), "quick", crate::alarms::Edge::Started);
     });
-    assert_eq!(told(&world), 0, "dropped");
+    assert_eq!(episodes(&world), Vec::new(), "dropped");
     turn(&mut world, &mono.chat, "quick", false);
     world.advance(PASS);
-    let open = |world: &World| episodes(world).iter().filter(|e| e.open).count();
-    assert_eq!(open(&world), 0, "the quick turn closed it");
 
     assert_eq!(named(&mut world, WAKE + PASS, &mono.chat), 1, "a new retry");
-    assert_eq!(open(&world), 0);
+    assert_eq!(episodes(&world), Vec::new());
     world.advance(WAKE);
-    assert_eq!(open(&world), 1, "the item alarms");
-    assert_eq!(told(&world), 1);
+    assert_eq!(episodes(&world).len(), 1, "the item alarms");
+    assert_eq!(sends(&world), [GIGA]);
 }
 
 // Defect: the re-check drops a dialog alarm because the agent is busy (a
@@ -506,24 +520,45 @@ fn a_dialog_alarm_drops_only_when_the_dialog_was_answered() {
             );
         });
         assert_eq!(told(&world), alarms, "{line}");
+        assert_eq!(episodes(&world).len(), alarms as usize, "{line}");
     }
 }
 
 // Defect: the re-check covers only a missed wake, so a hung turn that just
-// printed, or an idle agent whose turn just started, still alarms.
+// printed, or an idle agent whose turn just started, still alarms; or it drops a
+// hung agent for being busy, which is the stall: a record that moved nothing
+// must not drop it.
 #[test]
-fn the_re_check_covers_a_hung_turn_and_idle_open_work() {
-    let mut world = World::new("alarm-recheck-hung");
-    let (_, mono) = add_monos(&world);
-    let lead = start_lead(&world, &mono, "art-lead");
-    let claude = claude_tap(&world, &lead);
-    align(&mut world);
-    turn(&mut world, &lead, "t1", true);
-    claude.line(Pipe::Stdout, ASSISTANT);
-    world.advance(N - PASS);
-    assert_eq!(episodes(&world), Vec::new());
-    pass_racing(&mut world, |_| claude.line(Pipe::Stdout, ASSISTANT));
-    assert_eq!(told(&world), 0, "it just printed");
+fn the_re_check_drops_a_hung_turn_only_if_it_moved_and_covers_idle_open_work() {
+    for (stage, moved) in [("it just printed", true), ("nothing moved", false)] {
+        let mut world = World::new(&format!("alarm-recheck-hung-{moved}"));
+        let (_, mono) = add_monos(&world);
+        let lead = start_lead(&world, &mono, "art-lead");
+        let claude = claude_tap(&world, &lead);
+        align(&mut world);
+        turn(&mut world, &lead, "t1", true);
+        claude.line(Pipe::Stdout, ASSISTANT);
+        world.advance(N - PASS);
+        assert_eq!(episodes(&world), Vec::new());
+        pass_racing(&mut world, |world| {
+            if moved {
+                claude.line(Pipe::Stdout, ASSISTANT);
+            } else {
+                // The same turn's start again moves nothing.
+                world
+                    .store()
+                    .alarms
+                    .turn(lead.as_str(), "t1", crate::alarms::Edge::Started);
+            }
+            assert!(!world.store().alarms.pending(&lead).is_empty(), "{stage}");
+        });
+        let causes: Vec<String> = episodes(&world)
+            .into_iter()
+            .map(|episode| episode.cause)
+            .collect();
+        let expected: &[&str] = if moved { &[] } else { &["hung"] };
+        assert_eq!(causes, expected, "{stage}");
+    }
 
     let mut world = World::new("alarm-recheck-idle");
     let (_, mono) = add_monos(&world);
@@ -538,14 +573,14 @@ fn the_re_check_covers_a_hung_turn_and_idle_open_work() {
             .alarms
             .turn(lead.as_str(), "t2", crate::alarms::Edge::Started);
     });
-    assert_eq!(told(&world), 0, "its turn just started");
+    assert_eq!(episodes(&world), Vec::new(), "its turn just started");
 }
 
 // Defect: the re-check drops a `hold_missing` alarm because a turn started,
-// though no turn says the sleep hold was fixed and it is told once, or drops a
-// cause added later by default. The detector opens neither on this build, so
-// this reads an episode row of each cause, with a stall's cause as the control,
-// on the same hub record.
+// though no turn says the sleep hold was fixed, or a stall cause stops dropping.
+// The detector opens `hold_missing` only from #546 on, so this calls the re-check
+// on one hub record for each cause. A stored unknown cause never reaches it: only
+// `next_state`'s open does, and that carries a cause this build knows.
 #[test]
 fn the_re_check_drops_only_a_known_stall_cause() {
     let mut world = World::new("alarm-recheck-causes");
@@ -563,27 +598,14 @@ fn the_re_check_drops_only_a_known_stall_cause() {
     let now = (world.active_ms(), world.now());
     let conn = store.lock_conn().unwrap();
     for (cause, drops) in [
-        ("idle_open_work", true),
-        ("dialog", true),
-        ("hung", true),
-        ("wake_missed", true),
-        ("hold_missing", false),
-        ("a_newer_cause", false),
+        (Cause::IdleOpenWork, true),
+        (Cause::WakeMissed, true),
+        (Cause::HoldMissing, false),
     ] {
-        conn.execute_batch(&format!(
-            "DELETE FROM alarm_episodes;
-             PRAGMA ignore_check_constraints = ON;
-             INSERT INTO alarm_episodes (id, actor, provisioner, cause, open_work_json,
-               stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms)
-             VALUES ('al_cause', 'session:art-lead', 'mono:art-mono', '{cause}', '[]', {since}, 1,
-               {since}, 1);
-             PRAGMA ignore_check_constraints = OFF;"
-        ))
-        .unwrap();
         assert_eq!(
-            drops_alarm_of(&conn, &store.alarms, "al_cause", now),
+            moved_on(&conn, &store.alarms, &lead, (cause, since), now),
             drops,
-            "{cause}"
+            "{cause:?}"
         );
     }
 }

@@ -547,14 +547,7 @@ impl Pass<'_> {
                 self.active + self.settings.escalate_minutes * MINUTE_MS,
             ],
         )?;
-        super::route::opened(
-            tx,
-            &mut self.notices,
-            self.live,
-            &id,
-            &self.settings,
-            (self.active, self.wall),
-        )
+        super::route::opened(tx, &mut self.notices, &id, &self.settings, self.active)
     }
 
     /// Closes episode `id`; the alarms, nudges and steers it had not sent yet
@@ -688,16 +681,19 @@ impl Pass<'_> {
                 },
                 _,
             ) => {
-                // A retry writes no episode: the next pass judges the agent
+                let now = (self.active, self.wall);
+                let stall = (cause, stalled_since);
+                // Neither writes an episode: the next pass judges the agent
                 // again, so a stall that lasts still opens and escalates.
-                if cause == Cause::WakeMissed
-                    && wake_retry::held(
-                        tx,
-                        &mut self.notices,
-                        (actor, &row.session),
-                        stalled_since,
-                        (self.active, limits.wake_ms),
-                    )
+                if wake_retry::moved_on(tx, self.live, &row.session, stall, now)
+                    || (cause == Cause::WakeMissed
+                        && wake_retry::held(
+                            tx,
+                            &mut self.notices,
+                            (actor, &row.session),
+                            stalled_since,
+                            (self.active, limits.wake_ms),
+                        ))
                 {
                     return Ok(());
                 }

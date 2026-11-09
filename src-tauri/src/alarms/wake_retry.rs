@@ -1,6 +1,6 @@
-//! ADE-276: what runs between a stall coming due and its alarm's message. A
-//! missed wake is mechanical, so the app wakes the agent itself once before it
-//! tells anyone, and no message goes for an agent the hub already shows moving.
+//! ADE-276: what runs between a stall coming due and its alarm. A missed wake
+//! is mechanical, so the app wakes the agent itself once before it tells
+//! anyone, and no alarm opens for an agent the hub already shows moving.
 //!
 //! The retry names the agent's chat, as the turn end and the reminders do:
 //! `mono-message-notices` makes the window that owns the chat reconcile it.
@@ -8,18 +8,18 @@
 //! turn, so a retry cannot deliver an item twice or run a finished one. It
 //! writes no message or prompt, and no model call goes to the provisioner.
 //!
-//! Neither step can hide a stall. A retry writes no episode, so the next pass
-//! judges the agent again; one that fails, or that starts no turn in its wait,
-//! ends in the alarm the detector would have opened, with the same
-//! stalled-since. The re-check stops only level 1's message: the episode, its
-//! send row and its escalation clock stand, so a stall that lasts escalates.
+//! Neither step can hide a stall. Neither writes an episode, so the next pass
+//! judges the agent again; a retry that fails, or that starts no turn in its
+//! wait, ends in the alarm the detector would have opened, with the same
+//! stalled-since. A drop keeps no state and needs a new hub record, and the
+//! pass that takes a record that moved the agent ends that stall.
 
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::activity;
 use super::live::Live;
-use super::route::{self, EpisodeRow};
-use super::state::{self, Cause, Episode, Facts};
+pub(crate) use super::state::Cause;
+use super::state::{self, Episode, Facts};
 use crate::ask_gate::Actor;
 use crate::mono_messages::{Notices, SessionId};
 
@@ -92,39 +92,6 @@ fn retry(
     Ok(true)
 }
 
-/// Whether level 1's message of `episode` stops here. A failure here says no.
-pub(super) fn drops_alarm(
-    tx: &Connection,
-    live: &Live,
-    episode: &EpisodeRow,
-    now: (i64, i64),
-) -> bool {
-    let session = route::session_of(tx, &episode.actor).unwrap_or_else(|error| {
-        eprintln!(
-            "Could not re-check {} before its alarm: {error}",
-            episode.id
-        );
-        None
-    });
-    match (session, Cause::parse(&episode.cause)) {
-        (Some(session), Ok(cause)) => moved_on(
-            tx,
-            live,
-            &session,
-            (cause, episode.stalled_since_active),
-            now,
-        ),
-        _ => false,
-    }
-}
-
-/// `drops_alarm` on the row of episode `id`, as `route::opened` reads it.
-#[cfg(test)]
-pub(crate) fn drops_alarm_of(tx: &Connection, live: &Live, id: &str, now: (i64, i64)) -> bool {
-    let episode = route::episode(tx, id).unwrap().unwrap();
-    drops_alarm(tx, live, &episode, now)
-}
-
 /// Whether the agent moved since `stall` began, by what the taps recorded
 /// after this pass took the hub: the pass read every other row in the
 /// transaction it writes in, so only the hub can be newer. Asks the detector's
@@ -134,7 +101,7 @@ pub(crate) fn drops_alarm_of(tx: &Connection, live: &Live, id: &str, now: (i64, 
 /// cause added later always sends. A missing sleep hold is no stall: no turn,
 /// output or dialog says it was fixed, and it is told once, so a drop would
 /// lose it for good.
-fn moved_on(
+pub(crate) fn moved_on(
     tx: &Connection,
     live: &Live,
     session: &SessionId,
