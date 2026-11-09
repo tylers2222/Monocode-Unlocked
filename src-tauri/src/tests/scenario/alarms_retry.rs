@@ -14,7 +14,7 @@ use super::alarms_stall::{
 };
 use super::world::World;
 use crate::alarms::taps::Pipe;
-use crate::alarms::wake_retry::pass_before_record;
+use crate::alarms::wake_retry::{moved_on, pass_before_record, StallCause};
 use crate::alarms::Sources;
 use crate::mono_messages::{self, SessionId, Tool};
 use crate::mono_roster::MonoRole;
@@ -400,6 +400,37 @@ fn the_re_check_covers_a_hung_turn_and_idle_open_work() {
             .turn(lead.as_str(), "t2", crate::alarms::Edge::Started);
     });
     assert_eq!(episodes(&world), Vec::new(), "its turn just started");
+}
+
+// Defect: the re-check drops a `hold_missing` alarm because a turn started,
+// though no turn says the sleep hold was fixed, so the alarm is lost for good.
+// The detector opens this cause only from #546 on, so this calls the re-check
+// on the record that drops a stall (the control) and on a missing hold.
+#[test]
+fn the_re_check_never_drops_a_hold_missing_alarm() {
+    let mut world = World::new("alarm-recheck-hold");
+    let (_, mono) = add_monos(&world);
+    let lead = start_lead(&world, &mono, "art-lead");
+    align(&mut world);
+    ran_a_turn(&mut world, &lead);
+    world.advance(PASS);
+    let since = world.active_ms();
+    world.advance(MINUTE);
+    let store = world.store();
+    store
+        .alarms
+        .turn(lead.as_str(), "t2", crate::alarms::Edge::Started);
+    let now = (world.active_ms(), world.now());
+    let conn = store.lock_conn().unwrap();
+    let dropped = |cause| moved_on(&conn, &store.alarms, &lead, (cause, since), now);
+    assert!(
+        dropped(StallCause::IdleOpenWork),
+        "the record drops a stall"
+    );
+    assert!(
+        !dropped(StallCause::HoldMissing),
+        "it says nothing of a hold"
+    );
 }
 
 // Defect: a pass with nothing new in the hub drops the alarm anyway, so the
