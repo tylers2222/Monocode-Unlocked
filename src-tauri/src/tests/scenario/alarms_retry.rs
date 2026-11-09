@@ -14,7 +14,7 @@ use super::alarms_stall::{
 };
 use super::world::World;
 use crate::alarms::taps::Pipe;
-use crate::alarms::wake_retry::{moved_on, pass_before_record, StallCause};
+use crate::alarms::wake_retry::{drops_alarm_of, pass_before_record};
 use crate::alarms::Sources;
 use crate::mono_messages::{self, SessionId, Tool};
 use crate::mono_roster::MonoRole;
@@ -468,12 +468,13 @@ fn the_re_check_covers_a_hung_turn_and_idle_open_work() {
 }
 
 // Defect: the re-check drops a `hold_missing` alarm because a turn started,
-// though no turn says the sleep hold was fixed, so the alarm is lost for good.
-// The detector opens this cause only from #546 on, so this calls the re-check
-// on the record that drops a stall (the control) and on a missing hold.
+// though no turn says the sleep hold was fixed and it is told once, or drops a
+// cause added later by default. The detector opens neither on this build, so
+// this reads an episode row of each cause, with a stall's cause as the control,
+// on the same hub record.
 #[test]
-fn the_re_check_never_drops_a_hold_missing_alarm() {
-    let mut world = World::new("alarm-recheck-hold");
+fn the_re_check_drops_only_a_known_stall_cause() {
+    let mut world = World::new("alarm-recheck-causes");
     let (_, mono) = add_monos(&world);
     let lead = start_lead(&world, &mono, "art-lead");
     align(&mut world);
@@ -487,15 +488,30 @@ fn the_re_check_never_drops_a_hold_missing_alarm() {
         .turn(lead.as_str(), "t2", crate::alarms::Edge::Started);
     let now = (world.active_ms(), world.now());
     let conn = store.lock_conn().unwrap();
-    let dropped = |cause| moved_on(&conn, &store.alarms, &lead, (cause, since), now);
-    assert!(
-        dropped(StallCause::IdleOpenWork),
-        "the record drops a stall"
-    );
-    assert!(
-        !dropped(StallCause::HoldMissing),
-        "it says nothing of a hold"
-    );
+    for (cause, drops) in [
+        ("idle_open_work", true),
+        ("dialog", true),
+        ("hung", true),
+        ("wake_missed", true),
+        ("hold_missing", false),
+        ("a_newer_cause", false),
+    ] {
+        conn.execute_batch(&format!(
+            "DELETE FROM alarm_episodes;
+             PRAGMA ignore_check_constraints = ON;
+             INSERT INTO alarm_episodes (id, actor, provisioner, cause, open_work_json,
+               stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms)
+             VALUES ('al_cause', 'session:art-lead', 'mono:art-mono', '{cause}', '[]', {since}, 1,
+               {since}, 1);
+             PRAGMA ignore_check_constraints = OFF;"
+        ))
+        .unwrap();
+        assert_eq!(
+            drops_alarm_of(&conn, &store.alarms, "al_cause", now),
+            drops,
+            "{cause}"
+        );
+    }
 }
 
 // Defect: a pass with nothing new in the hub drops the alarm anyway, so the

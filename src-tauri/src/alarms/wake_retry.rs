@@ -24,8 +24,6 @@ use crate::ask_gate::Actor;
 use crate::mono_messages::{Notices, SessionId};
 
 #[cfg(test)]
-pub(crate) use super::state::Cause as StallCause;
-#[cfg(test)]
 pub(crate) use super::store::pass_before_record;
 
 /// One row per agent: its last retry, and the stall it was for. A stall is
@@ -120,21 +118,33 @@ pub(super) fn drops_alarm(
     }
 }
 
+/// `drops_alarm` on the row of episode `id`, as `route::opened` reads it.
+#[cfg(test)]
+pub(crate) fn drops_alarm_of(tx: &Connection, live: &Live, id: &str, now: (i64, i64)) -> bool {
+    let episode = route::episode(tx, id).unwrap().unwrap();
+    drops_alarm(tx, live, &episode, now)
+}
+
 /// Whether the agent moved since `stall` began, by what the taps recorded
 /// after this pass took the hub: the pass read every other row in the
 /// transaction it writes in, so only the hub can be newer. Asks the detector's
 /// own question (`state::progressed`), so a dialog goes only when it was
 /// answered, and a hung turn only when it printed or ran a tool. A failure
-/// here says no: the alarm opens. A missing sleep hold is no stall: no turn,
-/// output or dialog says it was fixed, so a drop could lose it for good.
-pub(crate) fn moved_on(
+/// here says no: the alarm opens. Only the known stall causes can drop, so a
+/// cause added later always sends. A missing sleep hold is no stall: no turn,
+/// output or dialog says it was fixed, and it is told once, so a drop would
+/// lose it for good.
+fn moved_on(
     tx: &Connection,
     live: &Live,
     session: &SessionId,
     stall: (Cause, i64),
     now: (i64, i64),
 ) -> bool {
-    if stall.0 == Cause::HoldMissing {
+    if !matches!(
+        stall.0,
+        Cause::IdleOpenWork | Cause::Dialog | Cause::Hung | Cause::WakeMissed
+    ) {
         return false;
     }
     moved(tx, live, session, stall, now).unwrap_or_else(|error| {
