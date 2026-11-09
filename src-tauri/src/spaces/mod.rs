@@ -4,12 +4,13 @@
 //! applies lives in its own file: `account` (the Space's login), `grants`
 //! (usage-limit routing) and `leases` (one Space per checkout). `scope` is
 //! what the app CLI shows a caller of its Space; `projects` is which projects
-//! a Space shows.
+//! a Space shows, and `project_removal` takes one out or deletes its data.
 
 pub(crate) mod account;
 pub(crate) mod grants;
 pub(crate) mod leases;
 pub(crate) mod membership;
+pub(crate) mod project_removal;
 pub(crate) mod projects;
 pub(crate) mod scope;
 
