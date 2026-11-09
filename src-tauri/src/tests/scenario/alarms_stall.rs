@@ -592,7 +592,7 @@ fn wake(world: &mut World, kind: &str, giga: &Mono, mono: &Mono) {
         "notice" => {
             let saved = json!({
                 "request": {"requestId": "req-1"}, "origin": {"monoId": mono.chat.as_str()},
-                "notice": "notice-1",
+                "result": {"status": "completed"}, "notice": "notice-1",
             });
             world
                 .conn()
@@ -746,7 +746,7 @@ fn a_completion_result_alarms_once_and_only_for_a_live_mono_chat() {
     for (request, chat) in [("req-1", mono.chat.as_str()), ("req-2", solo.as_str())] {
         let saved = json!({
             "request": {"requestId": request}, "origin": {"monoId": chat},
-            "notice": format!("notice-{request}"),
+            "result": {"status": "completed"}, "notice": format!("notice-{request}"),
         });
         world
             .conn()
