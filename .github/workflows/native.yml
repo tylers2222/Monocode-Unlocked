@@ -32,7 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # The merge commit and its parents, to diff the PR; only the map and its script
+          # as files. A diff that cannot be read runs every job (ci_changes.py).
+          fetch-depth: 2
+          sparse-checkout: scripts/process
           persist-credentials: false
 
       - name: Decide which jobs run
