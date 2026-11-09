@@ -698,8 +698,9 @@ impl Reader<'_> {
         })
     }
 
-    /// `Yes` only on a row that shows the reply; `No` only once the turn is
-    /// over and the rows have seen the turn that took the message.
+    /// `Yes` only on a row linked to the message: its `reply_to`, or an event
+    /// of the ask it is. `No` only once the turn is over, the rows have seen
+    /// the turn that took the message, and it wrote nothing to the sender since.
     fn replied(&self) -> rusqlite::Result<Replied> {
         let Some(session) = &self.session else {
             return Ok(Replied::Unknown("no session on record".into()));
@@ -729,21 +730,33 @@ impl Reader<'_> {
         let Some((id, turn, wanted, delivered, from_mono, from_session)) = last else {
             return Ok(Replied::Unknown("no delivered message on record".into()));
         };
-        let reply: Option<String> = self
+        let reply: Option<(String, bool)> = self
             .conn
             .query_row(
-                "SELECT id FROM mono_messages
+                "SELECT id, COALESCE(reply_to = ?2, 0) OR id IN (
+                          SELECT message_id FROM mono_ask_events
+                           WHERE ask_id = ?2 AND message_id IS NOT NULL) AS linked
+                   FROM mono_messages
                   WHERE created_at >= ?1 AND status NOT IN ('rejected', 'dropped')
                     AND tool IN ('send_message', 'reply')
-                    AND (reply_to = ?2 OR (from_session_id = ?3
-                         AND (to_mono_id = ?4 OR to_session_id = ?5)))
-                  ORDER BY created_at, id LIMIT 1",
+                    AND (reply_to = ?2
+                         OR id IN (SELECT message_id FROM mono_ask_events
+                                    WHERE ask_id = ?2 AND message_id IS NOT NULL)
+                         OR (from_session_id = ?3 AND (to_mono_id = ?4 OR to_session_id = ?5)))
+                  ORDER BY linked DESC, created_at, id LIMIT 1",
                 params![delivered, id, session.as_str(), from_mono, from_session],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if let Some(reply) = reply {
-            return Ok(Replied::Yes(format!("{id}, by {reply}")));
+        match reply {
+            Some((reply, true)) => return Ok(Replied::Yes(format!("{id}, by {reply}"))),
+            // It wrote to the sender, but no row says that was this reply.
+            Some((reply, false)) => {
+                return Ok(Replied::Unknown(format!(
+                    "{id}, it sent {reply} to the sender since, not linked to it"
+                )))
+            }
+            None => {}
         }
         let Some(activity) = &self.activity else {
             return Ok(Replied::Unknown(format!("{id}, no turn on record")));

@@ -61,6 +61,17 @@ impl Lead {
             .unwrap()
     }
 
+    fn message_id(&self, request: &str) -> String {
+        self.world
+            .conn()
+            .query_row(
+                "SELECT id FROM mono_messages WHERE request_id = ?1",
+                [request],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     /// The Mono's plain message to the lead, wanting no reply.
     fn tell(&self, key: &str, body: &str) -> String {
         let input = json!({"message": body, "send_to": self.lead.as_str(), "intent": "new", "wanting_reply": false});
@@ -670,28 +681,53 @@ fn the_reply_line_says_yes_only_on_a_row_that_shows_it() {
         "a message before it is no reply"
     );
 
-    let mut scene = lead("att-yes");
+    // A plain message to the sender after delivery may be about anything.
+    let mut scene = lead("att-plain");
     let ask = scene.ask("asked", "Asked work");
-    align(&mut scene.world);
-    let session = scene.lead.clone();
-    scene.world.start_turn(&session, "t1");
-    turn(&mut scene.world, &session, "t1", true);
-    scene.world.advance(MINUTE);
-    scene.world.end_turn(&session, "t1", true);
-    scene.world.advance(MINUTE);
+    scene.takes_a_turn("t1");
     scene.lead_says("after");
-    turn(&mut scene.world, &session, "t1", false);
     scene.world.advance(N);
-    let reply: String = scene
-        .world
-        .conn()
-        .query_row(
-            "SELECT id FROM mono_messages WHERE request_id = 'after'",
-            [],
-            |row| row.get(0),
+    let plain = scene.message_id("after");
+    assert_eq!(
+        replied(&scene),
+        format!("unknown ({ask}, it sent {plain} to the sender since, not linked to it).")
+    );
+
+    // A reply row names the message.
+    let mut scene = lead("att-replied");
+    let ask = scene.ask("asked", "Asked work");
+    scene.takes_a_turn("t1");
+    scene.lead_says("reply");
+    let reply = scene.message_id("reply");
+    {
+        let conn = scene.world.conn();
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        conn.execute(
+            "UPDATE mono_messages SET reply_to = ?1, hop = 1 WHERE id = ?2",
+            [&ask, &reply],
         )
         .unwrap();
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+            .unwrap();
+    }
+    scene.world.advance(N);
     assert_eq!(replied(&scene), format!("yes ({ask}, by {reply})."));
+
+    // An ack is an event of the ask. The start ask keeps the lead stalled.
+    let mut scene = lead("att-acked");
+    let ask = scene.ask("asked", "Asked work");
+    scene.takes_a_turn("t1");
+    scene.world.tool(
+        &session_caller(&scene.lead, P),
+        "acked",
+        "ack",
+        json!({"ask_id": ask, "message": "Done"}),
+        &[&scene.mono.chat],
+    );
+    scene.world.advance(N);
+    let ack = scene.message_id("acked");
+    assert_eq!(replied(&scene), format!("yes ({ask}, by {ack})."));
 
     let mut scene = lead("att-wanted-none");
     let told = scene.tell("told", "For your eyes");
