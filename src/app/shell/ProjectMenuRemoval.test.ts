@@ -212,3 +212,11 @@ it.each([
   expect(footer()).toBe(text);
   expect(document.querySelector('[aria-label="Delete vibtra"]')).toBeNull();
 });
+
+it("opens frame 22's dialog when Delete passes", async () => {
+  await openMenu("vibtra");
+  await pick("Delete");
+  const dialog = document.querySelector('[aria-label="Delete vibtra"]')!;
+  expect(dialog.textContent).toContain("Delete “vibtra” from Space 2?");
+  expect(dialog.textContent).toContain("Delete from Space 2");
+});

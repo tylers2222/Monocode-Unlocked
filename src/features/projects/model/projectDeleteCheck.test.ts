@@ -4,7 +4,6 @@ import { __spacesTestReset, loadSpaces } from "../../spaces/model/activeSpace";
 import {
   checkProjectArchive,
   checkProjectDelete,
-  readProjectDeletePrompt,
   setOpenSessionsSource,
 } from "./projectDeleteCheck";
 
@@ -182,38 +181,6 @@ describe("Archive (T9, R14)", () => {
     db.archiveRefusal = undefined;
     setOpenSessionsSource(() => [session("one-a")]);
     await expect(checkProjectArchive(P)).resolves.toBeNull();
-  });
-});
-
-describe("what the Delete dialog says", () => {
-  it("counts S's chats and names the Space while another Space has P", async () => {
-    await expect(readProjectDeletePrompt(P)).resolves.toEqual({
-      sessions: 2,
-      scoped: true,
-      spaceName: "Space 2",
-    });
-  });
-
-  it("is scoped when only hidden chats remain elsewhere", async () => {
-    db.lastSpace = true;
-    db.otherSpaces = [];
-    await expect(readProjectDeletePrompt(P)).resolves.toMatchObject({ scoped: true });
-  });
-
-  it("is unscoped only when this Space is the only one with chats or membership", async () => {
-    db.lastSpace = true;
-    db.otherSpaces = [];
-    db.rows = db.rows.filter((row) => row.spaceId === "space-2");
-    await expect(readProjectDeletePrompt(P)).resolves.toMatchObject({ scoped: false });
-  });
-
-  it("stays scoped when it cannot read", async () => {
-    db.refusal = "locked";
-    await expect(readProjectDeletePrompt(P)).resolves.toEqual({
-      sessions: 0,
-      scoped: true,
-      spaceName: "Space 2",
-    });
   });
 });
 

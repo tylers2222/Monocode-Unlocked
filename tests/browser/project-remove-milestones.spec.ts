@@ -24,7 +24,7 @@ const menu = async (page: Page, name: string, item: string) => {
 const confirmDelete = (page: Page, name: string) =>
   page
     .getByRole("dialog", { name: `Delete ${name}` })
-    .getByRole("button", { name: "Delete", exact: true })
+    .getByRole("button", { name: /^Delete( from .+)?$/ })
     .click();
 
 test("only Delete reaches the scoped delete; Archive keeps the data", async ({
@@ -86,7 +86,9 @@ test("a shared project's scoped delete keeps its row data; the old purge stays o
   await menu(page, "gone", "Delete");
   await expect(
     page.getByRole("dialog", { name: "Delete gone" }),
-  ).toContainText("All conversations for this project in Space 1 will be deleted.");
+  ).toContainText(
+    "Space 1's conversations for this project will be deleted, and it leaves Space 1's sidebar.",
+  );
   await confirmDelete(page, "gone");
   await expect
     .poll(() => called(page, "spaces_project_delete"))
