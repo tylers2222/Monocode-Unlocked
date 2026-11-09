@@ -77,6 +77,10 @@ fn listed(json: &str) -> Option<Vec<Listed>> {
     )
 }
 
+fn age_words(age: Option<i64>, known: impl FnOnce(i64) -> String) -> String {
+    age.map_or_else(|| "age unknown".to_string(), known)
+}
+
 /// The stuck item and what is tied to it.
 #[derive(Debug, Default)]
 struct Item {
@@ -99,12 +103,17 @@ impl Item {
 
     /// `what`, `age` and the words for the age.
     fn aged(what: &str, age: Option<i64>) -> Self {
-        let words = age.map_or("age unknown".to_string(), |age| format!("{age} min old"));
+        let words = age_words(age, |age| format!("{age} min old"));
         Self {
             what: format!("{what}, {words}"),
             age,
             ..Self::default()
         }
+    }
+
+    /// A listed item whose row went since the episode opened.
+    fn gone(what: &str) -> Self {
+        Self::aged(&format!("{what} that no row holds now"), None)
     }
 
     fn at(self, entry: usize) -> Self {
@@ -170,6 +179,13 @@ struct Ask {
     created_wall: i64,
     /// The turn of the agent's session that took it.
     turn: Option<String>,
+}
+
+impl Ask {
+    /// Whether turn `turn` took it; an ask no turn took matches none.
+    fn taken_in(&self, turn: Option<&str>) -> bool {
+        self.turn.is_some() && self.turn.as_deref() == turn
+    }
 }
 
 struct Reader<'a> {
@@ -350,7 +366,7 @@ impl Reader<'_> {
                 return Ok(item);
             }
         }
-        Ok(Item::aged("a message that no row holds now", None))
+        Ok(Item::gone("a message"))
     }
 
     /// The reminder that has waited longest, by `waiting_recipients`' rule.
@@ -374,7 +390,7 @@ impl Reader<'_> {
             )
             .optional()?;
         let Some((stage, ask, at)) = row else {
-            return Ok(Item::aged("a reminder that no row holds now", None));
+            return Ok(Item::gone("a reminder"));
         };
         let what = match &ask {
             Some(ask) => format!("{stage} reminder of ask {ask}"),
@@ -402,10 +418,7 @@ impl Reader<'_> {
             )
             .optional()?;
         let Some(child) = child.flatten() else {
-            return Ok(Item::aged(
-                &format!("notice {id_words} that no row holds now"),
-                None,
-            ));
+            return Ok(Item::gone(&format!("notice {id_words}")));
         };
         let actor = format!("session:{child}");
         let ended: Option<i64> = self
@@ -418,7 +431,7 @@ impl Reader<'_> {
             )
             .optional()?;
         let age = ended.map(|ended| self.minutes_since(ended));
-        let words = age.map_or("age unknown".to_string(), |age| {
+        let words = age_words(age, |age| {
             format!("its session's last turn ended {age} min ago")
         });
         Ok(Item {
@@ -447,10 +460,7 @@ impl Reader<'_> {
             )
             .optional()?;
         let Some((queued, message)) = row else {
-            return Ok(Item::aged(
-                &format!("queued item {id_words} that no row holds now"),
-                None,
-            ));
+            return Ok(Item::gone(&format!("queued item {id_words}")));
         };
         let age = queued.map(|queued| self.minutes_since_wall(queued));
         let message = message.unwrap_or_else(|| id.to_string());
@@ -513,12 +523,9 @@ impl Reader<'_> {
         }
         let asks = self.open_asks(entries)?;
         let last = self.last_turn();
-        let stuck = asks.iter().max_by_key(|ask| {
-            (
-                ask.turn.is_some() && ask.turn.as_deref() == last,
-                ask.created_wall,
-            )
-        });
+        let stuck = asks
+            .iter()
+            .max_by_key(|ask| (ask.taken_in(last), ask.created_wall));
         if let Some(ask) = stuck {
             let what = format!(
                 "{}, from {}",
@@ -527,7 +534,7 @@ impl Reader<'_> {
             );
             let same_turn = asks
                 .iter()
-                .filter(|other| other.turn.is_some() && other.turn == ask.turn)
+                .filter(|other| other.taken_in(ask.turn.as_deref()))
                 .map(|other| other.id.clone());
             return Ok(Item {
                 asks: same_turn.collect(),
@@ -540,7 +547,7 @@ impl Reader<'_> {
                 let age = self.minutes_since(self.episode.stalled_since_active);
                 Item::aged("its unfinished todo list", Some(age)).at(entry)
             }
-            None => Item::aged("open work that no row holds now", None),
+            None => Item::gone("open work"),
         })
     }
 
@@ -567,9 +574,8 @@ impl Reader<'_> {
             return Ok(None);
         };
         let line = route::child_line(self.conn, child)?;
-        let words = ended.map_or("age unknown".to_string(), |ended| {
-            format!("its last turn ended {} min ago", self.minutes_since(ended))
-        });
+        let age = ended.map(|ended| self.minutes_since(ended));
+        let words = age_words(age, |age| format!("its last turn ended {age} min ago"));
         Ok(Some(Item::named(format!("{line}, {words}")).at(entry)))
     }
 
@@ -579,7 +585,7 @@ impl Reader<'_> {
         Ok(self
             .open_asks(entries)?
             .into_iter()
-            .filter(|ask| ask.turn.is_some() && ask.turn.as_deref() == turn)
+            .filter(|ask| ask.taken_in(turn))
             .map(|ask| ask.id)
             .collect())
     }
