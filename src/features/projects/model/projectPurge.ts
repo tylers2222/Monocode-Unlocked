@@ -7,9 +7,11 @@ import {
 } from "../../sessions/data/sessionStore";
 import type { Session } from "../../sessions/model/session";
 import { spacesView } from "../../spaces/model/activeSpace";
+import { refusalMessage } from "../../spaces/model/spaces";
 import { closeLeaf, leafIds, type WorkspaceTab } from "../../workspace/model/layout";
 import { filterTabsForProject } from "../../workspace/model/workspaceTabGroups";
 import { clearProjectSettings } from "./projectData";
+import { checkProjectDelete } from "./projectDeleteCheck";
 import { forgetProjectLocation } from "./projectLocation";
 import {
   forgetProject,
@@ -55,6 +57,27 @@ export async function deleteProjectChats(
     complete: failure === undefined,
     failure,
   };
+}
+
+/**
+ * The route the window takes: all guards pass, then the delete. `purge` is what
+ * the window may act on; a failure halfway returns the refusal and the rows that
+ * did go.
+ */
+export async function purgeProjectInSpace(
+  path: string,
+): Promise<{ refusal: string | null; purge: ProjectPurge | null }> {
+  const refusal = await checkProjectDelete(path);
+  if (refusal) return { refusal, purge: null };
+  try {
+    const { failure, ...purge } = await deleteProjectChats(path);
+    return {
+      refusal: failure === undefined ? null : refusalMessage(failure),
+      purge,
+    };
+  } catch (error) {
+    return { refusal: refusalMessage(error), purge: null };
+  }
 }
 
 /**
