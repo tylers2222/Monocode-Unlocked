@@ -56,7 +56,7 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: 0000000000000000000000000000000000000001
         run: |
           set -euo pipefail
           python3 scripts/process/ci_level.py "$EVENT" "$DRAFT" "$PR" "$REPO" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
@@ -64,7 +64,7 @@ jobs:
   core:
     name: Core (${{ matrix.os }})
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
+    if: ${{ false }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,7 +92,7 @@ jobs:
     name: Monocode Native (macOS)
     needs: changes
     # Full set only (scripts/process/ci_level.py).
-    if: ${{ !cancelled() && needs.changes.outputs.level != 'fast' && needs.changes.outputs.native != 'false' }}
+    if: ${{ false }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

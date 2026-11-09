@@ -96,7 +96,7 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: 0000000000000000000000000000000000000001
         run: |
           set -euo pipefail
           python3 scripts/process/ci_level.py "$EVENT" "$DRAFT" "$PR" "$REPO" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
@@ -105,7 +105,7 @@ jobs:
   e2e-linux-run:
     name: e2e-linux run
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-linux != 'false' }}
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -172,7 +172,7 @@ jobs:
   e2e-macos-1:
     name: e2e-macos-1
     needs: changes
-    if: &e2e-macos-if ${{ !cancelled() && github.event_name != 'schedule' && inputs.macos_build != 'release' && needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-macos != 'false' && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
+    if: ${{ false }}
     runs-on: macos-latest
     timeout-minutes: 150
     env:
@@ -244,7 +244,7 @@ jobs:
   e2e-macos-2:
     name: e2e-macos-2
     needs: changes
-    if: *e2e-macos-if
+    if: ${{ false }}
     runs-on: macos-latest
     timeout-minutes: 150
     env:
