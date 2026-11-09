@@ -430,7 +430,7 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 28);
+    assert_eq!(plan["changes"], 29);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
