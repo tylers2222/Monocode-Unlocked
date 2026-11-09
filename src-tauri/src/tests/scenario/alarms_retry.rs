@@ -72,6 +72,14 @@ fn named(world: &mut World, ms: i64, chat: &SessionId) -> usize {
     count
 }
 
+/// The messages the alarms put in the outbox.
+fn told(world: &World) -> i64 {
+    count(
+        world,
+        "SELECT COUNT(*) FROM mono_outbox WHERE stage = 'alarm'",
+    )
+}
+
 fn count(world: &World, sql: &str) -> i64 {
     world.conn().query_row(sql, [], |row| row.get(0)).unwrap()
 }
@@ -274,17 +282,17 @@ fn an_agent_that_goes_busy_before_the_send_gets_no_alarm() {
             crate::alarms::Edge::Started,
         );
     });
-    assert_eq!(episodes(&world), Vec::new(), "dropped before the send");
-    assert_eq!(sends(&world), Vec::<String>::new());
-    assert_eq!(
-        count(&world, "SELECT COUNT(*) FROM mono_outbox"),
-        0,
-        "no alarm row"
-    );
+    assert_eq!(told(&world), 0, "dropped before the send");
+    world.advance(PASS);
+    assert_eq!(told(&world), 0);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert!(!episode.open, "its turn closed the episode");
 }
 
 // Defect: a dropped alarm ends detection: the record that dropped it was lost,
-// no turn ever ran, and the agent stays stalled with nobody told.
+// no turn ever ran, and the agent stays stalled with nobody told. Level 1 stays
+// unsent for its 15 minutes; its row stands and the next level tells the next
+// provisioner.
 #[test]
 fn a_dropped_alarm_comes_back_and_escalates_when_the_agent_is_still_stalled() {
     let (mut world, _, mono) = message_waiting("alarm-retry-comes-back");
@@ -296,7 +304,7 @@ fn a_dropped_alarm_comes_back_and_escalates_when_the_agent_is_still_stalled() {
             crate::alarms::Edge::Started,
         );
     });
-    assert_eq!(episodes(&world), Vec::new(), "dropped");
+    assert_eq!(told(&world), 0, "dropped");
     world.store().alarms.take();
 
     assert_eq!(named(&mut world, PASS, &mono.chat), 0, "no second retry");
@@ -304,6 +312,66 @@ fn a_dropped_alarm_comes_back_and_escalates_when_the_agent_is_still_stalled() {
     assert_eq!(sends(&world), [GIGA]);
     world.advance(ESCALATE);
     assert_eq!(sends(&world), [GIGA, "tyler"]);
+    assert_eq!(episodes(&world).len(), 1, "the same episode");
+}
+
+// Defect (the ADE-278 seam): a dropped message also skips level 1's send row.
+// `chain` reads the rows by position, so with level 1's row gone the Giga's
+// level reads as the last before Tyler, and the climb stops short of Tyler.
+#[test]
+fn a_dropped_alarm_escalates_to_each_next_provisioner_on_schedule() {
+    let mut world = World::new("alarm-recheck-chain");
+    let (_, mono) = add_monos(&world);
+    let lead = start_lead(&world, &mono, "art-lead");
+    align(&mut world);
+    ran_a_turn(&mut world, &lead);
+    world.advance(N - PASS);
+    pass_racing(&mut world, |world| {
+        world
+            .store()
+            .alarms
+            .turn(lead.as_str(), "never-ran", crate::alarms::Edge::Started);
+    });
+    world.store().alarms.take();
+    assert_eq!(told(&world), 0, "dropped");
+    assert_eq!(sends(&world), ["mono:art-mono"]);
+
+    // The racing pass ran one slice ahead of the clock.
+    world.advance(ESCALATE);
+    assert_eq!(sends(&world), ["mono:art-mono"], "not before its clock");
+    world.advance(PASS);
+    assert_eq!(sends(&world), ["mono:art-mono", GIGA]);
+    assert_eq!(told(&world), 1, "the Giga is told");
+    world.advance(ESCALATE);
+    assert_eq!(sends(&world), ["mono:art-mono", GIGA, "tyler"]);
+}
+
+// Defect: the re-check stops a level that goes to Tyler, who has no later level
+// to reach him if the stall lasts.
+#[test]
+fn an_alarm_to_tyler_is_never_dropped() {
+    let mut world = World::new("alarm-recheck-tyler");
+    let (giga, _) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &giga.chat);
+    save_queue(&world, &giga.chat, json!([{"id": "stuck-1"}]), "active");
+    world.advance(2 * WAKE);
+    pass_racing(&mut world, |world| {
+        world.store().alarms.turn(
+            giga.chat.as_str(),
+            "never-ran",
+            crate::alarms::Edge::Started,
+        );
+    });
+    world.store().alarms.take();
+    assert_eq!(sends(&world), ["tyler"]);
+    let mut shown = 0;
+    crate::alarms::notify_tyler(world.store(), (world.active_ms(), world.now()), |_| {
+        shown += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(shown, 1, "Tyler is shown it");
 }
 
 // Defect: a dropped alarm uses up its stuck item: the turn that dropped it ran
@@ -328,15 +396,17 @@ fn an_item_a_quick_turn_left_behind_still_alarms_after_a_drop() {
             .alarms
             .turn(mono.chat.as_str(), "quick", crate::alarms::Edge::Started);
     });
-    assert_eq!(episodes(&world), Vec::new(), "dropped");
+    assert_eq!(told(&world), 0, "dropped");
     turn(&mut world, &mono.chat, "quick", false);
     world.advance(PASS);
+    let open = |world: &World| episodes(world).iter().filter(|e| e.open).count();
+    assert_eq!(open(&world), 0, "the quick turn closed it");
 
     assert_eq!(named(&mut world, WAKE + PASS, &mono.chat), 1, "a new retry");
-    assert_eq!(episodes(&world), Vec::new());
+    assert_eq!(open(&world), 0);
     world.advance(WAKE);
-    assert_eq!(episodes(&world).len(), 1, "the item alarms");
-    assert_eq!(sends(&world), [GIGA]);
+    assert_eq!(open(&world), 1, "the item alarms");
+    assert_eq!(told(&world), 1);
 }
 
 // Defect: the re-check drops a dialog alarm because the agent is busy (a
@@ -361,12 +431,7 @@ fn a_dialog_alarm_drops_only_when_the_dialog_was_answered() {
                 "the tap recorded {line}"
             );
         });
-        let causes: Vec<String> = episodes(&world)
-            .into_iter()
-            .map(|episode| episode.cause)
-            .collect();
-        assert_eq!(causes.len(), alarms, "{line}");
-        assert!(causes.iter().all(|cause| cause == "dialog"), "{line}");
+        assert_eq!(told(&world), alarms, "{line}");
     }
 }
 
@@ -384,7 +449,7 @@ fn the_re_check_covers_a_hung_turn_and_idle_open_work() {
     world.advance(N - PASS);
     assert_eq!(episodes(&world), Vec::new());
     pass_racing(&mut world, |_| claude.line(Pipe::Stdout, ASSISTANT));
-    assert_eq!(episodes(&world), Vec::new(), "it just printed");
+    assert_eq!(told(&world), 0, "it just printed");
 
     let mut world = World::new("alarm-recheck-idle");
     let (_, mono) = add_monos(&world);
@@ -399,7 +464,7 @@ fn the_re_check_covers_a_hung_turn_and_idle_open_work() {
             .alarms
             .turn(lead.as_str(), "t2", crate::alarms::Edge::Started);
     });
-    assert_eq!(episodes(&world), Vec::new(), "its turn just started");
+    assert_eq!(told(&world), 0, "its turn just started");
 }
 
 // Defect: the re-check drops a `hold_missing` alarm because a turn started,
@@ -442,6 +507,7 @@ fn nothing_new_in_the_hub_drops_nothing() {
     pass_racing(&mut world, |_| {});
     assert_one_alarm_from_the_first_sight(&world, &mono.chat, WAKE);
     assert_eq!(sends(&world), [GIGA]);
+    assert_eq!(told(&world), 1);
 }
 
 // Limit, as the rest of the detector rules it (`next_state`): an archived
