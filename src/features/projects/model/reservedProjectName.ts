@@ -3,7 +3,7 @@
  * become a project under that name, and no project may be labelled with it,
  * so a Giga and its user never mistake one for the workspace.
  */
-import { knownHomeDir, pathKey } from "../../../shared/lib/paths";
+import { isEqualOrInside, knownHomeDir, pathKey } from "../../../shared/lib/paths";
 import { gigaWorkspaceRoot } from "../../monos/model/gigaWorkspace";
 import {
   loadRecents,
@@ -31,6 +31,17 @@ export function isGigaWorkspaceProject(
   return (
     home !== undefined &&
     sameProjectPath(normalizeProjectPath(path), gigaWorkspaceRoot(home))
+  );
+}
+
+/** At or under `~/MonoCode`: no Remove, Archive or Delete. */
+export function isInGigaWorkspace(
+  path: string,
+  home: string | undefined,
+): boolean {
+  return (
+    home !== undefined &&
+    isEqualOrInside(normalizeProjectPath(path), gigaWorkspaceRoot(home))
   );
 }
 

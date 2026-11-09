@@ -60,6 +60,43 @@ export function setSpaceSettings(
   return invoke<SpaceSettings>("spaces_settings_set", { patch });
 }
 
+/** Archive and unarchive write only localStorage; this tells other windows. */
+export function notifySpaceProjectsChanged(): void {
+  // Only a courtesy to other windows: the write it reports has already landed.
+  void invoke("spaces_project_notify_changed").catch(() => undefined);
+}
+
+/** What deleting a project's data from the calling window's Space would do. */
+export type ProjectDeletePreview = {
+  lastSpace: boolean;
+  sessionCount: number;
+  otherSpaces: string[];
+  /** Other Spaces' chats that stay, hidden, when this delete runs. */
+  hiddenSessionCount: number;
+};
+
+export function previewProjectDelete(
+  projectPath: string,
+): Promise<ProjectDeletePreview> {
+  return invoke<ProjectDeletePreview>("spaces_project_delete_preview", {
+    projectPath,
+  });
+}
+
+/** Resolves when Archive may go ahead; rejects with T9's refusal. */
+export function checkProjectArchive(projectPath: string): Promise<null> {
+  return invoke<null>("spaces_project_archive_check", { projectPath });
+}
+
+/** The text of a typed Space refusal (`{ code, message }`), or of any failure. */
+export function refusalMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return String(error.message);
+  }
+  return String(error);
+}
+
 /** The Space `projectPath` belongs to, by the backend's one rule. */
 export function projectSpace(projectPath: string): Promise<string> {
   return invoke<string>("spaces_project_get", { projectPath });
