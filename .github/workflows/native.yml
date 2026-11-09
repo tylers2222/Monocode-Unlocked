@@ -81,6 +81,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # cache-seed.yml saves these entries from tyler/main; this workflow only restores.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "crates/monocode-gpui -> target"
+          shared-key: native-${{ runner.os }}
+          save-if: false
       - name: Install Linux core dependencies
         if: runner.os == 'Linux'
         run: |
@@ -101,6 +107,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # cache-seed.yml saves these entries from tyler/main; this workflow only restores.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "crates/monocode-gpui -> target"
+          shared-key: native-${{ runner.os }}
+          save-if: false
       - run: rustup toolchain install "$(cat .github/rust-version)" --profile minimal --component rustfmt && cargo "+$(cat .github/rust-version)" fmt --manifest-path crates/monocode-gpui/Cargo.toml --all --check
       - run: cargo clippy --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-core -p monocode-gpui --all-targets --profile native-dev -- -D warnings
       - run: cargo test --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-core --profile native-dev

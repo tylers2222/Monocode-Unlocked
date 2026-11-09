@@ -1,0 +1,97 @@
+name: cache-seed
+
+# Saves the Rust cache entries pull requests restore, on a path that is never cancelled and
+# that compiles without running tests. rust-cache saves only after a green job, so a red or
+# cancelled tyler/main run saves nothing, and its key changes only with Cargo.lock or rustc.
+# It runs when one of those can change. The daily run brings back an entry the 10 GiB store
+# evicted and picks up a new stable rustc; a job whose key still exists saves nothing.
+on:
+  push:
+    branches: [tyler/main]
+    paths:
+      - Cargo.lock
+      - crates/monocode-gpui/Cargo.lock
+      - .github/rust-version
+      - .github/workflows/cache-seed.yml
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push waits for this run to end.
+concurrency:
+  group: cache-seed
+  cancel-in-progress: false
+
+jobs:
+  # The same keys as ci.yml's check job and gate/lint, which also still save on a green push.
+  check:
+    name: seed check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+      - id: rust-version
+        shell: bash
+        run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+          shared-key: check-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --no-run
+
+  # Linux and Windows: native.yml's Core job. macOS: its desktop job, which builds a superset
+  # of Core, so Core on macOS restores this entry too.
+  native:
+    name: seed native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            packages: -p monocode-core
+          - os: windows-latest
+            packages: -p monocode-core
+          - os: macos-latest
+            packages: -p monocode-core -p monocode-gpui
+    runs-on: ${{ matrix.os }}
+    # Not a CARGO_ name: rust-cache hashes those into the key, which then misses native.yml's.
+    env:
+      NATIVE_FLAGS: --manifest-path crates/monocode-gpui/Cargo.toml --locked --profile native-dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install Linux core dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "crates/monocode-gpui -> target"
+          shared-key: native-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
+      - shell: bash
+        run: cargo clippy $NATIVE_FLAGS ${{ matrix.packages }} --all-targets -- -D warnings
+      - shell: bash
+        run: cargo test $NATIVE_FLAGS ${{ matrix.packages }} --no-run

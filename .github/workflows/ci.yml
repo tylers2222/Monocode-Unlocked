@@ -31,8 +31,8 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             mobile/package-lock.json
-      - run: npm ci
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm ci --prefer-offline --no-audit --no-fund
         working-directory: mobile
       - run: npm run lint
         working-directory: mobile
@@ -70,7 +70,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
       # The browser builds and the apt package list depend only on the OS image
       # and the exact playwright-core version, so a Playwright bump makes new
       # keys and a miss. apt downloads its .deb files into a runner-owned folder,
@@ -98,11 +98,37 @@ jobs:
         with:
           path: ~/apt-archives/*.deb
           key: ${{ steps.playwright.outputs.apt-key }}
-      # On a cache hit playwright skips a browser whose INSTALLATION_COMPLETE
-      # marker is already in the cache, and apt fetches only the index. apt
-      # writes the .deb files as root, so hand them to the runner for the save.
-      - run: |
-          npx playwright install --with-deps chromium webkit
+      # A browser hit needs no install. A package hit installs the cached .deb files with
+      # dpkg: the hosted image lacks all 181 packages, some of them fonts and gstreamer
+      # plugins that ldd cannot see, so an ldd check alone would never skip this. dpkg skips
+      # apt-get update and the resolver. Any dpkg failure or library that ldd still misses
+      # falls back to apt, which repairs the half-installed state. apt writes .deb files
+      # as root, so hand them to the runner for the save.
+      - name: Install Playwright browsers and system libraries
+        env:
+          BROWSERS_HIT: ${{ steps.playwright-cache.outputs.cache-hit }}
+          DEBS_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          missing_libs() {
+            find ~/.cache/ms-playwright -type f \( -name chrome -o -name MiniBrowser \) | while read -r bin; do
+              dir=$(dirname "$bin")
+              LD_LIBRARY_PATH="$dir:$dir/../lib:$dir/../sys/lib" ldd "$bin" | grep 'not found' || true
+            done
+          }
+          if [ "$BROWSERS_HIT" != true ]; then npx playwright install chromium webkit; fi
+          sudo rm -f /var/lib/man-db/auto-update
+          if [ "$DEBS_HIT" = true ] && sudo dpkg -i --force-unsafe-io ~/apt-archives/*.deb > "$RUNNER_TEMP/dpkg.log" 2>&1; then
+            missing=$(missing_libs)
+            if [ -z "$missing" ]; then echo "Installed the cached packages with dpkg"; exit 0; fi
+            echo "ldd still misses: $missing"
+          elif [ "$DEBS_HIT" = true ]; then
+            tail -n 20 "$RUNNER_TEMP/dpkg.log"
+          fi
+          echo "Falling back to apt"
+          sudo apt-get update -qq
+          sudo apt-get -f install -y
+          npx playwright install-deps chromium webkit
           sudo chown -R "$USER" ~/apt-archives
       # Saved right after the download, so a failing test run still fills them.
       - name: Save Playwright browsers
@@ -155,7 +181,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npm run test:host
       - run: node --test host/runtime-download.test.mjs
       - name: Cache pinned host runtimes
@@ -265,7 +291,7 @@ jobs:
           shared-key: check-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
       # The real srt for scenario::logins::a_linked_login_signs_in_under_the_real_srt
       # (ADE-224), the version agent_sandbox.rs pins.
       - run: npm install -g @anthropic-ai/sandbox-runtime@0.0.81
@@ -315,7 +341,7 @@ jobs:
       - name: Install Linux system dependencies
         run: bash scripts/install-linux-deps-debian.sh
 
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Build Linux packages
         run: npm run build:linux
@@ -380,7 +406,7 @@ jobs:
           shared-key: rpm-${{ matrix.image }}
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npm run build:fedora
 
       - name: Install the generated rpm

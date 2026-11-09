@@ -31,7 +31,7 @@ jobs:
 
       # --ignore-scripts: no package.json or dependency lifecycle script runs.
       - id: deps
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
 
       - name: Growth check parser tests
         if: ${{ !cancelled() }}
