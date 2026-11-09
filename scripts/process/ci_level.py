@@ -81,9 +81,9 @@ def merge_head() -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def stale_reason(event: str, head: str, held: str | None) -> str | None:
-    """Why this run proves nothing about head, or None when it does."""
-    if event != "pull_request" or (head and held == head):
+def stale_reason(head: str, held: str | None) -> str | None:
+    """Why a pull_request run proves nothing about head, or None when it does."""
+    if head and held == head:
         return None
     return f"the merge commit holds {held or 'no second parent'}, not the PR head {head or '(empty)'}"
 
@@ -96,7 +96,7 @@ def main(argv: Sequence[str]) -> int:
     full, why = decide(event, payload_draft, lambda: read_pr(repo, pr))
     print(f"ci-level: {why}", file=sys.stderr)
     print(f"level={'full' if full else 'fast'}")
-    stale = stale_reason(event, head, merge_head() if event == "pull_request" else None)
+    stale = stale_reason(head, merge_head()) if event == "pull_request" else None
     if stale:
         print(f"::error::ci-level: {stale}. Push again or wait for GitHub to update the merge ref.")
         return 1
