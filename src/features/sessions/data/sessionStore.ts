@@ -906,6 +906,62 @@ export async function deleteSession(
   }
 }
 
+export type ProjectDeleteResult = {
+  deletedSessionIds: string[];
+  lastSpace: boolean;
+  /** Set when the delete stopped; `deletedSessionIds` are the rows that went. */
+  failure?: unknown;
+};
+
+/** For good: a session still open must never save a deleted chat back (H2). */
+function tombstoneSession(sessionId: string): void {
+  deletedSessionIds.add(sessionId);
+  monoSavedBlocks.delete(sessionId);
+}
+
+/**
+ * Deletes a project's data from the calling window's Space (spec T10, T11,
+ * T16). `spaces_project_delete` bypasses each session's write queue, so this
+ * Space's known rows take no new writes and those in flight finish first. After
+ * a failure a row still there saves again, and one that went stays deleted. If
+ * that cannot be read, none of them saves for a minute.
+ */
+export async function deleteProjectInSpace(
+  projectPath: string,
+  ownSessionIds: readonly string[],
+): Promise<ProjectDeleteResult> {
+  for (const id of ownSessionIds) deletedSessionIds.add(id);
+  await Promise.allSettled([...sessionWriteQueues.values()]);
+  try {
+    const result = await invoke<ProjectDeleteResult>("spaces_project_delete", {
+      projectPath: normalizeProjectPath(projectPath),
+    });
+    for (const id of ownSessionIds) deletedSessionIds.delete(id);
+    for (const id of result.deletedSessionIds) tombstoneSession(id);
+    return result;
+  } catch (failure) {
+    const left = await listSessionsByProject(projectPath).then(
+      (rows) => new Set(rows.map((row) => row.id)),
+      () => undefined,
+    );
+    if (!left) {
+      for (const id of ownSessionIds) {
+        setTimeout(() => deletedSessionIds.delete(id), 60_000);
+      }
+      return { deletedSessionIds: [], lastSpace: false, failure };
+    }
+    for (const id of ownSessionIds) {
+      if (left.has(id)) deletedSessionIds.delete(id);
+      else tombstoneSession(id);
+    }
+    return {
+      deletedSessionIds: ownSessionIds.filter((id) => !left.has(id)),
+      lastSpace: false,
+      failure,
+    };
+  }
+}
+
 /** Delete a draft-only record while allowing its still-open blank session id to be saved later. */
 export async function discardDraftSessionRecord(
   sessionId: string,
