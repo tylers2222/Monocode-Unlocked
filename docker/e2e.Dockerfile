@@ -45,7 +45,7 @@ RUN set -eu; case "$TARGETARCH" in \
       amd64) asset=omp-linux-x64 sum=97cf39557bf3d98327dd4c9814380b7e6bcb76e41169edd9b0ff30424c733a2a ;; \
       arm64) asset=omp-linux-arm64 sum=c115f95a0a0081d3724a3c878231fb8c3b2fdb25ad5ad6c3b30d152a82b3939e ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/omp "https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/$asset"; \
+    curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 15 -o /usr/local/bin/omp "https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/$asset"; \
     echo "$sum  /usr/local/bin/omp" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/omp; \
     omp --version
