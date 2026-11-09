@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, tyler/main]
   pull_request:
+    # ready_for_review starts the full set on a PR that ran only the fast set as a draft.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # A push gets one group per branch, so a newer push cancels the older run.
 concurrency:
@@ -51,7 +53,8 @@ jobs:
     # saves below run on shard 1 only, so the shards do not race to write one key.
     name: browser (${{ matrix.shard }}/${{ strategy.job-total }})
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.browser != 'false' }}
+    # Full set only (scripts/process/ci_level.py).
+    if: ${{ !cancelled() && needs.changes.outputs.level != 'fast' && needs.changes.outputs.browser != 'false' }}
     strategy:
       # A pull request stops at the first red leg; a push runs every leg, so main-red lists all.
       fail-fast: ${{ github.event_name == 'pull_request' }}
@@ -167,7 +170,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # ci_level.py reads the PR's draft state and labels.
+      pull-requests: read
     outputs:
+      level: ${{ steps.level.outputs.level }}
       release-channel: ${{ steps.paths.outputs.release-channel }}
       browser: ${{ steps.paths.outputs.browser }}
       host: ${{ steps.paths.outputs.host }}
@@ -195,6 +201,22 @@ jobs:
           set -euo pipefail
           python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"
 
+      # Draft or ready: scripts/process/ci_level.py. It also fails this job when the merge
+      # ref does not hold the event's head. A separate output from the path decision:
+      # merge-when-green.sh reads the path decision's log, and a draft is not a path reason.
+      - name: Decide the level (fast on a draft, else full)
+        id: level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/process/ci_level.py "$EVENT" "$DRAFT" "$PR" "$REPO" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+
   # The ubuntu leg also runs the release-channel test, so a release-channel change
   # alone runs this job.
   check:
@@ -204,8 +226,8 @@ jobs:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         # The Windows leg runs after the merge (a push) only; a red one opens the
-        # "tyler/main CI red" issue.
-        os: ${{ github.event_name == 'push' && fromJSON('["macos-latest", "ubuntu-latest", "windows-latest"]') || fromJSON('["macos-latest", "ubuntu-latest"]') }}
+        # "tyler/main CI red" issue. The macOS leg is in the full set only.
+        os: ${{ github.event_name == 'push' && fromJSON('["macos-latest", "ubuntu-latest", "windows-latest"]') || needs.changes.outputs.level == 'fast' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -450,8 +472,10 @@ jobs:
 
   # The one check for the ruleset: a matrix job that is skipped never reports its
   # per-leg name, so a required leg would leave a PR pending. Keep the name `ci`.
+  # On the fast set it runs under another name, so the required `ci` stays absent and a
+  # draft's run can never pass it, also when that run is re-run later.
   ci:
-    name: ci
+    name: ${{ needs.changes.outputs.level == 'fast' && 'ci (fast)' || 'ci' }}
     needs: [changes, mobile, browser, host, check, appimage, rpm, rpm-clean-install]
     if: always()
     runs-on: ubuntu-latest
@@ -459,14 +483,25 @@ jobs:
     outputs:
       failed: ${{ steps.results.outputs.failed }}
     steps:
-      - name: Every job passed or was skipped
+      # A job passes only by success. It may be skipped only when it is named here, for the
+      # reason that `changes` gave or the event. So a job skipped for any other reason
+      # fails this check, and a new job in `needs` must succeed until it is named here.
+      - name: Every job passed, or was skipped for a stated reason
         id: results
         env:
           NEEDS: ${{ toJSON(needs) }}
+          SKIP_OK: >-
+            ${{ needs.changes.outputs.mobile == 'false' && 'mobile' || '' }}
+            ${{ (needs.changes.outputs.level == 'fast' || needs.changes.outputs.browser == 'false') && 'browser' || '' }}
+            ${{ needs.changes.outputs.host == 'false' && 'host' || '' }}
+            ${{ (needs.changes.outputs.check == 'false' && needs.changes.outputs.release-channel == 'false') && 'check' || '' }}
+            ${{ (github.event_name != 'push' || needs.changes.outputs.appimage == 'false') && 'appimage' || '' }}
+            ${{ (github.event_name != 'push' || needs.changes.outputs.rpm == 'false') && 'rpm rpm-clean-install' || '' }}
         run: |
           set -euo pipefail
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          failed="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$NEEDS")"
+          echo "May be skipped: $SKIP_OK"
+          failed="$(jq -r --arg skip "$SKIP_OK" '($skip | split(" ")) as $ok | [to_entries[] | select(.value.result != (if (.key | IN($ok[])) then "skipped" else "success" end)) | .key] | join(", ")' <<<"$NEEDS")"
           echo "failed=$failed" >> "$GITHUB_OUTPUT"
           if [ -n "$failed" ]; then
             echo "Failed or cancelled: $failed" >&2

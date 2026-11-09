@@ -7,6 +7,8 @@ name: E2E
 # Every agent is the fx puppet: no model, no secrets.
 on:
   pull_request:
+    # ready_for_review starts the full set on a PR that ran only the fast set as a draft.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [tyler/main]
   schedule:
@@ -59,7 +61,12 @@ jobs:
     name: Changed paths (e2e)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # ci_level.py reads the PR's draft state and labels.
+      pull-requests: read
     outputs:
+      level: ${{ steps.level.outputs.level }}
       e2e-linux: ${{ steps.paths.outputs.e2e-linux }}
       e2e-macos: ${{ steps.paths.outputs.e2e-macos }}
     steps:
@@ -77,14 +84,31 @@ jobs:
           set -euo pipefail
           python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"
 
-  e2e-linux:
-    name: e2e-linux
+      # Draft or ready: scripts/process/ci_level.py. It also fails this job when the merge
+      # ref does not hold the event's head. A separate output from the path decision:
+      # merge-when-green.sh reads the path decision's log, and a draft is not a path reason.
+      - name: Decide the level (fast on a draft, else full)
+        id: level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/process/ci_level.py "$EVENT" "$DRAFT" "$PR" "$REPO" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+
+  # The suites. The required check is the e2e-linux job below, not this one.
+  e2e-linux-run:
+    name: e2e-linux run
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.e2e-linux != 'false' }}
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-linux != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      # ci.yml's browser job runs the browser specs headless on every PR. Headed
+      # ci.yml's browser job runs the browser specs headless on a ready PR. Headed
       # in this image, three webkit specs fail on timing (ADE-113, ADE-114,
       # ADE-115), so the browser suite runs here only when a dispatch asks.
       SUITES: ${{ inputs.suite == 'all' && 'browser evals milestones scenarios' || inputs.suite || 'evals milestones scenarios' }}
@@ -158,7 +182,7 @@ jobs:
   e2e-macos-1:
     name: e2e-macos-1
     needs: changes
-    if: &e2e-macos-if ${{ !cancelled() && github.event_name != 'schedule' && inputs.macos_build != 'release' && needs.changes.outputs.e2e-macos != 'false' && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
+    if: &e2e-macos-if ${{ !cancelled() && github.event_name != 'schedule' && inputs.macos_build != 'release' && needs.changes.outputs.level != 'fast' && needs.changes.outputs.e2e-macos != 'false' && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
     runs-on: macos-latest
     timeout-minutes: 150
     env:
@@ -240,6 +264,34 @@ jobs:
       E2E_MACOS_SHARD: "2"
       E2E_CACHE_KEY: e2e-macos-debug
     steps: *e2e-macos-steps
+
+  # The required check. GitHub counts a skipped required check as passed, so this job is
+  # never skipped on a pull request: it passes only when every suite passed, or when a
+  # suite was skipped for a reason named in SKIP_OK. It covers the macOS shards too, which
+  # the ruleset does not name. On the fast set it runs under another name, so the required
+  # e2e-linux stays absent and a draft's run can never pass it, also when re-run later.
+  e2e-linux:
+    name: ${{ needs.changes.outputs.level == 'fast' && 'e2e-linux (not run on a draft)' || 'e2e-linux' }}
+    needs: [changes, e2e-linux-run, e2e-macos-1, e2e-macos-2]
+    if: ${{ always() && github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Every suite passed, or was skipped for a stated reason
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          SKIP_OK: >-
+            ${{ (needs.changes.outputs.level == 'fast' || needs.changes.outputs.e2e-linux == 'false') && 'e2e-linux-run' || '' }}
+            ${{ (needs.changes.outputs.level == 'fast' || needs.changes.outputs.e2e-macos == 'false' || (github.event_name == 'workflow_dispatch' && (inputs.macos_build == 'release' || !contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all')))) && 'e2e-macos-1 e2e-macos-2' || '' }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          echo "May be skipped: $SKIP_OK"
+          failed="$(jq -r --arg skip "$SKIP_OK" '($skip | split(" ")) as $ok | [to_entries[] | select(.value.result != (if (.key | IN($ok[])) then "skipped" else "success" end)) | .key] | join(", ")' <<<"$NEEDS")"
+          if [ -n "$failed" ]; then
+            echo "Failed, cancelled or skipped with no reason: $failed" >&2
+            exit 1
+          fi
 
   # Every scenario on a release build, so an optimised build still runs them
   # before a release ships. Not on pull requests.
