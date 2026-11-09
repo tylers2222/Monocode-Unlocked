@@ -36,9 +36,8 @@ fn add_mono(app: &App<MockRuntime>, id: &str) {
         "sortOrder": 0,
     }))
     .unwrap();
-    let store = app.state::<SessionStore>();
-    let conn = store.lock_conn().unwrap();
-    mono_roster::create(&conn, &mono_roster::validate_create(mono).unwrap()).unwrap();
+    let window = crate::scenario::agent_sandbox::main_window(app);
+    mono_roster::monos_create(app.handle().clone(), window, app.state(), mono).unwrap();
 }
 
 /// A window save of session `id` in `PROJECT`, linked to a PR so the linked
@@ -56,7 +55,8 @@ fn save(app: &App<MockRuntime>, id: &str) -> SessionSummary {
         "linkedWorkItem": {"kind": "pr", "repo": "o/r", "number": 1, "url": "https://example.com/1"},
     }))
     .unwrap();
-    session_store::session_upsert(app.state(), session).unwrap()
+    let window = crate::scenario::agent_sandbox::main_window(app);
+    session_store::session_upsert(window, app.state(), session).unwrap()
 }
 
 fn switch_to(app: &App<MockRuntime>, space: &str) {

@@ -1004,27 +1004,24 @@ pub fn harness_spawn<R: Runtime>(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
-    let (neutral, space);
+    let neutral;
     let child = match &helper {
         None => crate::spaces::Child::Session(&session_id),
         Some(helper) => {
             neutral = helper_folder(&app)?;
-            space = crate::spaces::window_space(
-                &app.state::<crate::session_store::SessionStore>(),
-                window.label(),
-            )?;
             crate::spaces::Child::Helper {
                 key: Some(&session_id),
                 owner: helper.owner.as_deref(),
                 neutral: &neutral,
-                window: &space,
             }
         }
     };
+    let store = app.state::<crate::session_store::SessionStore>();
     // The hook may move the child to another folder, so the check is on its output.
     let crate::spaces::SpawnTarget { workdir, account } = crate::spaces::prepare_spawn(
-        &app.state::<crate::session_store::SessionStore>(),
+        &store,
         child,
+        crate::spaces::window_space(&store, window.label())?.as_deref(),
         binary_provider
             .as_deref()
             .and_then(crate::spaces::Provider::parse),
@@ -1723,8 +1720,8 @@ pub async fn harness_exec<R: Runtime>(
                 key: helper.as_ref().and_then(|helper| helper.key.as_deref()),
                 owner: helper.as_ref().and_then(|helper| helper.owner.as_deref()),
                 neutral: &neutral,
-                window: &space,
             },
+            space.as_deref(),
             binary_provider
                 .as_deref()
                 .and_then(crate::spaces::Provider::parse),

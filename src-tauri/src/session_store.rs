@@ -292,8 +292,11 @@ pub struct SessionRecord {
     pub updated_at: i64,
 }
 
+/// Saves `session`. A new row with no parent joins the Space of `window`,
+/// the window that saves it ([`crate::spaces::window_space`], ADE-244).
 #[tauri::command(async)]
-pub fn session_upsert(
+pub fn session_upsert<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     session: SessionUpsert,
 ) -> Result<SessionSummary, String> {
@@ -323,8 +326,9 @@ pub fn session_upsert(
         return Err("blocks must be an array".into());
     }
 
+    let space = crate::spaces::window_space(&store, window.label())?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    let summary = upsert_session(&conn, &session, space.as_deref()).map_err(|e| e.to_string())?;
     Ok(summary)
 }
 
@@ -1421,9 +1425,12 @@ fn placed_copy(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> 
 }
 
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
+/// A new row with no parent joins `window`, the Space of the window that
+/// saves it ([`crate::spaces::membership::space_for_row`]).
 pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
+    window: Option<&str>,
 ) -> rusqlite::Result<SessionSummary> {
     let now = now_millis();
     let model_settings = serde_json::to_string(&session.model_settings)
@@ -1536,6 +1543,7 @@ pub(crate) fn upsert_session(
             conn,
             &session.id,
             session.lead_session_id.as_deref(),
+            window,
         )?,
     };
 
@@ -2652,6 +2660,7 @@ pub(crate) fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spaces::FIRST_SPACE;
     use rusqlite::hooks::{AuthAction, Authorization};
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
@@ -2662,7 +2671,7 @@ mod tests {
         let conn = store.lock_conn().unwrap();
         let mut mono = sample("mono", "/tmp/a", "Mono");
         mono.blocks = json!([{ "id":"old", "role":"user", "text":"Archived needle" }, { "id":"answer", "role":"assistant", "text":"Done" }]);
-        upsert_session(&conn, &mono).unwrap();
+        upsert_session(&conn, &mono, Some(FIRST_SPACE)).unwrap();
         crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
         let result = search_sessions(
             &conn,
@@ -2770,8 +2779,18 @@ mod tests {
     fn legacy_inbox_chats_are_not_normal_sessions() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
-        upsert_session(&conn, &sample("project", "/tmp/project", "Login")).unwrap();
-        upsert_session(&conn, &sample("ask", "/tmp/project", "Login")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("project", "/tmp/project", "Login"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &sample("ask", "/tmp/project", "Login"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         conn.execute("UPDATE sessions SET inbox_ask = '{}' WHERE id = 'ask'", [])
             .unwrap();
         migrate(&conn).unwrap();
@@ -2802,7 +2821,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for id in ["lead", "worker-a", "worker-b", "unrelated"] {
-            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+            upsert_session(&conn, &sample(id, "/tmp/a", id), Some(FIRST_SPACE)).unwrap();
         }
         let run = json!({"status": "active", "tasks": [
             {"sessionId": "worker-a", "title": "UI", "harness": "codex", "model": "one", "status": "running", "prompt": "private instructions", "result": "large result"},
@@ -2835,13 +2854,13 @@ mod tests {
         worker.blocks =
             json!([{"id": "u", "role": "user", "text": "Task", "orchestrationLeadId": "lead"}]);
         worker.linked_work_item = Some(json!({"kind": "pr", "number": 1}));
-        let summary = upsert_session(&conn, &worker).unwrap();
+        let summary = upsert_session(&conn, &worker, Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.orchestration_lead_id.as_deref(), Some("lead"));
         assert!(list_by_project(&conn, "/tmp/a").unwrap().is_empty());
         assert!(list_linked(&conn).unwrap().is_empty());
         // An older renderer's next write cannot accidentally detach a worker.
         worker.blocks = json!([{"id": "u", "role": "user", "text": "Task"}]);
-        upsert_session(&conn, &worker).unwrap();
+        upsert_session(&conn, &worker, Some(FIRST_SPACE)).unwrap();
         assert!(list_by_project(&conn, "/tmp/a").unwrap().is_empty());
     }
 
@@ -2850,7 +2869,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for id in ["lead", "old-worker", "current-worker"] {
-            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+            upsert_session(&conn, &sample(id, "/tmp/a", id), Some(FIRST_SPACE)).unwrap();
         }
         conn.execute(
             "UPDATE sessions SET blocks_json = ?1 WHERE id = 'old-worker'",
@@ -2889,7 +2908,7 @@ mod tests {
     fn list_by_project_is_served_by_a_covering_index() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "A1")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "A1"), Some(FIRST_SPACE)).unwrap();
         for upgraded in [false, true] {
             if upgraded {
                 // Exercise an existing v15 database with the old projection.
@@ -2935,7 +2954,7 @@ mod tests {
         let conn = store.conn.lock().unwrap();
         let mut quiet = sample("s1", "/tmp/a", "Quiet");
         quiet.blocks = json!([{ "id": "b1", "role": "assistant", "text": "hi" }]);
-        upsert_session(&conn, &quiet).unwrap();
+        upsert_session(&conn, &quiet, Some(FIRST_SPACE)).unwrap();
         assert!(list_by_project(&conn, "/tmp/a").unwrap().is_empty());
 
         // The flag has to follow the transcript, not just the first write.
@@ -2943,7 +2962,7 @@ mod tests {
             { "id": "b1", "role": "assistant", "text": "hi" },
             { "id": "b2", "role": "user", "text": "hello" }
         ]);
-        upsert_session(&conn, &quiet).unwrap();
+        upsert_session(&conn, &quiet, Some(FIRST_SPACE)).unwrap();
         assert_eq!(list_by_project(&conn, "/tmp/a").unwrap().len(), 1);
     }
 
@@ -2958,7 +2977,7 @@ mod tests {
             { "id": "b3", "role": "user", "text": "hello", "draft": true }
         ]);
 
-        let saved = upsert_session(&conn, &session).unwrap();
+        let saved = upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         assert!(saved.draft);
         assert!(list_by_project(&conn, "/tmp/a").unwrap()[0].draft);
 
@@ -2967,7 +2986,7 @@ mod tests {
             { "id": "b2", "role": "assistant", "text": "done" },
             { "id": "b3", "role": "user", "text": "hello" }
         ]);
-        let sent = upsert_session(&conn, &session).unwrap();
+        let sent = upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         assert!(!sent.draft);
         assert!(!list_by_project(&conn, "/tmp/a").unwrap()[0].draft);
     }
@@ -3029,7 +3048,7 @@ mod tests {
         {
             let store = SessionStore::open(path.clone()).unwrap();
             let conn = store.conn.lock().unwrap();
-            upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
+            upsert_session(&conn, &sample("kept", "/tmp/a", "Kept"), Some(FIRST_SPACE)).unwrap();
             conn.execute_batch("DROP TABLE monos; DROP TABLE monos_legacy_import;")
                 .unwrap();
             conn.execute(
@@ -3106,7 +3125,8 @@ mod tests {
     fn upsert_preserves_created_at_and_updates_fields() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        let first = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        let first =
+            upsert_session(&conn, &sample("s1", "/tmp/a", "First"), Some(FIRST_SPACE)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut next = sample("s1", "/tmp/a", "Updated");
         next.provider_session_id = Some("acp-session-2".into());
@@ -3114,7 +3134,7 @@ mod tests {
             { "id": "b1", "role": "user", "text": "hello" },
             { "id": "b2", "role": "assistant", "text": "world" }
         ]);
-        let second = upsert_session(&conn, &next).unwrap();
+        let second = upsert_session(&conn, &next, Some(FIRST_SPACE)).unwrap();
         assert_eq!(second.created_at, first.created_at);
         assert!(second.updated_at > first.updated_at);
         assert_eq!(second.title, "Updated");
@@ -3132,7 +3152,7 @@ mod tests {
             { "id": "t", "role": "tool", "text": "npm test",
               "tool": { "kind": "execute", "status": "completed", "detail": output } }
         ]);
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
 
         // What `session_get` hands the transcript.
         let mut loaded = get_session(&conn, "s1").unwrap().unwrap().blocks;
@@ -3143,7 +3163,7 @@ mod tests {
             .unwrap()
             .push(json!({ "id": "a", "role": "assistant", "text": "done" }));
         row.blocks = loaded;
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
 
         let stored = get_session(&conn, "s1").unwrap().unwrap().blocks;
         assert_eq!(stored[1]["tool"]["detail"], output);
@@ -3162,7 +3182,7 @@ mod tests {
         let mut row = sample("s1", "/tmp/a", "First");
         row.context_used = Some(29_821);
         row.context_window = Some(1_000_000);
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         let stored = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(stored.context_used, Some(29_821));
         assert_eq!(stored.context_window, Some(1_000_000));
@@ -3179,7 +3199,7 @@ mod tests {
         ];
         row.queue_status = Some("paused".into());
         row.queue_pause = Some("error".into());
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         let stored = get_session(&conn, "queued").unwrap().unwrap();
         assert_eq!(stored.queued_messages, row.queued_messages);
         assert_eq!(stored.queue_status.as_deref(), Some("paused"));
@@ -3189,7 +3209,7 @@ mod tests {
         row.queued_messages.clear();
         row.queue_status = None;
         row.queue_pause = None;
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         let stored = get_session(&conn, "queued").unwrap().unwrap();
         assert!(stored.queued_messages.is_empty());
         assert_eq!(stored.queue_status, None);
@@ -3204,14 +3224,18 @@ mod tests {
         let mut row = sample("hidden", "/tmp/a", "Review");
         row.sidebar_hidden = true;
         row.linked_work_item = Some(json!({"kind": "pr", "repo": "a/b", "number": 1}));
-        assert!(upsert_session(&conn, &row).unwrap().sidebar_hidden);
+        assert!(
+            upsert_session(&conn, &row, Some(FIRST_SPACE))
+                .unwrap()
+                .sidebar_hidden
+        );
         assert!(list_by_project(&conn, &row.cwd).unwrap()[0].sidebar_hidden);
         assert!(list_linked(&conn).unwrap()[0].sidebar_hidden);
         let stored = get_session(&conn, &row.id).unwrap().unwrap();
         assert!(stored.sidebar_hidden);
         assert_eq!(stored.blocks, row.blocks);
         row.title = "Review complete".into();
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         assert!(get_session(&conn, &row.id).unwrap().unwrap().sidebar_hidden);
     }
 
@@ -3219,7 +3243,12 @@ mod tests {
     fn sidebar_visibility_migration_keeps_existing_sessions_visible() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
-        upsert_session(&conn, &sample("existing", "/tmp/a", "Existing")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("existing", "/tmp/a", "Existing"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         conn.execute_batch(
             "DROP INDEX sessions_cwd_cover_idx;
              ALTER TABLE sessions DROP COLUMN sidebar_hidden;
@@ -3249,7 +3278,7 @@ mod tests {
             "url": "https://github.com/openai/codex/pull/42"
         }));
 
-        let summary = upsert_session(&conn, &row).unwrap();
+        let summary = upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.linked_work_item, row.linked_work_item);
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
         assert_eq!(listed[0].linked_work_item, row.linked_work_item);
@@ -3261,7 +3290,7 @@ mod tests {
     fn linked_work_item_can_be_set_and_removed_without_rewriting_the_session() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Fix PR")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Fix PR"), Some(FIRST_SPACE)).unwrap();
         let linked = json!({
             "kind": "pr",
             "repo": "openai/codex",
@@ -3289,7 +3318,7 @@ mod tests {
         let mut row = sample("s1", "/tmp/a", "Nightly review");
         row.automation_id = Some("automation-id".into());
 
-        let summary = upsert_session(&conn, &row).unwrap();
+        let summary = upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.automation_id.as_deref(), Some("automation-id"));
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
         assert_eq!(listed[0].automation_id.as_deref(), Some("automation-id"));
@@ -3305,12 +3334,12 @@ mod tests {
         let conn = store.conn.lock().unwrap();
         let mut row = sample("s1", "/tmp/a", "Plan");
         row.work_folder = Some("/tmp/a/gigas/alpha".into());
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         let stored = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(stored.work_folder.as_deref(), Some("/tmp/a/gigas/alpha"));
         assert_eq!(stored.worktree_cwd, None);
         row.work_folder = None;
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         assert_eq!(get_session(&conn, "s1").unwrap().unwrap().work_folder, None);
     }
 
@@ -3322,12 +3351,12 @@ mod tests {
         let conn = store.conn.lock().unwrap();
         let mut row = sample("s1", "/tmp/a", "Plan");
         row.mcp = Some("none".into());
-        upsert_session(&conn, &row).unwrap();
+        upsert_session(&conn, &row, Some(FIRST_SPACE)).unwrap();
         assert_eq!(
             get_session(&conn, "s1").unwrap().unwrap().mcp.as_deref(),
             Some("none")
         );
-        upsert_session(&conn, &sample("s2", "/tmp/a", "Plan")).unwrap();
+        upsert_session(&conn, &sample("s2", "/tmp/a", "Plan"), Some(FIRST_SPACE)).unwrap();
         assert_eq!(get_session(&conn, "s2").unwrap().unwrap().mcp, None);
     }
 
@@ -3345,9 +3374,14 @@ mod tests {
         first.linked_work_item = Some(linked.clone());
         let mut second = sample("s2", "/tmp/b", "Second");
         second.linked_work_item = Some(linked);
-        upsert_session(&conn, &first).unwrap();
-        upsert_session(&conn, &second).unwrap();
-        upsert_session(&conn, &sample("s3", "/tmp/a", "Unlinked")).unwrap();
+        upsert_session(&conn, &first, Some(FIRST_SPACE)).unwrap();
+        upsert_session(&conn, &second, Some(FIRST_SPACE)).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s3", "/tmp/a", "Unlinked"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
 
         let rows = list_linked(&conn).unwrap();
         assert_eq!(rows.len(), 2);
@@ -3360,7 +3394,7 @@ mod tests {
     fn context_usage_is_absent_until_a_harness_reports() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "First"), Some(FIRST_SPACE)).unwrap();
         let stored = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(stored.context_used, None);
         assert_eq!(stored.context_window, None);
@@ -3384,11 +3418,12 @@ mod tests {
     fn upsert_same_blocks_keeps_updated_at() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        let first = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        let first =
+            upsert_session(&conn, &sample("s1", "/tmp/a", "First"), Some(FIRST_SPACE)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut next = sample("s1", "/tmp/a", "First");
         next.model = "gpt-5.4".into();
-        let second = upsert_session(&conn, &next).unwrap();
+        let second = upsert_session(&conn, &next, Some(FIRST_SPACE)).unwrap();
         assert_eq!(second.updated_at, first.updated_at);
         assert_eq!(second.model, "gpt-5.4");
     }
@@ -3414,7 +3449,7 @@ mod tests {
                 }
             }
         ]);
-        let summary = upsert_session(&conn, &session).unwrap();
+        let summary = upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.additions, 0);
         assert_eq!(summary.deletions, 0);
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
@@ -3426,13 +3461,13 @@ mod tests {
     fn list_by_project_filters_and_orders() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "A1")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "A1"), Some(FIRST_SPACE)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        upsert_session(&conn, &sample("s2", "/tmp/a", "A2")).unwrap();
-        upsert_session(&conn, &sample("s3", "/tmp/b", "B1")).unwrap();
+        upsert_session(&conn, &sample("s2", "/tmp/a", "A2"), Some(FIRST_SPACE)).unwrap();
+        upsert_session(&conn, &sample("s3", "/tmp/b", "B1"), Some(FIRST_SPACE)).unwrap();
         let mut empty = sample("s4", "/tmp/a", "Empty");
         empty.blocks = json!([]);
-        upsert_session(&conn, &empty).unwrap();
+        upsert_session(&conn, &empty, Some(FIRST_SPACE)).unwrap();
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, "s2");
@@ -3443,7 +3478,7 @@ mod tests {
     fn delete_removes_session() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "First"), Some(FIRST_SPACE)).unwrap();
         delete_session(&conn, "s1", Removal::DiscardDraft).unwrap();
         assert!(get_session(&conn, "s1").unwrap().is_none());
         assert!(list_by_project(&conn, "/tmp/a").unwrap().is_empty());
@@ -3459,7 +3494,7 @@ mod tests {
             if ["earlier", "current"].contains(&id) {
                 session.blocks = json!([{"id":"u","role":"user","text":"Keep this transcript","orchestrationLeadId":"lead"}]);
             }
-            upsert_session(&conn, &session).unwrap();
+            upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         }
         save_orchestration(
             &conn,
@@ -3513,7 +3548,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for id in ["lead", "worker", "dependent", "earlier"] {
-            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+            upsert_session(&conn, &sample(id, "/tmp/a", id), Some(FIRST_SPACE)).unwrap();
         }
         remember_worker(&conn, "earlier", "lead").unwrap();
         save_orchestration(
@@ -3557,7 +3592,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for id in ["lead", "worker"] {
-            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+            upsert_session(&conn, &sample(id, "/tmp/a", id), Some(FIRST_SPACE)).unwrap();
         }
         save_orchestration(
             &conn,
@@ -3632,7 +3667,7 @@ mod tests {
         session.worktree_cwd = Some("/tmp/a-worktrees/feature".into());
         session.worktree_removed = true;
         session.branch = Some("stale-branch".into());
-        let summary = upsert_session(&conn, &session).unwrap();
+        let summary = upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         assert!(summary.worktree_removed);
         assert!(summary.branch.is_none());
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
@@ -3644,7 +3679,7 @@ mod tests {
         session.worktree_removed = false;
         session.worktree_cwd = None;
         session.branch = Some("main".into());
-        upsert_session(&conn, &session).unwrap();
+        upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         let restored = get_session(&conn, "s1").unwrap().unwrap();
         assert!(!restored.worktree_removed);
         assert_eq!(restored.branch.as_deref(), Some("main"));
@@ -3654,7 +3689,7 @@ mod tests {
     fn archive_round_trips_and_survives_upsert() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "First"), Some(FIRST_SPACE)).unwrap();
         set_archived(&conn, "s1", true).unwrap();
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
         assert!(listed[0].archived);
@@ -3663,7 +3698,7 @@ mod tests {
             { "id": "b1", "role": "user", "text": "hello" },
             { "id": "b2", "role": "assistant", "text": "world" }
         ]);
-        let summary = upsert_session(&conn, &next).unwrap();
+        let summary = upsert_session(&conn, &next, Some(FIRST_SPACE)).unwrap();
         assert!(summary.archived);
         assert_eq!(summary.title, "Updated");
         set_archived(&conn, "s1", false).unwrap();
@@ -3729,10 +3764,15 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
         for id in ["lead", "other-lead"] {
-            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+            upsert_session(&conn, &sample(id, "/tmp/a", id), Some(FIRST_SPACE)).unwrap();
         }
-        upsert_session(&conn, &worker("worker", "lead")).unwrap();
-        upsert_session(&conn, &worker("other-worker", "other-lead")).unwrap();
+        upsert_session(&conn, &worker("worker", "lead"), Some(FIRST_SPACE)).unwrap();
+        upsert_session(
+            &conn,
+            &worker("other-worker", "other-lead"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         delete_session(&conn, "lead", Removal::DiscardDraft).unwrap();
         assert_eq!(lead_of(&conn, "worker"), None);
         assert_eq!(
@@ -3745,8 +3785,8 @@ mod tests {
     fn archiving_a_lead_keeps_its_workers_linked() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
-        upsert_session(&conn, &sample("lead", "/tmp/a", "Lead")).unwrap();
-        upsert_session(&conn, &worker("worker", "lead")).unwrap();
+        upsert_session(&conn, &sample("lead", "/tmp/a", "Lead"), Some(FIRST_SPACE)).unwrap();
+        upsert_session(&conn, &worker("worker", "lead"), Some(FIRST_SPACE)).unwrap();
         set_archived(&conn, "lead", true).unwrap();
         assert_eq!(lead_of(&conn, "worker").as_deref(), Some("lead"));
     }
@@ -3755,9 +3795,9 @@ mod tests {
     fn a_worker_whose_lead_row_is_gone_saves_as_a_lead() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
-        upsert_session(&conn, &sample("lead", "/tmp/a", "Lead")).unwrap();
+        upsert_session(&conn, &sample("lead", "/tmp/a", "Lead"), Some(FIRST_SPACE)).unwrap();
         delete_session(&conn, "lead", Removal::DiscardDraft).unwrap();
-        let summary = upsert_session(&conn, &worker("worker", "lead")).unwrap();
+        let summary = upsert_session(&conn, &worker("worker", "lead"), Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.lead_session_id, None);
         assert_eq!(lead_of(&conn, "worker"), None);
     }
@@ -3767,13 +3807,19 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
         for id in ["lead-a", "lead-b"] {
-            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+            upsert_session(&conn, &sample(id, "/tmp/a", id), Some(FIRST_SPACE)).unwrap();
         }
-        upsert_session(&conn, &worker("worker", "lead-a")).unwrap();
-        let summary = upsert_session(&conn, &worker("worker", "lead-b")).unwrap();
+        upsert_session(&conn, &worker("worker", "lead-a"), Some(FIRST_SPACE)).unwrap();
+        let summary =
+            upsert_session(&conn, &worker("worker", "lead-b"), Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.lead_session_id.as_deref(), Some("lead-a"));
         assert_eq!(lead_of(&conn, "worker").as_deref(), Some("lead-a"));
-        upsert_session(&conn, &sample("worker", "/tmp/a", "worker")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("worker", "/tmp/a", "worker"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         assert_eq!(lead_of(&conn, "worker").as_deref(), Some("lead-a"));
     }
 
@@ -3783,7 +3829,7 @@ mod tests {
         let conn = store.lock_conn().unwrap();
         let mut lead = sample("lead", "/tmp/a", "Lead");
         lead.linked_work_item = Some(json!({"kind": "pr", "number": 1}));
-        let lead_summary = upsert_session(&conn, &lead).unwrap();
+        let lead_summary = upsert_session(&conn, &lead, Some(FIRST_SPACE)).unwrap();
         let worker: SessionUpsert = serde_json::from_value(json!({
             "id": "worker", "cwd": "/tmp/a", "harness": "codex", "model": "m",
             "modelSettings": {}, "runtimeMode": "supervised", "title": "Worker",
@@ -3792,7 +3838,7 @@ mod tests {
             "leadSessionId": "lead"
         }))
         .unwrap();
-        let summary = upsert_session(&conn, &worker).unwrap();
+        let summary = upsert_session(&conn, &worker, Some(FIRST_SPACE)).unwrap();
         assert_eq!(
             serde_json::to_value(&summary).unwrap()["leadSessionId"],
             "lead"
@@ -3858,7 +3904,7 @@ mod tests {
     fn pin_round_trips_and_survives_upsert() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "First"), Some(FIRST_SPACE)).unwrap();
         set_pinned(&conn, "s1", true).unwrap();
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
         assert!(listed[0].pinned);
@@ -3867,7 +3913,7 @@ mod tests {
             { "id": "b1", "role": "user", "text": "hello" },
             { "id": "b2", "role": "assistant", "text": "world" }
         ]);
-        let summary = upsert_session(&conn, &next).unwrap();
+        let summary = upsert_session(&conn, &next, Some(FIRST_SPACE)).unwrap();
         assert!(summary.pinned);
         assert_eq!(summary.title, "Updated");
         set_pinned(&conn, "s1", false).unwrap();
@@ -3881,7 +3927,7 @@ mod tests {
         let conn = store.conn.lock().unwrap();
         let mut session = sample("s1", "/tmp/a", "First");
         session.provider_account_id = Some("account-work".into());
-        upsert_session(&conn, &session).unwrap();
+        upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         let record = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(record.id, "s1");
         assert_eq!(record.provider_session_id.as_deref(), Some("acp-session-1"));
@@ -3939,7 +3985,8 @@ mod tests {
         let cwd = dir.to_string_lossy().into_owned();
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        let summary = upsert_session(&conn, &sample("s1", &cwd, "First")).unwrap();
+        let summary =
+            upsert_session(&conn, &sample("s1", &cwd, "First"), Some(FIRST_SPACE)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(summary.branch.as_deref(), Some("fix-sidebar"));
         assert_eq!(summary.repo.as_deref(), Some("widget"));
@@ -3952,7 +3999,7 @@ mod tests {
         let mut session = sample("s1", "/tmp/a", "First");
         session.branch = Some("feat/picker".into());
         session.worktree_cwd = Some("/tmp/a-feat".into());
-        let summary = upsert_session(&conn, &session).unwrap();
+        let summary = upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
         assert_eq!(summary.branch.as_deref(), Some("feat/picker"));
         assert_eq!(summary.worktree_cwd.as_deref(), Some("/tmp/a-feat"));
         let record = get_session(&conn, "s1").unwrap().unwrap();
@@ -3967,8 +4014,18 @@ mod tests {
     fn rebase_project_moves_saved_sessions_to_the_renamed_path() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("moved", "/tmp/old", "Moved")).unwrap();
-        upsert_session(&conn, &sample("other", "/tmp/other", "Other")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("moved", "/tmp/old", "Moved"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &sample("other", "/tmp/other", "Other"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
 
         rebase_project(&conn, "/tmp/old", "/tmp/new").unwrap();
 
@@ -4038,7 +4095,7 @@ mod tests {
     fn rebase_project_moves_nothing_when_milestones_update_fails() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s", "/tmp/old", "S")).unwrap();
+        upsert_session(&conn, &sample("s", "/tmp/old", "S"), Some(FIRST_SPACE)).unwrap();
         conn.execute(
             "INSERT INTO milestones (id, project_path, title, status, sort_order, created_by, created_at, updated_at)
              VALUES (?1, '/tmp/old', 'goal', 'idea', 0, 'user', 1, 1)",
@@ -4061,7 +4118,7 @@ mod tests {
     fn migrate_adds_milestones_to_an_existing_db() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
+        upsert_session(&conn, &sample("kept", "/tmp/a", "Kept"), Some(FIRST_SPACE)).unwrap();
         conn.execute_batch("DROP TABLE milestones; DROP TABLE milestone_settings")
             .unwrap();
         let versions = |conn: &Connection| -> i64 {
@@ -5257,8 +5314,13 @@ mod tests {
             { "id": "u1", "role": "user", "text": "Build it", "startedAt": 1_792_360_319_663_i64, "turnId": "t1" },
             { "id": "a1", "role": "assistant", "text": "Working" }
         ]);
-        upsert_session(&conn, &started).unwrap();
-        upsert_session(&conn, &sample("finished", "/repo", "Finished")).unwrap();
+        upsert_session(&conn, &started, Some(FIRST_SPACE)).unwrap();
+        upsert_session(
+            &conn,
+            &sample("finished", "/repo", "Finished"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         replace_in_flight(
             &mut conn,
             "run",
@@ -5394,7 +5456,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index, 1);
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Restored index")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s1", "/tmp/a", "Restored index"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         let result = search_sessions(
             &conn,
             &SessionSearchOptions {
@@ -5428,6 +5495,7 @@ mod tests {
         upsert_session(
             &store.conn.lock().unwrap(),
             &sample("s1", "/tmp/a", "Searchable title"),
+            Some(FIRST_SPACE),
         )
         .unwrap();
 
@@ -5462,14 +5530,14 @@ mod tests {
         let conn = store.conn.lock().unwrap();
         let mut small = sample("small", "/tmp/a", "Needle title");
         small.blocks = json!([{ "id": "small", "role": "user", "text": "needle" }]);
-        upsert_session(&conn, &small).unwrap();
+        upsert_session(&conn, &small, Some(FIRST_SPACE)).unwrap();
         let mut huge = sample("huge", "/tmp/a", "Needle title");
         huge.blocks = json!([{
             "id": "huge",
             "role": "user",
             "text": "needle ".repeat(1_500_000),
         }]);
-        upsert_session(&conn, &huge).unwrap();
+        upsert_session(&conn, &huge, Some(FIRST_SPACE)).unwrap();
         conn.execute("UPDATE sessions SET updated_at = 1 WHERE id = 'small'", [])
             .unwrap();
         conn.execute("UPDATE sessions SET updated_at = 2 WHERE id = 'huge'", [])
@@ -5541,7 +5609,12 @@ mod tests {
     fn a_completed_session_search_releases_its_token() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Needle title")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s1", "/tmp/a", "Needle title"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         drop(conn);
         let owner = "completed-session-search-owner";
 
@@ -5592,7 +5665,12 @@ mod tests {
     fn a_superseded_session_search_returns_no_hits() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Searchable title")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s1", "/tmp/a", "Searchable title"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         let owner = "superseded-session-search-test";
         let stale = begin_session_search(owner).unwrap();
         begin_session_search(owner);
@@ -5642,7 +5720,12 @@ mod tests {
     fn a_test_helper_session_search_releases_its_token() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Needle title")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s1", "/tmp/a", "Needle title"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         let owner = "helper-session-search-owner";
 
         let result = search_sessions(
@@ -5673,7 +5756,7 @@ mod tests {
                 "preview": { "output": "nested role: user needle" }
             } }
         ]);
-        upsert_session(&conn, &session).unwrap();
+        upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
 
         let result = search_sessions(
             &conn,
@@ -5698,8 +5781,13 @@ mod tests {
             { "id": "u1", "role": "user", "text": "Please search the sidebar filter chips" },
             { "id": "a1", "role": "assistant", "text": "I will look through the explorer next." }
         ]);
-        upsert_session(&conn, &session).unwrap();
-        upsert_session(&conn, &sample("s2", "/tmp/b", "Unrelated title")).unwrap();
+        upsert_session(&conn, &session, Some(FIRST_SPACE)).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s2", "/tmp/b", "Unrelated title"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
 
         let result = search_sessions(
             &conn,
@@ -5731,8 +5819,18 @@ mod tests {
     fn search_skips_inbox_ask_sessions_when_scoped_and_unscoped() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("ask", "/tmp/a", "Needle ask")).unwrap();
-        upsert_session(&conn, &sample("chat", "/tmp/a", "Needle chat")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("ask", "/tmp/a", "Needle ask"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &sample("chat", "/tmp/a", "Needle chat"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         conn.execute("UPDATE sessions SET inbox_ask = '{}' WHERE id = 'ask'", [])
             .unwrap();
 
@@ -5755,8 +5853,18 @@ mod tests {
     fn search_respects_cwd_and_skips_archived() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Search project a")).unwrap();
-        upsert_session(&conn, &sample("s2", "/tmp/b", "Search project b")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s1", "/tmp/a", "Search project a"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &sample("s2", "/tmp/b", "Search project b"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         set_archived(&conn, "s1", true).unwrap();
 
         let scoped = search_sessions(
@@ -5803,7 +5911,12 @@ mod tests {
     fn search_empty_query_is_empty() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        upsert_session(&conn, &sample("s1", "/tmp/a", "Anything")).unwrap();
+        upsert_session(
+            &conn,
+            &sample("s1", "/tmp/a", "Anything"),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         let result = search_sessions(
             &conn,
             &SessionSearchOptions {

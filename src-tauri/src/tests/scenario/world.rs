@@ -291,6 +291,14 @@ impl World {
         &self.app.as_ref().expect("the app is not running").store
     }
 
+    /// The Space the World's one window shows: it follows every switch, so it
+    /// is the app's active Space (ADE-244: a new row joins its window's).
+    pub(crate) fn window_space(&self) -> String {
+        crate::spaces::settings(self.store())
+            .unwrap()
+            .active_space_id
+    }
+
     pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
         self.store().lock_conn().unwrap()
     }

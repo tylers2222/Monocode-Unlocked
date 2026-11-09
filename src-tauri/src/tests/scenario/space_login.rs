@@ -1,7 +1,7 @@
 //! Sessions inherit their Space's login (ADE-172). Every new session row
 //! records its Space at insert: a child its parent's (the lead that started
 //! it, the Mono whose chat it is, the Mono chat that started a lead or a
-//! habit run), a session or Mono the user starts the active Space, and never
+//! habit run), a session or Mono the user starts its window's Space, and never
 //! a Space its caller names. Then `harness_spawn` on Tauri's mock runtime, on the
 //! same database, starts a stand-in CLI with the session's own login, else
 //! its Space's, else the CLI's own in Space 1, and refuses a Space with no
@@ -50,7 +50,7 @@ fn login(id: &str) -> ProviderAccount {
 /// Automation `automation-<session>` in `cwd` and its run naming `session`,
 /// as `automations_upsert` and the awaited `automation_run_update` save them
 /// before the run's first turn (`launchAutomation`).
-fn save_automation_run(conn: &Connection, session: &str, cwd: &str) {
+pub(super) fn save_automation_run(conn: &Connection, session: &str, cwd: &str) {
     let automation = format!("automation-{session}");
     let run = format!("run-{session}");
     conn.execute(
@@ -85,7 +85,7 @@ fn save_run_session(conn: &Connection, id: &str, cwd: &str) {
         "automationId": format!("automation-{id}"),
     }))
     .unwrap();
-    session_store::upsert_session(conn, &session).unwrap();
+    session_store::upsert_session(conn, &session, Some(FIRST_SPACE)).unwrap();
 }
 
 /// A run of an automation in `cwd`: its run row first, then its session.
@@ -160,7 +160,8 @@ fn user_session_naming(world: &World, id: &str, space: &str) {
         "spaceId": space,
     }))
     .unwrap();
-    session_store::upsert_session(&world.conn(), &session).unwrap();
+    let window = world.window_space();
+    session_store::upsert_session(&world.conn(), &session, Some(&window)).unwrap();
 }
 
 /// Defect: a session or a Mono created while Space 2 is active, or a
@@ -379,12 +380,14 @@ esac"#,
             format!("{}\n", text(&dir))
         }
 
+        /// The window's switch to `space`: the Space its new sessions join.
         fn activate(&self, space: &str) {
-            self.store()
-                .lock_conn()
-                .unwrap()
-                .execute("UPDATE space_settings SET active_space_id = ?1", [space])
-                .unwrap();
+            let patch = crate::spaces::SettingsPatch {
+                active_space_id: Some(space.into()),
+                route_grant_ttl_ms: None,
+            };
+            let window = crate::scenario::agent_sandbox::main_window(&self.app);
+            crate::spaces::spaces_settings_set(window, self.store(), patch).unwrap();
         }
 
         fn space_of(&self, id: &str) -> String {

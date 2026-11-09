@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::mono_messages::Notices;
 use crate::session_store::{now_millis, SessionStore};
@@ -304,9 +304,14 @@ fn invalid_column(index: usize, name: &str) -> rusqlite::Error {
     )
 }
 
-/// Inserts each Mono in the Space a new row joins. Fails, and inserts none,
-/// when one id already exists.
-fn insert_rows(conn: &Connection, monos: &[ValidCreate]) -> Result<(), String> {
+/// Inserts each Mono in the Space a new row joins: its chat's parent's, else
+/// `window`, the Space of the window that creates it (`space_for_row`).
+/// Fails, and inserts none, when one id already exists.
+fn insert_rows(
+    conn: &Connection,
+    monos: &[ValidCreate],
+    window: Option<&str>,
+) -> Result<(), String> {
     let now = now_millis();
     let mut statement = conn
         .prepare(
@@ -315,7 +320,7 @@ fn insert_rows(conn: &Connection, monos: &[ValidCreate]) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     for mono in monos {
-        let space_id = crate::spaces::membership::space_for_row(conn, &mono.id, None)
+        let space_id = crate::spaces::membership::space_for_row(conn, &mono.id, None, window)
             .map_err(|e| e.to_string())?;
         statement
             .execute(params![
@@ -332,8 +337,8 @@ fn insert_rows(conn: &Connection, monos: &[ValidCreate]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn create(conn: &Connection, mono: &ValidCreate) -> Result<(), String> {
-    insert_rows(conn, std::slice::from_ref(mono))
+pub fn create(conn: &Connection, mono: &ValidCreate, window: Option<&str>) -> Result<(), String> {
+    insert_rows(conn, std::slice::from_ref(mono), window)
 }
 
 /// RFC 7396: `null` removes a key, an object merges, anything else replaces.
@@ -413,7 +418,11 @@ pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 
 /// The one-time move from WebKit storage. Imports only into an empty table and
 /// only once: after it has run, an empty table means every Mono was deleted.
-pub fn import_legacy(conn: &Connection, monos: &[ValidCreate]) -> Result<bool, String> {
+pub fn import_legacy(
+    conn: &Connection,
+    monos: &[ValidCreate],
+    window: Option<&str>,
+) -> Result<bool, String> {
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let done = tx
         .query_row("SELECT 1 FROM monos_legacy_import", [], |_| Ok(()))
@@ -427,7 +436,7 @@ pub fn import_legacy(conn: &Connection, monos: &[ValidCreate]) -> Result<bool, S
         .map_err(|e| e.to_string())?;
     let import = !done && empty;
     if import {
-        insert_rows(&tx, monos)?;
+        insert_rows(&tx, monos, window)?;
     }
     if !done {
         tx.execute(
@@ -478,14 +487,20 @@ pub fn monos_list(store: State<'_, SessionStore>) -> Result<Roster, String> {
     snapshot(&conn, REVISION.load(Ordering::SeqCst))
 }
 
+/// A new Mono joins the Space of `window`, the window that creates it
+/// (ADE-244).
 #[tauri::command(async)]
-pub fn monos_create(
-    app: AppHandle,
+pub fn monos_create<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     mono: MonoCreate,
 ) -> Result<Roster, String> {
     let mono = validate_create(mono)?;
-    write(&app, &store, |conn| create(conn, &mono).map(|()| true))
+    let space = crate::spaces::window_space(&store, window.label())?;
+    write(&app, &store, |conn| {
+        create(conn, &mono, space.as_deref()).map(|()| true)
+    })
 }
 
 #[tauri::command(async)]
@@ -517,14 +532,16 @@ pub fn monos_delete(
 }
 
 #[tauri::command(async)]
-pub fn monos_import_legacy(
-    app: AppHandle,
+pub fn monos_import_legacy<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     monos: Vec<MonoCreate>,
 ) -> Result<Roster, String> {
     let (monos, refused) = valid_legacy(monos);
+    let space = crate::spaces::window_space(&store, window.label())?;
     write(&app, &store, |conn| {
-        let imported = import_legacy(conn, &monos)?;
+        let imported = import_legacy(conn, &monos, space.as_deref())?;
         // Every start sends the stored roster again; say what was left out
         // only on the start that imported.
         if imported && !refused.is_empty() {
@@ -537,6 +554,7 @@ pub fn monos_import_legacy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spaces::FIRST_SPACE;
     use serde_json::json;
 
     fn create_input(id: &str, order: u32, data: Value) -> MonoCreate {
@@ -590,7 +608,7 @@ mod tests {
     #[test]
     fn legacy_import_keeps_every_field_and_the_order_and_runs_once() {
         let conn = conn();
-        assert!(import_legacy(&conn, &legacy()).unwrap());
+        assert!(import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap());
         let first = list(&conn).unwrap();
         let summary: Vec<_> = first
             .iter()
@@ -615,30 +633,35 @@ mod tests {
 
         // A second start sends the same storage again; nothing changes.
         let changed = vec![mono("m9", 0, json!({"mascot": "crab"}))];
-        assert!(!import_legacy(&conn, &changed).unwrap());
+        assert!(!import_legacy(&conn, &changed, Some(FIRST_SPACE)).unwrap());
         assert_eq!(list(&conn).unwrap(), first);
     }
 
     #[test]
     fn deleting_every_mono_does_not_bring_them_back_from_storage() {
         let conn = conn();
-        import_legacy(&conn, &legacy()).unwrap();
+        import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap();
         for row in list(&conn).unwrap() {
             delete(&conn, &row.id).unwrap();
         }
-        assert!(!import_legacy(&conn, &legacy()).unwrap());
+        assert!(!import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap());
         assert_eq!(list(&conn).unwrap(), []);
     }
 
     #[test]
     fn a_table_that_already_has_monos_is_never_merged_with_storage_then_or_later() {
         let conn = conn();
-        create(&conn, &mono("m7", 0, json!({"mascot": "crab"}))).unwrap();
-        assert!(!import_legacy(&conn, &legacy()).unwrap());
+        create(
+            &conn,
+            &mono("m7", 0, json!({"mascot": "crab"})),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
+        assert!(!import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap());
         assert_eq!(ids(&conn), ["m7"]);
         // The first import found Monos already there; it still counts as run.
         delete(&conn, "m7").unwrap();
-        assert!(!import_legacy(&conn, &legacy()).unwrap());
+        assert!(!import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap());
         assert_eq!(list(&conn).unwrap(), []);
     }
 
@@ -657,7 +680,7 @@ mod tests {
             create_input("m4", 4, json!({"mascot": "ghost"})),
         ]);
         let conn = conn();
-        assert!(import_legacy(&conn, &valid).unwrap());
+        assert!(import_legacy(&conn, &valid, Some(FIRST_SPACE)).unwrap());
         assert_eq!(ids(&conn), ["g1", "m4"]);
         assert_eq!(list(&conn).unwrap()[0].data, json!({"mascot": "skull"}));
         assert_eq!(refused.len(), 3);
@@ -682,9 +705,15 @@ mod tests {
         create(
             &conn,
             &mono("m2", 0, json!({"mascot": "crab", "name": "Pinch"})),
+            Some(FIRST_SPACE),
         )
         .unwrap();
-        assert!(create(&conn, &mono("m2", 1, json!({"mascot": "ghost"}))).is_err());
+        assert!(create(
+            &conn,
+            &mono("m2", 1, json!({"mascot": "ghost"})),
+            Some(FIRST_SPACE)
+        )
+        .is_err());
         assert_eq!(
             list(&conn).unwrap()[0].data,
             json!({"mascot": "crab", "name": "Pinch"})
@@ -694,7 +723,12 @@ mod tests {
     #[test]
     fn an_update_never_brings_back_a_deleted_mono() {
         let conn = conn();
-        create(&conn, &mono("m2", 0, json!({"mascot": "crab"}))).unwrap();
+        create(
+            &conn,
+            &mono("m2", 0, json!({"mascot": "crab"})),
+            Some(FIRST_SPACE),
+        )
+        .unwrap();
         delete(&conn, "m2").unwrap();
         let err = update_many(
             &conn,
@@ -708,7 +742,7 @@ mod tests {
     #[test]
     fn two_windows_that_change_different_fields_both_keep_their_change() {
         let conn = conn();
-        import_legacy(&conn, &legacy()).unwrap();
+        import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap();
         conn.execute("UPDATE monos SET created_at = 5", []).unwrap();
         // One window renames m2; another, which never saw the rename, gives it
         // a chat, removes its color and moves it first.
@@ -743,6 +777,7 @@ mod tests {
         create(
             &conn,
             &mono("m2", 0, json!({"mascot": "crab", "name": "Pinch"})),
+            Some(FIRST_SPACE),
         )
         .unwrap();
         // Window A changes the mascot. Window B, which has not seen that,
@@ -815,7 +850,7 @@ mod tests {
     #[test]
     fn a_failing_update_rolls_back_the_whole_batch() {
         let conn = conn();
-        import_legacy(&conn, &legacy()).unwrap();
+        import_legacy(&conn, &legacy(), Some(FIRST_SPACE)).unwrap();
         let before = list(&conn).unwrap();
         let result = update_many(
             &conn,

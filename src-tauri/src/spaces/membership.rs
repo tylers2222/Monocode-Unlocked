@@ -1,5 +1,6 @@
 //! Which Space a session or Mono is in (ADE-172). A new row joins its
-//! parent's Space, else the active one; its caller never names it.
+//! parent's Space, else the Space of the window that saves it (ADE-244); its
+//! caller never names it.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -8,12 +9,20 @@ use rusqlite::{Connection, OptionalExtension};
 /// or the session its `app-<parent>-<request>` id names, as a Mono chat
 /// names its leads and habit runs), else, for an automation run, which has
 /// no Mono owner, its automation's project's Space (`project_space`), else
-/// the active Space. The session and Mono inserts store it; the spawn hook
-/// reads it for a session that may not be saved yet.
+/// `window`, the Space of the window that saves it or acts for it
+/// ([`super::window_space`]), else, for a window that shows no Space yet,
+/// the app's active Space. A row an agent started through `sessions.start`
+/// (it names a lead, or has an `app-<lead>-<request>` id) whose lead is not
+/// saved, such as a worker of a lead in `~`, joins the app's active Space,
+/// as on main, though the lead's window saves it (`control.rs` sends the
+/// start to that window); ADE-249 tracks moving it to the window's Space.
+/// The session and Mono inserts store it; the spawn hook reads it for a
+/// session that may not be saved yet.
 pub(crate) fn space_for_row(
     conn: &Connection,
     id: &str,
     lead: Option<&str>,
+    window: Option<&str>,
 ) -> rusqlite::Result<String> {
     for parent in [id].into_iter().chain(lead).chain(named_parents(id)) {
         let space = conn
@@ -33,6 +42,9 @@ pub(crate) fn space_for_row(
     if let Some(project) = automation_project(conn, id)? {
         return super::project_space_in(conn, &project)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()));
+    }
+    if let Some(window) = window.filter(|_| lead.is_none() && named_parents(id).next().is_none()) {
+        return Ok(window.to_owned());
     }
     conn.query_row(
         "SELECT active_space_id FROM space_settings WHERE id = 1",
