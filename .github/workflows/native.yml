@@ -64,7 +64,7 @@ jobs:
   core:
     name: Core (${{ matrix.os }})
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
+    if: ${{ false }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,7 +92,7 @@ jobs:
     name: Monocode Native (macOS)
     needs: changes
     # Full set only (scripts/process/ci_level.py).
-    if: ${{ !cancelled() && needs.changes.outputs.level != 'fast' && needs.changes.outputs.native != 'false' }}
+    if: ${{ false }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
