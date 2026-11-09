@@ -142,6 +142,32 @@ fn a_start_from_an_unsaved_lead_joins_the_leads_space_and_its_login() {
     );
 }
 
+/// N2. Defect: an orchestration worker's row takes the window's Space, because
+/// only its run names its lead, so a delete in that Space stops the lead's run in
+/// another. The run is saved before the worker's first save
+/// (`orchestration.ts`, "Persist authority"). A session no run lists keeps the
+/// window's Space.
+#[test]
+fn a_worker_joins_its_leads_space_whatever_the_window_shows() {
+    let store = store();
+    assert_eq!(save(&store, "lead", None, Some(TWO)), TWO);
+    let run = json!({"status": "active", "tasks": [{"sessionId": "worker"}]});
+    session_store::save_orchestration(&store.lock_conn().unwrap(), "lead", &run).unwrap();
+    let window = Some(FIRST_SPACE);
+    assert_eq!(
+        first_spawn(&store, "worker", window),
+        TWO_LOGIN,
+        "its first spawn before its save"
+    );
+    assert_eq!(save(&store, "worker", None, window), TWO);
+    assert_eq!(first_spawn(&store, "worker", window), TWO_LOGIN);
+    assert_eq!(
+        save(&store, "not-in-a-run", None, window),
+        FIRST_SPACE,
+        "a session no run lists"
+    );
+}
+
 /// Defect: a helper pins its owner, so a picker in one window decides the Space
 /// of a tab another window then runs; or a window that shows no Space pins the
 /// app's active Space for good.

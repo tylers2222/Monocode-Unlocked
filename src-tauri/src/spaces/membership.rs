@@ -5,9 +5,10 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// The Space row `id` is in, or joins when it is new: a saved session's own,
-/// else its parent's (the lead that started it, the Mono whose chat it is,
-/// or the session its `app-<parent>-<request>` id names, as a Mono chat
-/// names its leads and habit runs), else, for an automation run, which has
+/// else its parent's (the lead that started it, the lead whose orchestration run
+/// lists it, the Mono whose chat it is, or the session its
+/// `app-<parent>-<request>` id names, as a Mono chat names its leads and habit
+/// runs), else, for an automation run, which has
 /// no Mono owner, its automation's project's Space (`project_space`), else
 /// `window`, the Space of the window that saves it or acts for it
 /// ([`super::window_space`]), else, for a window that shows no Space yet,
@@ -22,7 +23,13 @@ pub(crate) fn space_for_row(
     lead: Option<&str>,
     window: Option<&str>,
 ) -> rusqlite::Result<String> {
-    for parent in [id].into_iter().chain(lead).chain(named_parents(id)) {
+    let run_lead = crate::session_store::worker_parent(conn, id)?;
+    let parents = [id]
+        .into_iter()
+        .chain(lead)
+        .chain(run_lead.as_deref())
+        .chain(named_parents(id));
+    for parent in parents {
         let space = conn
             .query_row(
                 "SELECT space_id FROM sessions WHERE id = ?1

@@ -1391,7 +1391,7 @@ pub(crate) fn save_orchestration(
     tx.commit()
 }
 
-fn worker_parent(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+pub(crate) fn worker_parent(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "SELECT lead_id FROM orchestration_workers WHERE session_id = ?1",
         [id],
