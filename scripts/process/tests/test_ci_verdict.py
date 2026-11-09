@@ -66,6 +66,18 @@ class ReadyPr(unittest.TestCase):
         for path in ("scripts/process/ci_level.py", "scripts/process/ci_verdict.py"):
             self.assertTrue(all(select(CI_MAP, "pull_request", [path])[0].values()), path)
 
+    def test_a_job_that_passed_passes_even_when_a_skip_had_a_reason(self):
+        # Attempt 1: changes red, every job fails open and passes. A --failed re-run then
+        # turns changes green with the map saying false, and the jobs keep their success.
+        self.assertEqual(failed("ci", needs(CI_JOBS, outputs_for(["docs/a.md"])), "pull_request"), [])
+
+    def test_a_red_full_set_job_fails_ci(self):
+        for result in ("failure", "cancelled", "timed_out"):
+            for job, key in (("browser", "browser"), ("check", "check"), ("host", "host"), ("mobile", "mobile")):
+                jobs = needs(CI_JOBS, outputs_for(["src/a.ts"]), appimage="skipped", rpm="skipped", rpm_clean_install="skipped",
+                             **{key: result})
+                self.assertEqual(failed("ci", jobs, "pull_request"), [job], result)
+
     def test_failed_and_cancelled_jobs_fail(self):
         for result in ("failure", "cancelled"):
             got = failed("e2e", needs(E2E_JOBS, outputs_for(["docs/a.md"]), e2e_linux_run=result,
@@ -75,6 +87,26 @@ class ReadyPr(unittest.TestCase):
     def test_a_job_this_file_does_not_name_must_succeed(self):
         got = failed("ci", {**needs(CI_JOBS[:0], outputs_for(["docs/a.md"])), "newjob": {"result": "skipped"}}, "pull_request")
         self.assertEqual(got, ["newjob"])
+
+
+class ReleaseChannel(unittest.TestCase):
+    OUT = outputs_for(["scripts/release-channel.test.cjs"])
+
+    def test_the_map_runs_check_for_release_channel_alone(self):
+        self.assertEqual((self.OUT["check"], self.OUT["release-channel"]), ("false", "true"))
+
+    def test_check_must_run_when_only_release_channel_is_true(self):
+        skips = dict(browser="skipped", mobile="skipped", host="skipped", appimage="skipped", rpm="skipped",
+                     rpm_clean_install="skipped")
+        self.assertEqual(failed("ci", needs(CI_JOBS, self.OUT, **skips), "pull_request"), [])
+        self.assertEqual(failed("ci", needs(CI_JOBS, self.OUT, check="skipped", **skips), "pull_request"), ["check"])
+
+
+    def test_check_must_run_when_only_check_is_true(self):
+        out = outputs_for(["tests/a.ts"])
+        self.assertEqual((out["check"], out["release-channel"]), ("true", "false"))
+        got = failed("ci", needs(("check",), out, check="skipped"), "pull_request")
+        self.assertEqual(got, ["check"])
 
 
 class Changes(unittest.TestCase):
@@ -113,15 +145,44 @@ class Event(unittest.TestCase):
 
 
 class Main(unittest.TestCase):
-    def run_script(self, workflow, needs_json):
-        env = {**os.environ, "NEEDS": json.dumps(needs_json), "EVENT": "pull_request"}
-        return subprocess.run([sys.executable, str(SCRIPT), workflow], capture_output=True, text=True, env=env)
+    def run_script(self, argv, needs_json, event="pull_request", dispatch=None):
+        env = {**os.environ, "NEEDS": json.dumps(needs_json), "EVENT": event}
+        env.pop("DISPATCH_SKIPS_MACOS", None)
+        if dispatch is not None:
+            env["DISPATCH_SKIPS_MACOS"] = dispatch
+        return subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True, text=True, env=env)
 
     def test_prints_failed_and_sets_the_exit_code(self):
-        red = self.run_script("e2e", needs(E2E_JOBS, outputs_for(["src/a.ts"]), e2e_linux_run="skipped"))
+        red = self.run_script(["e2e"], needs(E2E_JOBS, outputs_for(["src/a.ts"]), e2e_linux_run="skipped"))
         self.assertEqual((red.returncode, red.stdout), (1, "failed=e2e-linux-run\n"))
-        green = self.run_script("e2e", needs(E2E_JOBS, outputs_for(["src/a.ts"])))
+        green = self.run_script(["e2e"], needs(E2E_JOBS, outputs_for(["src/a.ts"])))
         self.assertEqual((green.returncode, green.stdout), (0, "failed=\n"))
+
+    def test_the_event_comes_from_the_environment(self):
+        # On a push the map says true for every job, so only the event can excuse packaging.
+        packaging = needs(CI_JOBS, {"level": "full"}, appimage="skipped", rpm="skipped", rpm_clean_install="skipped")
+        self.assertEqual(self.run_script(["ci"], packaging, event="pull_request").returncode, 0)
+        pushed = self.run_script(["ci"], packaging, event="push")
+        self.assertEqual((pushed.returncode, pushed.stdout), (1, "failed=appimage, rpm, rpm-clean-install\n"))
+
+    def test_the_argument_picks_the_rules(self):
+        docs = outputs_for(["docs/a.md"])
+        e2e = needs(E2E_JOBS, docs, e2e_linux_run="skipped", e2e_macos_1="skipped", e2e_macos_2="skipped")
+        self.assertEqual(self.run_script(["e2e"], e2e).returncode, 0)
+        self.assertEqual(self.run_script(["ci"], e2e).returncode, 1)
+        ci = needs(CI_JOBS, docs, browser="skipped")
+        self.assertEqual(self.run_script(["ci"], ci).returncode, 0)
+        self.assertEqual(self.run_script(["e2e"], ci).returncode, 1)
+
+    def test_only_the_dispatch_switch_excuses_macos(self):
+        jobs = needs(E2E_JOBS, {"level": "full"}, e2e_macos_1="skipped", e2e_macos_2="skipped")
+        self.assertEqual(self.run_script(["e2e"], jobs, "workflow_dispatch", "true").returncode, 0)
+        for dispatch in ("false", "", None):
+            self.assertEqual(self.run_script(["e2e"], jobs, "workflow_dispatch", dispatch).returncode, 1, dispatch)
+
+    def test_wrong_arguments_exit_2_before_reading_anything(self):
+        for argv in ([], ["x"], ["ci", "e2e"]):
+            self.assertEqual(self.run_script(argv, {}).returncode, 2, argv)
 
 
 if __name__ == "__main__":
