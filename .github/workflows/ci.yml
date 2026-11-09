@@ -118,7 +118,7 @@ jobs:
       # the sha256 in the release's SHA256SUMS.txt; it bundles its dependencies.
       - name: Install omp 18.2.11 (sha256-checked release binary)
         run: |
-          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 15 -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-linux-x64
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 30 --connect-timeout 15 -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-linux-x64
           echo "97cf39557bf3d98327dd4c9814380b7e6bcb76e41169edd9b0ff30424c733a2a  $RUNNER_TEMP/omp" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/omp-bin"
           install -m 0755 "$RUNNER_TEMP/omp" "$RUNNER_TEMP/omp-bin/omp"
