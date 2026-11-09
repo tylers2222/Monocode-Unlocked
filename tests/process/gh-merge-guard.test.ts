@@ -114,6 +114,28 @@ describe.skipIf(process.platform === "win32")("gh-merge-guard hook, run as setti
     expect(calls).toEqual([`${workdir}|${lookup} ${LOOKUP_TAIL}`]);
   });
 
+  it.each([
+    ["after &&", "git status && \\\n  gh pr merge 558 --auto --merge", "pr view 558"],
+    ["before the selector", "gh pr merge --auto --merge -R a/b \\\n  558", "pr view 558 -R a/b"],
+    ["after the selector", "gh pr merge 558 -R a/b \\\n  --auto", "pr view 558 -R a/b"],
+    ["in a for-loop", "for p in 1; do \\\n  gh pr merge 558 --auto; done", "pr view 558"],
+    ["in an if block", "if true; then \\\n  gh pr merge 558; fi", "pr view 558"],
+    ["after an assignment", "FOO=1 \\\n  gh pr merge 558", "pr view 558"],
+    ["after gh", "gh \\\n  pr merge 558", "pr view 558"],
+    ["after pr", "gh pr \\\n  merge 558", "pr view 558"],
+    ["inside a word", "gh pr merge 5\\\n58", "pr view 558"],
+  ])("reads a line continuation %s, refusing a stacked PR and passing a tyler/main PR", (_form, command, lookup) => {
+    const expected = [`${workdir}|${lookup} ${LOOKUP_TAIL}`];
+    const stacked = runHook(command, STACKED_BASE);
+    expect(stacked.status).toBe(2);
+    expect(stacked.stderr).toContain(`PR 558 has base ${STACKED_BASE}`);
+    expect(stacked.calls).toEqual(expected);
+    const legal = runHook(command, "tyler/main");
+    expect(legal.status).toBe(0);
+    expect(legal.stderr).toBe("");
+    expect(legal.calls).toEqual(expected);
+  });
+
   it("looks up from the directory the command changed to", () => {
     const { status, calls } = runHook("cd sub && gh pr merge 5", STACKED_BASE);
     expect(status).toBe(2);
@@ -129,6 +151,7 @@ describe.skipIf(process.platform === "win32")("gh-merge-guard hook, run as setti
   it.each([
     ["a variable", 'gh pr merge "$PR"'],
     ["a loop variable", "for p in 560 561; do gh pr merge $p --auto; done"],
+    ["a loop variable after a line continuation", "for p in 558; do \\\n  gh pr merge $p --auto; done"],
     ["a substitution", "gh pr merge $(cat pr.txt)"],
     ["xargs", "echo 560 | xargs -n1 gh pr merge --auto"],
     ["a variable repository", 'gh pr merge 5 -R "$REPO"'],

@@ -58,6 +58,10 @@ class ShellScanner {
       return this.endWord(list);
     }
     if (char === "#" && !list.word) return this.skipLine();
+    if (char === "\\" && this.source[this.at + 1] === "\n") {
+      this.at += 2;
+      return undefined;
+    }
     return this.wordPart(this.currentWord(list), char);
   }
 
