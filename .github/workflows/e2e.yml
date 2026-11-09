@@ -188,7 +188,7 @@ jobs:
       # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
       - name: Install omp 18.2.11 (sha256-checked release binary)
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-darwin-arm64
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 30 --connect-timeout 15 -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-darwin-arm64
           echo "faeffd57674cffa253e2f127d72ddfe6dcd81e1eb91eb5d2148913e62a010a28  $RUNNER_TEMP/omp" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/omp-bin"
           install -m 0755 "$RUNNER_TEMP/omp" "$RUNNER_TEMP/omp-bin/omp"
