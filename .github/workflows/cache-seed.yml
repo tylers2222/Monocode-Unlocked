@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +81,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --no-run
 
-  # Linux and Windows: native.yml's Core job. macOS: its desktop job, which builds a superset
+  # Linux: native.yml's Core job. macOS: its desktop job, which builds a superset
   # of Core, so Core on macOS restores this entry too.
   native:
     name: seed native (${{ matrix.os }})
@@ -92,8 +92,6 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            packages: -p monocode-core
-          - os: windows-latest
             packages: -p monocode-core
           - os: macos-latest
             packages: -p monocode-core -p monocode-gpui
