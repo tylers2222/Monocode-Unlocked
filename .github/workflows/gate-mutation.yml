@@ -87,15 +87,19 @@ jobs:
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
 
-      # A job-owned CARGO_HOME with a config the job writes, and a pinned cargo-mutants
-      # built from crates.io into a job-owned directory, called by its absolute path.
+      # A job-owned CARGO_HOME with a config the job writes, and cargo-mutants 27.1.0's
+      # release binary (sha256 pinned, no build from source) in a job-owned directory,
+      # called by its absolute path.
       - name: Install cargo-mutants 27.1.0
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: |
-          mkdir -p "$CARGO_HOME"
+          mkdir -p "$CARGO_HOME" "$RUNNER_TEMP/tools/bin"
           printf '[net]\nretry = 5\n' > "$CARGO_HOME/config.toml"
-          cargo install cargo-mutants --version 27.1.0 --locked --root "$RUNNER_TEMP/tools"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cargo-mutants.tar.gz" \
+            https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          echo "dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e  $RUNNER_TEMP/cargo-mutants.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-mutants.tar.gz" -C "$RUNNER_TEMP/tools/bin" cargo-mutants
 
       # Step timeouts fail the step; gate/integrity reads any result but success as a failure.
       - name: cargo mutants on this shard of the changed Rust lines
@@ -105,6 +109,9 @@ jobs:
           CARGO_MUTANTS: ${{ runner.temp }}/tools/bin/cargo-mutants
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           MERGE_BASE: ${{ needs.plan.outputs.base }}
+          # No MUTATION_BASELINE: pass 2 always runs its own baseline here. ci.yml's check job
+          # tests the merge ref in place after npm ci, not this head in cargo-mutants' copy,
+          # so its green does not prove this tree's baseline (#618 review r1 M1).
         run: |
           git diff "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
           bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
