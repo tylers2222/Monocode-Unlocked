@@ -98,7 +98,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --manifest-path crates/monocode-gpui/Cargo.toml --all --check
+      - run: rustup toolchain install "$(cat .github/rust-version)" --profile minimal --component rustfmt && cargo "+$(cat .github/rust-version)" fmt --manifest-path crates/monocode-gpui/Cargo.toml --all --check
       - run: cargo clippy --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-core -p monocode-gpui --all-targets --profile native-dev -- -D warnings
       - run: cargo test --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-core --profile native-dev
       - run: cargo test --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-gpui --profile native-dev -- --test-threads=1

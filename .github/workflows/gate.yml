@@ -72,7 +72,20 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
-          components: clippy
+          components: clippy, rustfmt
+
+      # Needs no system library and no build, so a formatting diff fails here in
+      # seconds. check in ci.yml and desktop in native.yml keep their own fmt steps.
+      - name: cargo fmt (root workspace)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo fmt --check || { echo "::error::Formatting differs. Fix it with: cargo +$(cat .github/rust-version) fmt"; exit 1; }
+
+      # The root workspace excludes crates/monocode-core and crates/monocode-gpui.
+      - name: cargo fmt (native crates)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo fmt --manifest-path crates/monocode-gpui/Cargo.toml --all --check || { echo "::error::Formatting differs. Fix it with: cargo +$(cat .github/rust-version) fmt --manifest-path crates/monocode-gpui/Cargo.toml --all"; exit 1; }
 
       # Clippy needs these libraries, so this step cannot move after it. It runs
       # the base branch's copy of the script, so the PR cannot change what it does.
