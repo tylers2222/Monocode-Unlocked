@@ -435,7 +435,9 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 29);
+    assert_eq!(row("ci_watches")["insert"], 1);
+    // 29 before ci.watch, plus its ci_watches row and its mono_outbox row.
+    assert_eq!(plan["changes"], 31);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
