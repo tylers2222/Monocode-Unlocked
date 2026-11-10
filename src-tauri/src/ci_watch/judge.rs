@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use crate::fs::{parse_github_pr_checks, GitHubPrCheck};
+use crate::fs::{parse_pr_checks_json, GitHubPrCheck};
 
 /// A watch gives up this long after it was registered.
 pub(crate) const GIVE_UP_MS: i64 = 6 * 60 * 60_000;
@@ -41,7 +41,7 @@ pub(crate) fn parse(json: &str) -> Result<Snapshot, String> {
         "CLOSED" => PrState::Closed,
         other => return Err(format!("Unknown pull request state {other:?}")),
     };
-    let checks = parse_github_pr_checks(json)?;
+    let checks = parse_pr_checks_json(json)?;
     Ok(Snapshot {
         state,
         head: checks.head_oid,

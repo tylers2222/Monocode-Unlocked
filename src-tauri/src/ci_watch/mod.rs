@@ -185,7 +185,7 @@ fn watch(
     let invalid = |hint: &str| Refusal::InvalidInput(hint.into());
     let repo_hint = "repo must be owner/name, such as tylers2222/Monocode-Unlocked.";
     let (owner, name) =
-        crate::fs::split_github_repo(&input.repo).map_err(|_| invalid(repo_hint))?;
+        crate::fs::split_github_slug(&input.repo).map_err(|_| invalid(repo_hint))?;
     let repo = format!("{owner}/{name}");
     let github_name = |byte: u8| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte);
     if !format!("{owner}{name}").bytes().all(github_name) {

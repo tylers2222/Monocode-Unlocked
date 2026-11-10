@@ -3468,7 +3468,7 @@ fn parse_github_review_reply_url(json: &str) -> Result<String, String> {
     Err("GitHub did not return a comment URL".into())
 }
 
-pub(crate) fn split_github_repo(slug: &str) -> Result<(String, String), String> {
+fn split_github_repo(slug: &str) -> Result<(String, String), String> {
     let slug = slug.trim();
     let Some((owner, name)) = slug.split_once('/') else {
         return Err("GitHub did not return a repository".into());
@@ -3986,7 +3986,7 @@ struct GitHubStatusCheckRow {
     completed_at: Option<String>,
 }
 
-pub(crate) fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
+fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Row {
@@ -4501,6 +4501,17 @@ fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, S
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
     gh_run_program(&program, root, args, allow_empty, None)
+}
+
+/// `split_github_repo` for ci.watch. A wrapper, so the old function's text,
+/// which inbox/github.rs repeats, stays as it is for jscpd's baseline.
+pub(crate) fn split_github_slug(slug: &str) -> Result<(String, String), String> {
+    split_github_repo(slug)
+}
+
+/// `parse_github_pr_checks` for ci.watch, a wrapper for the same reason.
+pub(crate) fn parse_pr_checks_json(json: &str) -> Result<GitHubPrChecks, String> {
+    parse_github_pr_checks(json)
 }
 
 /// `gh_run` for a caller that must not hang: `gh` is stopped, and the call
@@ -8858,6 +8869,23 @@ mod tests {
         );
         assert!(split_github_repo("monocode").is_err());
         assert!(split_github_repo("acme/web extra").is_err());
+    }
+
+    #[test]
+    fn the_ci_watch_wrappers_give_what_the_wrapped_functions_give() {
+        for slug in [" hardbeat920/monocode ", "monocode", "acme/web extra"] {
+            assert_eq!(split_github_slug(slug), split_github_repo(slug));
+        }
+        assert_eq!(
+            split_github_slug("acme/web").unwrap(),
+            ("acme".into(), "web".into())
+        );
+        let json = r#"{"headRefOid": "abc123", "statusCheckRollup": [
+            {"__typename": "StatusContext", "context": "review/agent", "state": "SUCCESS"}
+        ]}"#;
+        assert_eq!(parse_pr_checks_json(json), parse_github_pr_checks(json));
+        assert_eq!(parse_pr_checks_json(json).unwrap().checks.len(), 1);
+        assert!(parse_pr_checks_json("not json").is_err());
     }
 
     #[test]
