@@ -289,7 +289,7 @@ impl Reader<'_> {
 
     /// The oldest wake a row dates, else the first listed.
     fn wake_item(&self, entries: &[Listed]) -> rusqlite::Result<Item> {
-        let mut oldest: Option<Item> = None;
+        let mut wakes = Vec::new();
         for (entry, listed) in entries.iter().enumerate() {
             let item = match listed {
                 Listed::Message => self.message_wake()?,
@@ -299,10 +299,12 @@ impl Reader<'_> {
                 _ => continue,
             }
             .at(entry);
-            if oldest.as_ref().is_none_or(|best| item.age > best.age) {
-                oldest = Some(item);
-            }
+            wakes.push(item);
         }
+        // On equal ages the first listed wins.
+        let oldest = wakes
+            .into_iter()
+            .max_by_key(|item| (item.age, std::cmp::Reverse(item.entry)));
         Ok(oldest.unwrap_or_else(|| Item::aged("a wake, which one unknown", None)))
     }
 
