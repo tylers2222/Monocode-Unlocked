@@ -3,16 +3,12 @@ name: cache-seed
 # Saves the Rust cache entries pull requests restore, on a path that is never cancelled and
 # that compiles without running tests. rust-cache saves only after a green job, so a red or
 # cancelled tyler/main run saves nothing, and its key changes only with Cargo.lock or rustc.
-# It runs when one of those can change. The daily run brings back an entry the 10 GiB store
-# evicted and picks up a new stable rustc; a job whose key still exists saves nothing.
+# A push seeds only when one of those can change (the decide job; a workflow-level paths
+# filter is refused by test_ci_changes.py). The daily run brings back an entry the 10 GiB
+# store evicted and picks up a new stable rustc; a job whose key still exists saves nothing.
 on:
   push:
     branches: [tyler/main]
-    paths:
-      - Cargo.lock
-      - crates/monocode-gpui/Cargo.lock
-      - .github/rust-version
-      - .github/workflows/cache-seed.yml
   schedule:
     - cron: "0 15 * * *"
   workflow_dispatch:
@@ -26,9 +22,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # schedule and workflow_dispatch always seed. A push seeds when it changed a lock file, the
+  # pinned rustc or this file, or when its diff cannot be read (fail open).
+  decide:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      seed: ${{ steps.diff.outputs.seed }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" != push ]; then echo "seed: $EVENT"; echo "seed=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if ! git fetch -q --depth=1 origin "$BEFORE" || ! changed=$(git diff --name-only "$BEFORE" HEAD); then
+            echo "seed: cannot diff $BEFORE..HEAD"; echo "seed=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          hits=$(grep -xE 'Cargo\.lock|crates/monocode-gpui/Cargo\.lock|\.github/rust-version|\.github/workflows/cache-seed\.yml' <<<"$changed" || true)
+          if [ -n "$hits" ]; then echo "seed: $hits"; echo "seed=true" >> "$GITHUB_OUTPUT"
+          else echo "no seed: no lock file, rustc pin or seed workflow change"; echo "seed=false" >> "$GITHUB_OUTPUT"; fi
+
   # The same keys as ci.yml's check job and gate/lint, which also still save on a green push.
   check:
     name: seed check (${{ matrix.os }})
+    needs: decide
+    if: needs.decide.outputs.seed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +85,8 @@ jobs:
   # of Core, so Core on macOS restores this entry too.
   native:
     name: seed native (${{ matrix.os }})
+    needs: decide
+    if: needs.decide.outputs.seed == 'true'
     strategy:
       fail-fast: false
       matrix:
