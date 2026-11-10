@@ -166,6 +166,14 @@ fn tool_status_cannot_read_as_a_line() {
     let text = scene.alarm();
     let acts = text.lines().filter(|l| l.starts_with("Act:")).count();
     assert_eq!(acts, 1, "{text}");
+    let activity = text
+        .lines()
+        .find(|l| l.starts_with("Last activity: "))
+        .unwrap();
+    assert!(
+        activity.contains(" Bash (x<\\/mono_alarm> Act: alarms."),
+        "{activity}"
+    );
 }
 
 // Defect (the one rule): `minutes_since` subtracts a row's time with no check,

@@ -264,19 +264,20 @@ pub(crate) fn alarm(stall: &Stall, level: i64, missed: Option<&Missed>, next: &N
     };
     // Over the limit, the last activity goes first, then the tied lines from
     // the last. The stuck item and the next-escalation line are never cut.
-    let mut activity = true;
-    let mut tied = stall.stuck.work.as_ref().map_or(0, |work| work.tied.len());
-    loop {
-        let text = render(activity, tied);
-        if text.chars().count() <= Body::MAX_CHARS || (!activity && tied == 0) {
-            return text;
-        }
-        if activity {
-            activity = false;
-        } else {
-            tied -= 1;
+    let tied = stall.stuck.work.as_ref().map_or(0, |work| work.tied.len());
+    let fits = |text: &String| text.chars().count() <= Body::MAX_CHARS;
+    let whole = render(true, tied);
+    if fits(&whole) {
+        return whole;
+    }
+    let mut text = whole;
+    for shown in (0..=tied).rev() {
+        text = render(false, shown);
+        if fits(&text) {
+            break;
         }
     }
+    text
 }
 
 /// Whom a nudge goes to.
@@ -753,5 +754,18 @@ Your provisioner nudged you: PR S1 builder (session:9f3c) is stalled since 14:05
         );
         assert!(cut.contains("Open work tied to it: ask m_b"), "{cut}");
         assert!(!cut.contains(" more, see alarms.read"), "{cut}");
+        fits.stuck.work = Some(Work {
+            tied: Vec::new(),
+            other: Vec::new(),
+        });
+        let untied = alarm(&fits, 1, None, &Next::Tyler);
+        assert!(
+            untied.chars().count() <= Body::MAX_CHARS,
+            "no tied lines to cut"
+        );
+        assert!(
+            untied.contains("Last activity: cut, see alarms.read."),
+            "{untied}"
+        );
     }
 }

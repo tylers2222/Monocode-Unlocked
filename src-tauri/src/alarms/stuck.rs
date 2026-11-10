@@ -565,7 +565,7 @@ impl Reader<'_> {
 
     /// The child result that came last: it set the stall's clock.
     fn child_item(&self, entries: &[Listed]) -> rusqlite::Result<Option<Item>> {
-        let mut last: Option<(usize, &str, Option<i64>)> = None;
+        let mut results: Vec<(usize, &str, Option<i64>)> = Vec::new();
         for (entry, listed) in entries.iter().enumerate() {
             let Listed::ChildResult { child } = listed else {
                 continue;
@@ -578,10 +578,9 @@ impl Reader<'_> {
                 Some(session) => Activity::read(self.conn, &session)?.map(|row| row.ended),
                 None => None,
             };
-            if last.is_none_or(|(_, _, best)| ended > best) {
-                last = Some((entry, child.as_str(), ended));
-            }
+            results.push((entry, child.as_str(), ended));
         }
+        let last = results.into_iter().max_by_key(|(_, _, ended)| *ended);
         let Some((entry, child, ended)) = last else {
             return Ok(None);
         };
