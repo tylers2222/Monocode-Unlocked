@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::alarms::taps::Pipe;
 use crate::alarms::ChildTap;
+use crate::child_output::wait_output;
 use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
@@ -1793,15 +1794,10 @@ pub(crate) fn exec_output(
 
     let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
     let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(format!("Failed to run {command}: {e}")),
-        Err(_) => {
+    match wait_output(child, timeout) {
+        Some(Ok(output)) => Ok(output),
+        Some(Err(e)) => Err(format!("Failed to run {command}: {e}")),
+        None => {
             terminate(pid);
             Err(format!("{command} timed out"))
         }
