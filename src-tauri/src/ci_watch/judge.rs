@@ -147,7 +147,10 @@ pub(crate) fn judge(watch: &Watch, read: &Result<Snapshot, String>, now: i64) ->
             ),
         );
     }
-    let finished = !set.is_empty() && set.iter().all(|check| check.state != "pending");
+    let finished = set.iter().any(|check| is_run(check))
+        && !set
+            .iter()
+            .any(|check| is_run(check) && check.state == "pending");
     if finished {
         let seen = fingerprint(&set);
         if watch.settled.as_deref() == Some(seen.as_str()) {
@@ -185,6 +188,13 @@ fn end(watch: &Watch, outcome: Outcome, body: String) -> Judged {
         body
     );
     Judged::End { outcome, text }
+}
+
+/// A workflow job, as opposed to a commit status such as `review/agent`.
+/// Only jobs decide when CI finished: a reviewer posts a pending status
+/// when it starts and its verdict after CI, so a status never holds a wake.
+fn is_run(check: &GitHubPrCheck) -> bool {
+    !check.workflow.is_empty()
 }
 
 /// One result per check: a re-run's newer attempt replaces the older one.
@@ -522,6 +532,21 @@ mod tests {
         let read = open(vec![review, check("ci", "pass", 20, "a")]);
         let (_, text) = ended(twice(&read));
         assert!(text.contains("  review/agent: success\n"), "{text}");
+    }
+
+    #[test]
+    fn a_pending_status_does_not_hold_the_wake() {
+        let mut review = check("review/agent", "pending", 0, "a");
+        review.workflow = String::new();
+        let read = open(vec![review.clone(), check("ci", "pass", 20, "a")]);
+        let (_, text) = ended(twice(&read));
+        assert!(text.contains("  review/agent: pending\n"), "{text}");
+        assert!(text.contains("Not finished:\n  review/agent"), "{text}");
+        assert_eq!(
+            judge(&watch(None), &open(vec![review]), 0),
+            Judged::Wait { settled: None },
+            "statuses alone are no finished CI set"
+        );
     }
 
     #[test]

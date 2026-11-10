@@ -603,9 +603,10 @@ Actions:
                   "notify":"<session or mono id>"}
                   Wake once when CI for that PR head finishes, instead of
                   sleeping or polling. notify defaults to you; it may also
-                  be an agent you provisioned. Every check on the sha must
-                  complete, pass or fail, and stay the same across two reads
-                  a minute apart. The wake is one <ci_watch> message: a new
+                  be an agent you provisioned. Every workflow job on the sha
+                  must complete, pass or fail, and stay the same across two
+                  reads a minute apart; a commit status (review/agent) is
+                  reported but never holds the wake. The wake is one <ci_watch> message: a new
                   turn when idle, else a steer, else after the turn. It
                   gives each required check's conclusion (gate/lint,
                   review/agent, ci, e2e-linux, gate/integrity, or the names
