@@ -34,6 +34,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       base: ${{ steps.targets.outputs.base }}
+      baseline: ${{ steps.baseline.outputs.baseline }}
       rust: ${{ steps.targets.outputs.rust }}
       stryker: ${{ steps.targets.outputs.stryker }}
     steps:
@@ -56,6 +57,19 @@ jobs:
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           echo "base=$base" >> "$GITHUB_OUTPUT"
           git diff --unified=0 "$base" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
+
+      # mutation.sh's full pass skips its cargo test baseline only when this exact head
+      # already passed ci.yml's Linux cargo test (the check (ubuntu-latest) job). Most
+      # first pushes run before CI ends, so they run the baseline.
+      - name: Did this head already pass the test job
+        id: baseline
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ok=$(gh api "repos/$GATE_REPO/commits/$HEAD_SHA/check-runs?check_name=check%20(ubuntu-latest)" \
+                 --jq '[.check_runs[] | select(.conclusion == "success")] | length' || echo 0)
+          if [ "${ok:-0}" -gt 0 ]; then echo baseline=skip; else echo baseline=run; fi | tee -a "$GITHUB_OUTPUT"
 
   rust:
     # No matrix value in the name: GitHub appends it per leg ("gate/mutation rust (0)"), and a
@@ -87,15 +101,19 @@ jobs:
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
 
-      # A job-owned CARGO_HOME with a config the job writes, and a pinned cargo-mutants
-      # built from crates.io into a job-owned directory, called by its absolute path.
+      # A job-owned CARGO_HOME with a config the job writes, and cargo-mutants 27.1.0's
+      # release binary (sha256 pinned, no build from source) in a job-owned directory,
+      # called by its absolute path.
       - name: Install cargo-mutants 27.1.0
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: |
-          mkdir -p "$CARGO_HOME"
+          mkdir -p "$CARGO_HOME" "$RUNNER_TEMP/tools/bin"
           printf '[net]\nretry = 5\n' > "$CARGO_HOME/config.toml"
-          cargo install cargo-mutants --version 27.1.0 --locked --root "$RUNNER_TEMP/tools"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cargo-mutants.tar.gz" \
+            https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          echo "dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e  $RUNNER_TEMP/cargo-mutants.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-mutants.tar.gz" -C "$RUNNER_TEMP/tools/bin" cargo-mutants
 
       # Step timeouts fail the step; gate/integrity reads any result but success as a failure.
       - name: cargo mutants on this shard of the changed Rust lines
@@ -105,6 +123,7 @@ jobs:
           CARGO_MUTANTS: ${{ runner.temp }}/tools/bin/cargo-mutants
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           MERGE_BASE: ${{ needs.plan.outputs.base }}
+          MUTATION_BASELINE: ${{ needs.plan.outputs.baseline }}
         run: |
           git diff "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
           bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
