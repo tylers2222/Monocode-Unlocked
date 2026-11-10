@@ -568,7 +568,9 @@ fn the_older_notice_is_the_stuck_item_though_listed_second() {
         stuck.item
     );
     assert!(
-        stuck.item.ends_with("its session's last turn ended 3 min ago"),
+        stuck
+            .item
+            .ends_with("its session's last turn ended 3 min ago"),
         "{}",
         stuck.item
     );
