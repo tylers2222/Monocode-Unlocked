@@ -4585,46 +4585,26 @@ fn gh_run_program(
     Err(detail)
 }
 
-/// Runs `cmd` to its end and gives its output, or kills it and gives None
-/// after `timeout`. Its stdout and stderr are read while it runs, so a long
-/// output cannot fill a pipe and hold it.
+/// Runs `cmd` to its exit and gives its output, or kills it and gives None
+/// after `timeout`. It waits on the child's exit, not on its pipes closing,
+/// so a process that inherited the pipes cannot hold the call (ADE-259).
 pub(crate) fn output_within(
     cmd: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<Option<std::process::Output>> {
-    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
-            }
-            bytes
-        })
-    }
-    let mut child = cmd
+    let child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+    let pid = child.id();
+    match crate::child_output::wait_output(child, timeout) {
+        Some(output) => output.map(Some),
+        None => {
+            crate::harness::terminate_all(&[pid]);
+            Ok(None)
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    Ok(Some(std::process::Output {
-        status,
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
-    }))
+    }
 }
 
 pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, String> {
@@ -6959,6 +6939,29 @@ mod tests {
                 Err(error) => panic!("{}", error),
             }
         }
+    }
+
+    /// Defect (ADE-259): output_within joined its pipe readers after the
+    /// child exited. The background `sleep` holds the pipes after `sh` exits,
+    /// as a sibling fork that inherited them does, and held ci.watch's read.
+    #[cfg(unix)]
+    #[test]
+    fn output_within_returns_when_its_child_exits_while_another_process_holds_its_pipes() {
+        let started = Instant::now();
+        let output = output_within(
+            Command::new("/bin/sh").args(["-c", "echo out; echo err >&2; sleep 6 & exit 3"]),
+            Duration::from_secs(20),
+        )
+        .unwrap()
+        .expect("sh exited at once, so the call did not time out");
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "out\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "err\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     /// `gh_run_program` with `sh -c script` standing in for `gh`.
