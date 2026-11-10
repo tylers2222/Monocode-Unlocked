@@ -143,6 +143,23 @@ describe("a refused Delete or Archive", () => {
     expect(onRemoveProject).not.toHaveBeenCalled();
   });
 
+  it("archives nothing when a scroll closes the menu during the check", async () => {
+    // The rail's scroll listener holds the close from the render that opened
+    // the menu, before the check started.
+    let answer: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectArchive).mockReturnValue(
+      new Promise((done) => (answer = done)),
+    );
+    await pickFromMenu("client", "Archive");
+    const client = [...document.querySelectorAll("button")].find(
+      (item) => item.getAttribute("aria-label") === "client",
+    )!;
+    await act(async () => client.dispatchEvent(new Event("scroll")));
+    expect(document.querySelectorAll('[role="menuitem"]').length).toBe(0);
+    await act(async () => answer(null));
+    expect(onRemoveProject).not.toHaveBeenCalled();
+  });
+
   it("closes the menu and archives when Archive is allowed", async () => {
     vi.mocked(checkProjectArchive).mockResolvedValue(null);
     await pickFromMenu("client", "Archive");

@@ -257,13 +257,6 @@ export function useProjectMenu({
       )
     : null;
 
-  // A refusal that came after the menu closed reopens it with this message.
-  const reopenedWith = useRef<string | null>(null);
-  useEffect(() => {
-    setMenuError(reopenedWith.current);
-    reopenedWith.current = null;
-  }, [menuPath]);
-
   useEffect(() => {
     let active = true;
     void listExternalEditors()
@@ -289,19 +282,25 @@ export function useProjectMenu({
 
   const restoreFocus = () => trigger.current?.focus();
 
+  // Every close or move of the menu cancels the check, so an answer that
+  // arrives is always for the menu still open.
   const removal = useProjectRemoval({
-    menuPath,
     closeMenu: () => setProjectMenu(null),
     reopenMenu: (menu, refusal) => {
-      reopenedWith.current = refusal;
-      setMenuError(refusal);
       setProjectMenu(menu);
+      setMenuError(refusal);
     },
-    showRefusal: setMenuError,
+    showRefusal: (_path, refusal) => setMenuError(refusal),
     restoreFocus,
     // The menu offers Archive and Delete only when there is a handler.
     onRemoveProject: onRemoveProject ?? (() => undefined),
   });
+
+  // Closing or moving the menu drops an Archive or Delete check still running.
+  const closeProjectMenu = () => {
+    removal.cancelCheck();
+    setProjectMenu(null);
+  };
 
   const closeNotificationMenu = () => {
     setNotificationMenu(null);
@@ -316,15 +315,18 @@ export function useProjectMenu({
   ) => {
     captureTrigger(triggerElement);
     onOpen?.();
+    removal.cancelCheck();
     setGroupMenu(null);
     setNotificationMenu(null);
+    // A new menu starts with no error.
+    setMenuError(null);
     setProjectMenu({ x, y, path, projectKey: projectKey(path) });
   };
 
   const openGroupMenu = (id: string, x: number, y: number) => {
     captureTrigger();
     onOpen?.();
-    setProjectMenu(null);
+    closeProjectMenu();
     setNotificationMenu(null);
     setGroupMenu({ x, y, id });
   };
@@ -339,7 +341,7 @@ export function useProjectMenu({
   };
 
   const close = () => {
-    setProjectMenu(null);
+    closeProjectMenu();
     setGroupMenu(null);
     setNotificationMenu(null);
   };
@@ -391,7 +393,7 @@ export function useProjectMenu({
         return false;
       void openInExternalEditor(editorId, path)
         .then(() => {
-          setProjectMenu(null);
+          closeProjectMenu();
           restoreFocus();
         })
         .catch((error: unknown) => {
@@ -466,7 +468,7 @@ export function useProjectMenu({
         onMascotChange={saveTabGroupMascot}
         onLogoChange={() => {}}
         onClose={() => {
-          setProjectMenu(null);
+          closeProjectMenu();
           restoreFocus();
         }}
         leadingAction={

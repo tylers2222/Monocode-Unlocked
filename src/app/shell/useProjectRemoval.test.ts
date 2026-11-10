@@ -103,6 +103,18 @@ describe("Archive (T9)", () => {
     expect(spies.showRefusal).not.toHaveBeenCalled();
   });
 
+  it("cancels the latest check from a close handler of an older render", async () => {
+    let answer: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectArchive).mockReturnValue(
+      new Promise((done) => (answer = done)),
+    );
+    const older = removal;
+    await act(async () => removal.archive(P));
+    await act(async () => older.cancelCheck());
+    await act(async () => answer(null));
+    expect(spies.onRemoveProject).not.toHaveBeenCalled();
+  });
+
   it("drops the first check when a second one starts", async () => {
     let first: (refusal: string | null) => void = () => {};
     vi.mocked(checkProjectArchive).mockReturnValueOnce(
@@ -176,6 +188,25 @@ describe("Delete", () => {
       { x: 4, y: 8, path: P, projectKey: P },
       "A session is running.",
     );
+  });
+
+  it("drops a check started while the delete ran, when its refusal reopens the menu", async () => {
+    let refuse: (refusal: string | null) => void = () => {};
+    spies.onRemoveProject.mockReturnValueOnce(
+      new Promise((done) => (refuse = done)),
+    );
+    let answer: (refusal: string | null) => void = () => {};
+    vi.mocked(checkProjectArchive).mockReturnValue(
+      new Promise((done) => (answer = done)),
+    );
+    await act(async () => removal.askToDelete(TARGET));
+    await press("Delete");
+    await act(async () => removal.archive("/code/other"));
+    await act(async () => refuse("A session is running."));
+    await act(async () => answer(null));
+    expect(spies.reopenMenu).toHaveBeenCalledTimes(1);
+    expect(spies.onRemoveProject).toHaveBeenCalledTimes(1);
+    expect(spies.closeMenu).toHaveBeenCalledTimes(1);
   });
 
   it("reopens the menu with the message when the delete itself rejects", async () => {
