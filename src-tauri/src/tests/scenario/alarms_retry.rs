@@ -562,6 +562,9 @@ fn first_prompt(world: &World) -> String {
 fn an_alarm_under_the_ceiling_closes_on_the_next_turn() {
     let mut world = World::new("alarm-retry-under-ceiling");
     let (_, mono) = add_monos(&world);
+    // Past an hour of active time, as in the app: the ceiling is measured from
+    // the stall to the open, never from active time zero (mutation, line 127).
+    world.advance(2 * CEILING);
     align(&mut world);
     ran_a_turn(&mut world, &mono.chat);
     save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
