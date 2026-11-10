@@ -2,10 +2,13 @@
 
     python3 -m unittest discover -s scripts/process/tests
 """
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -16,7 +19,11 @@ WORKFLOWS = HERE.parents[2] / ".github/workflows"
 sys.path.insert(0, str(HERE.parent))
 from ci_changes import MAP, parse  # noqa: E402
 
-JOBS = list(parse(MAP.read_text()).jobs)
+REAL_MAP = MAP.read_text()
+JOBS = list(parse(REAL_MAP).jobs)
+# The run block of the `changes` step in ci.yml, e2e.yml and native.yml.
+CHANGES_STEP = ("set -euo pipefail\n"
+                'python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"\n')
 EVERY_JOB = set(JOBS)
 # Real pull requests' file lists (gh pr view <n> --json files).
 PR_429_SCRIPT = ["scripts/spaces/merge-dry-run.py", "scripts/spaces/tests/test_merge_dry_run.py"]
@@ -228,6 +235,68 @@ class FirstParentDiff(unittest.TestCase):
         self.assertEqual((run.returncode, run.stdout), (2, ""), "exit 2 turns the changes job red; no job line reaches GITHUB_OUTPUT")
 
 
+class MapErrors(unittest.TestCase):
+    """A map that parse() refuses ends the `changes` step red with no output line. An empty
+    output is not 'false', so every gated job runs, and ci_verdict.py fails the red `changes`
+    job. Each map is the real map with one fault, run through the workflows' own step on a PR
+    for which the faulty map, if it were read, would skip a job that the real map runs."""
+    SPEC = ["tests/browser/a.spec.ts"]
+    MAP_ONLY = ["scripts/process/ci-map.toml"]
+
+    def step(self, map_text: str, files: list[str]) -> tuple[int, str]:
+        """The step's exit code and what it appended to GITHUB_OUTPUT, with map_text as the
+        map beside ci_changes.py in the checkout."""
+        repo = Repo(files)
+        self.addCleanup(repo.dir.cleanup)
+        process = repo.path / "scripts/process"
+        process.mkdir(parents=True, exist_ok=True)
+        shutil.copy(SCRIPT, process / SCRIPT.name)
+        (process / MAP.name).write_text(map_text)
+        output = Path(self.enterContext(tempfile.TemporaryDirectory())) / "github_output"
+        output.touch()
+        env = {**os.environ, "EVENT": "pull_request", "HEAD": repo.merge, "GITHUB_OUTPUT": str(output)}
+        run = subprocess.run(["bash", "-c", CHANGES_STEP], cwd=repo.path, env=env, capture_output=True, text=True)
+        return run.returncode, output.read_text()
+
+    def faulty(self, old: str, new: str) -> str:
+        self.assertEqual(REAL_MAP.count(old), 1, old)
+        return REAL_MAP.replace(old, new)
+
+    def emptied(self, key: str) -> str:
+        text, n = re.subn(rf"(?ms)^{re.escape(key)} = \[.*?^\]", f"{key} = []", REAL_MAP)
+        self.assertEqual(n, 1, key)
+        return text
+
+    def test_the_real_map_runs_the_jobs_these_prs_need(self):
+        """Control: each PR below runs a job under the real map that a faulty map would skip."""
+        code, output = self.step(REAL_MAP, self.SPEC)
+        self.assertEqual(code, 0)
+        self.assertIn("browser=true\n", output)
+        code, output = self.step(REAL_MAP, self.MAP_ONLY)
+        self.assertEqual((code, output), (0, "".join(f"{job}=true\n" for job in JOBS)))
+        code, output = self.step(REAL_MAP, PR_429_SCRIPT)
+        self.assertEqual((code, output), (0, "".join(f"{job}=false\n" for job in JOBS)))
+
+    def test_a_faulty_map_fails_the_step_with_no_output(self):
+        jobs_at = REAL_MAP.index("[jobs]")
+        cases = {
+            "an extra top-level key": ("stray = [\"src/**\"]\n" + REAL_MAP, self.SPEC),
+            "no none key": (self.faulty("\nnone = [", "\nnone_ = ["), self.SPEC),
+            "an empty all list": (self.emptied("all"), self.MAP_ONLY),
+            "an empty none list": (self.emptied("none"), self.SPEC),
+            "an empty job glob list": (self.emptied("browser"), self.SPEC),
+            "an empty glob": (self.faulty("\nbrowser = [\n", "\nbrowser = [\n  \"\",\n"), self.SPEC),
+            "a glob that is no string": (self.faulty("\nbrowser = [\n", "\nbrowser = [\n  1,\n"), self.SPEC),
+            "a glob list that is no list": (self.faulty("\nbrowser = [\n", "\nbrowser = \"src/**\"\nbrowser_ = [\n"), self.SPEC),
+            "an empty [jobs] table": (REAL_MAP[:jobs_at] + "[jobs]\n", PR_429_SCRIPT),
+            "a jobs key that is no table": (REAL_MAP[:jobs_at] + "jobs = [\"browser\"]\n", PR_429_SCRIPT),
+            "a TOML syntax error": (REAL_MAP + "[jobs\n", PR_429_SCRIPT),
+        }
+        for fault, (map_text, files) in cases.items():
+            with self.subTest(fault):
+                self.assertEqual(self.step(map_text, files), (1, ""))
+
+
 class FileClasses(unittest.TestCase):
     def test_box_ci_classes(self):
         self.assertEqual(classes([".github/workflows/ci.yml", "scripts/process/ci-map.toml", "newtool/x",
@@ -270,9 +339,7 @@ class WorkflowWiring(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertIn("          EVENT: ${{ github.event_name }}\n"
                               "          HEAD: ${{ github.sha }}\n"
-                              "        run: |\n"
-                              "          set -euo pipefail\n"
-                              '          python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"\n', body)
+                              "        run: |\n" + textwrap.indent(CHANGES_STEP, " " * 10), body)
                 self.assertNotIn("pull_request.base.sha", body)
 
 
