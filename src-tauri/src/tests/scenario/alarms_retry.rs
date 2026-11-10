@@ -510,6 +510,40 @@ fn turns_that_never_take_a_stuck_item_alarm_at_the_ceiling_from_its_start() {
     assert!(!episode.open, "the item moved, so the alarm closes");
 }
 
+// Defect (mutation, item_moved): a ceiling wake_missed alarm stays open when
+// a turn takes its stuck item and the next item waits behind it, as the wake
+// never stopped waiting. The queue moved, so the alarm closes.
+#[test]
+fn a_ceiling_alarm_closes_when_its_queue_moves_on() {
+    let mut world = World::new("alarm-retry-ceiling-moves");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
+    world.advance(PASS);
+    let seen = wake_seen(&world, &mono.chat);
+    let mut flip = 0;
+    while episodes(&world).is_empty() {
+        assert!(
+            world.active_ms() - seen < CEILING + 2 * WAKE,
+            "no alarm by the ceiling"
+        );
+        world.advance(2 * WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("flip-{flip}"));
+        flip += 1;
+    }
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(episode.cause, "wake_missed");
+    assert!(episode.open);
+
+    save_queue(&world, &mono.chat, json!([{"id": "next-1"}]), "active");
+    ran_a_turn_named(&mut world, &mono.chat, "takes-stuck-1");
+    world.advance(PASS);
+    let first = episodes(&world).remove(0);
+    assert_eq!(first.id, episode.id);
+    assert!(!first.open, "the queue moved, so the alarm closes");
+}
+
 /// The text of the first alarm prompt written.
 fn first_prompt(world: &World) -> String {
     world
