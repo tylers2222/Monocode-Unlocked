@@ -114,8 +114,15 @@ impl Lead {
         turn(&mut self.world, &self.lead, id, false);
     }
 
+    /// The lead's one episode. Its Mono can open its own when the lead writes
+    /// to it (#579), so it is picked by actor.
     pub(super) fn episode(&self) -> String {
-        let [episode] = <[_; 1]>::try_from(episodes(&self.world)).unwrap();
+        let actor = format!("session:{}", self.lead.as_str());
+        let own: Vec<_> = episodes(&self.world)
+            .into_iter()
+            .filter(|episode| episode.actor == actor)
+            .collect();
+        let [episode] = <[_; 1]>::try_from(own).unwrap();
         episode.id
     }
 
