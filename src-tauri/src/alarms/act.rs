@@ -103,7 +103,7 @@ pub(crate) fn caller(conn: &Connection, session: &str) -> rusqlite::Result<Optio
 }
 
 /// A `send_to` or `sessionId` value: a Mono by id when one exists, else a session.
-pub(super) fn named_actor(conn: &Connection, name: &str) -> rusqlite::Result<Option<Actor>> {
+pub(crate) fn named_actor(conn: &Connection, name: &str) -> rusqlite::Result<Option<Actor>> {
     if let Some(actor) = Actor::parse(name) {
         return Ok(Some(actor));
     }

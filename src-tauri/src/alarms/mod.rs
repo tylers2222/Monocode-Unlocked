@@ -23,6 +23,7 @@ mod unseen;
 use rusqlite::Connection;
 use tauri::{Manager, Runtime};
 
+use crate::ask_gate::Actor;
 use crate::session_store::SessionStore;
 
 pub(crate) use activity::end_all_running;
@@ -41,6 +42,23 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub(crate) use route::TylerAlarm;
+
+/// Whether `above` is `agent` itself or a provisioner on `agent`'s chain:
+/// the ones who may set up a wake for `agent` (`ci.watch`).
+pub(crate) fn provisions(
+    conn: &Connection,
+    above: &Actor,
+    agent: &Actor,
+) -> rusqlite::Result<bool> {
+    if above == agent {
+        return Ok(true);
+    }
+    let root_giga = store::Settings::load(conn)?.root_giga;
+    let chain = route::climb(provisioner::Provisioner::Agent(agent.clone()), |actor| {
+        route::provisioner_of(conn, actor, root_giga.as_deref())
+    })?;
+    Ok(chain.contains(&provisioner::Provisioner::Agent(above.clone())))
+}
 
 /// The active and wall time an act is stamped with: this process's clock,
 /// else the one the clock's process last stored.

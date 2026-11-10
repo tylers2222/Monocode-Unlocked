@@ -3468,7 +3468,7 @@ fn parse_github_review_reply_url(json: &str) -> Result<String, String> {
     Err("GitHub did not return a comment URL".into())
 }
 
-fn split_github_repo(slug: &str) -> Result<(String, String), String> {
+pub(crate) fn split_github_repo(slug: &str) -> Result<(String, String), String> {
     let slug = slug.trim();
     let Some((owner, name)) = slug.split_once('/') else {
         return Err("GitHub did not return a repository".into());
@@ -3986,7 +3986,7 @@ struct GitHubStatusCheckRow {
     completed_at: Option<String>,
 }
 
-fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
+pub(crate) fn parse_github_pr_checks(json: &str) -> Result<GitHubPrChecks, String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Row {
@@ -4393,7 +4393,7 @@ struct GitHubRateLimitBackoff {
 // Shared by all webviews, including background Inbox and PR checks requests.
 static GITHUB_RATE_LIMIT_BACKOFF: Mutex<Option<GitHubRateLimitBackoff>> = Mutex::new(None);
 
-fn gh_run(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
+pub(crate) fn gh_run(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     gh_with_backoff(
         &GITHUB_RATE_LIMIT_BACKOFF,
         args,

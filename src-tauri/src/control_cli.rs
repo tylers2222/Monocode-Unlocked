@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 66] = [
+const APP_ACTIONS: [&str; 69] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -130,6 +130,9 @@ const APP_ACTIONS: [&str; 66] = [
     "alarms.dismiss",
     "alarms.report",
     "alarms.set",
+    "ci.watch",
+    "ci.list",
+    "ci.cancel",
     "notes.list",
     "notes.read",
     "notes.write",
@@ -596,6 +599,28 @@ Actions:
   alarms.set     {"agent":"session:...","stall_minutes":30}  Set the stall
                   minutes N (5 to 240) of an agent you provisioned. Codes:
                   not_the_parent, invalid_input.
+  ci.watch       {"repo":"owner/name","pr":588,"sha":"<full head sha>",
+                  "notify":"<session or mono id>"}
+                  Wake once when CI for that PR head finishes, instead of
+                  sleeping or polling. notify defaults to you; it may also
+                  be an agent you provisioned. Every check on the sha must
+                  complete, pass or fail, and stay the same across two reads
+                  a minute apart. The wake is one <ci_watch> message: a new
+                  turn when idle, else a steer, else after the turn. It
+                  gives each required check's conclusion (gate/lint,
+                  review/agent, ci, e2e-linux, gate/integrity, or the names
+                  in optional "required"), then failed, cancelled and
+                  skipped jobs with run ids. A re-run's newer attempt
+                  replaces the old result. outcome is finished, superseded
+                  (the head moved; it names the new sha), merged, closed,
+                  gave_up (6 h) or failed (no such PR). Each watched PR is
+                  read at most once a minute; the watch survives a restart.
+                  The same call again returns the open watch with
+                  duplicate:true. Returns id. Codes: invalid_input,
+                  notify_forbidden.
+  ci.list        {}  Your open watches: those you registered or that wake you.
+  ci.cancel      {"id":"cw_..."}  End a watch with no wake. Codes:
+                  unknown_watch, not_your_watch, watch_ended.
   notes.list     {"limit":30,"offset":0}  Titles and short previews only.
   notes.read     {"id":"..."}  Full body of one note.
   notes.write    {"title":"Plan","body":"Markdown","tags":["work"]}
@@ -1865,7 +1890,8 @@ mod tests {
     }
     fn help_entry(action: &str) -> String {
         let help = app_help();
-        let entry = &help[help.find(&format!("\n  {action} {{")).unwrap() + 1..];
+        // Short action names pad to the column of the input.
+        let entry = &help[help.find(&format!("\n  {action} ")).unwrap() + 1..];
         let mut lines = entry.lines();
         let first = lines.next().unwrap_or_default();
         std::iter::once(first)
@@ -1894,6 +1920,31 @@ mod tests {
         let help = app_help();
         assert!(help.contains("folders.* and milestones.* actions"));
         assert!(help.contains("do not send createdBy or by"));
+    }
+
+    // Defect: the CLI refuses a ci.* action, or its help hides the call
+    // shape or a refusal code the app answers.
+    #[test]
+    fn app_mode_sends_ci_actions_and_help_lists_each() {
+        for (action, input, codes) in [
+            (
+                "ci.watch",
+                r#"{"repo":"acme/web","pr":7,"sha":"0f4432e0d46670e4afed982a0d2a8d0ca13dbe34"}"#,
+                &["invalid_input", "notify_forbidden", "superseded", "gave_up"][..],
+            ),
+            ("ci.list", "{}", &[][..]),
+            (
+                "ci.cancel",
+                r#"{"id":"cw_x"}"#,
+                &["unknown_watch", "not_your_watch", "watch_ended"][..],
+            ),
+        ] {
+            assert_app_call(action, input);
+            let entry = help_entry(action);
+            for code in codes {
+                assert!(entry.contains(code), "{action} help omits {code}");
+            }
+        }
     }
 
     // Defect: the act line of a <mono_alarm> (`alarms.answer al_x --text
