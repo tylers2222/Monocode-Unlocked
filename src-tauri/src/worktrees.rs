@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, Runtime, State, WebviewWindow};
 
 use crate::fs::{expand_home, git_checked, git_diff_files_for, path_to_js, resolve_repo_path};
 use crate::session_store::SessionStore;
@@ -19,7 +20,17 @@ pub struct Worktree {
     pub missing: bool,
     pub dirty: Option<bool>,
     pub unpushed: Option<u64>,
+    /// The sessions of the calling window's Space on this worktree.
     pub session_ids: Vec<String>,
+    /// Every other Space's sessions on it: they block its removal (T18).
+    pub other_space_sessions: Vec<OtherSpaceSession>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherSpaceSession {
+    pub session_id: String,
+    pub space_id: String,
 }
 
 #[derive(Serialize)]
@@ -102,24 +113,61 @@ pub(crate) fn contains_working_dir(root: &Path, cwd: &Path) -> bool {
     }
 }
 
-fn session_ids(conn: &rusqlite::Connection, path: &Path) -> Result<Vec<String>, String> {
+/// Every session that works in `path`, with its Space.
+fn sessions_on(conn: &rusqlite::Connection, path: &Path) -> Result<Vec<OtherSpaceSession>, String> {
     let mut query = conn
-        .prepare("SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0")
+        .prepare("SELECT id, space_id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })
         .map_err(|e| e.to_string())?;
-    let mut ids = Vec::new();
+    let mut sessions = Vec::new();
     for row in rows {
-        let (id, cwd) = row.map_err(|e| e.to_string())?;
-        let cwd = expand_home(&cwd);
-        if contains_working_dir(path, &cwd) {
-            ids.push(id);
+        let (session_id, space_id, cwd) = row.map_err(|e| e.to_string())?;
+        if contains_working_dir(path, &expand_home(&cwd)) {
+            sessions.push(OtherSpaceSession {
+                session_id,
+                space_id,
+            });
         }
     }
-    Ok(ids)
+    Ok(sessions)
+}
+
+fn session_ids(conn: &rusqlite::Connection, path: &Path) -> Result<Vec<String>, String> {
+    Ok(sessions_on(conn, path)?
+        .into_iter()
+        .map(|session| session.session_id)
+        .collect())
+}
+
+/// T18, a second form of P4: a worktree one Space removes must not take or
+/// rewrite another Space's sessions. The text is what the Worktrees page shows.
+fn refuse_other_space(conn: &rusqlite::Connection, path: &Path, space: &str) -> Result<(), String> {
+    let Some(other) = sessions_on(conn, path)?
+        .into_iter()
+        .find(|session| session.space_id != space)
+    else {
+        return Ok(());
+    };
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM spaces WHERE id = ?1",
+            [&other.space_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Err(format!(
+        "A session in {} uses this worktree.",
+        name.unwrap_or(other.space_id)
+    ))
 }
 
 fn default_root(main: &Path) -> PathBuf {
@@ -127,15 +175,27 @@ fn default_root(main: &Path) -> PathBuf {
     main.with_file_name(format!("{name}-worktrees"))
 }
 
+/// `sessionIds` holds the calling window's Space's sessions only: the page
+/// deletes exactly those. A window that shows no Space yet has none, so every
+/// session is reported as another Space's and the page offers nothing to delete.
 #[tauri::command(async)]
-pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Worktrees, String> {
+pub fn git_worktrees<R: Runtime>(
+    window: WebviewWindow<R>,
+    cwd: String,
+    store: State<'_, SessionStore>,
+) -> Result<Worktrees, String> {
+    let space = crate::spaces::window_space(&store, window.label())?;
     let mut worktrees = list(&expand_home(&cwd))?;
     let main = worktrees.first().ok_or("No working copies found")?;
     let default_root = path_to_js(&default_root(Path::new(&main.path)));
     {
         let conn = store.lock_conn()?;
         for tree in &mut worktrees {
-            tree.session_ids = session_ids(&conn, Path::new(&tree.path))?;
+            let (own, others): (Vec<_>, Vec<_>) = sessions_on(&conn, Path::new(&tree.path))?
+                .into_iter()
+                .partition(|session| space.as_deref() == Some(session.space_id.as_str()));
+            tree.session_ids = own.into_iter().map(|session| session.session_id).collect();
+            tree.other_space_sessions = others;
         }
     }
     for tree in &mut worktrees {
@@ -577,14 +637,19 @@ fn removal_target(root: &Path, path: &Path) -> Result<Worktree, String> {
     Ok(tree)
 }
 
+/// Runs before the page deletes any conversation, so T18 refuses first.
 #[tauri::command(async)]
-pub fn git_worktree_check_remove(
+pub fn git_worktree_check_remove<R: Runtime>(
+    window: WebviewWindow<R>,
     cwd: String,
     path: String,
     force: bool,
+    store: State<'_, SessionStore>,
     terminals: State<'_, crate::pty::PtyHost>,
 ) -> Result<(), String> {
     let path = expand_home(&path);
+    let space = crate::spaces::shown_space(&store, window.label())?;
+    refuse_other_space(&*store.lock_conn()?, &path, &space)?;
     check_removal(
         &expand_home(&cwd),
         &path,
@@ -795,9 +860,11 @@ fn remove_with_sessions(
     conn: &rusqlite::Connection,
     root: &Path,
     path: &Path,
+    space: &str,
     force: bool,
     keep_sessions: bool,
 ) -> Result<WorktreeRemoval, String> {
+    refuse_other_space(conn, path, space)?;
     let tree = removal_target(root, path)?;
     let worktrees = list(root)?;
     let main = worktrees
@@ -828,32 +895,95 @@ fn remove_with_sessions(
 }
 
 #[tauri::command(async)]
-pub fn git_worktree_remove(
+pub fn git_worktree_remove<R: Runtime>(
+    window: WebviewWindow<R>,
     cwd: String,
     path: String,
     force: bool,
     keep_sessions: Option<bool>,
     store: State<'_, SessionStore>,
     terminals: State<'_, crate::pty::PtyHost>,
-    agents: State<'_, crate::harness::HarnessHost>,
 ) -> Result<WorktreeRemoval, String> {
     let path = expand_home(&path);
     let _reservation = crate::worktree_lifecycle::reserve_removal(&path)?;
+    let agents = window.state::<crate::harness::HarnessHost>();
     if terminals.has_working_dir(&path) || agents.has_working_dir(&path) {
         return Err("Close the terminals and agent processes using this worktree first.".into());
     }
+    let space = crate::spaces::shown_space(&store, window.label())?;
     let conn = store.lock_conn()?;
-    remove_with_sessions(
+    let removed = remove_with_sessions(
         &conn,
         &expand_home(&cwd),
         &path,
+        &space,
         force,
         keep_sessions.unwrap_or(false),
-    )
+    )?;
+    drop(conn);
+    crate::spaces::projects::emit_changed(window.app_handle());
+    Ok(removed)
 }
 
+/// The lead whose orchestration run has a task on the worktree `path`. A run's
+/// state that is not JSON names no lead.
+fn run_lead_of(conn: &rusqlite::Connection, path: &Path) -> Result<Option<String>, String> {
+    let runs = conn
+        .prepare("SELECT lead_id, state FROM orchestration_runs ORDER BY lead_id")
+        .and_then(|mut query| {
+            query
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(runs.into_iter().find_map(|(lead, state)| {
+        let run: serde_json::Value = serde_json::from_str(&state).ok()?;
+        run["tasks"]
+            .as_array()?
+            .iter()
+            .filter_map(|task| task["workspace"]["checkoutCwd"].as_str())
+            .any(|checkout| same_path(&expand_home(checkout), path))
+            .then_some(lead)
+    }))
+}
+
+/// The Space a lead's cleanup of `path` answers for: an agent's action uses the
+/// caller's Space (I11), so the Space of the lead whose run has the worktree. With
+/// no such lead it is `window`'s, which fails safe. A window that shows no Space
+/// has nothing to fall back on, and only a saved lead can answer for it: an unsaved
+/// one would take the app's active Space.
+fn cleanup_space(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    window: Option<&str>,
+) -> Result<String, String> {
+    let lead = run_lead_of(conn, path)?;
+    match (lead, window) {
+        (Some(lead), Some(_)) => {
+            crate::spaces::membership::space_for_row(conn, &lead, None, window)
+                .map_err(|e| e.to_string())
+        }
+        (None, Some(window)) => Ok(window.to_owned()),
+        (Some(lead), None) => conn
+            .query_row(
+                "SELECT space_id FROM sessions WHERE id = ?1",
+                [lead],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "This window has no Space yet.".to_owned()),
+        (None, None) => Err("This window has no Space yet.".to_owned()),
+    }
+}
+
+/// S is the Space of the lead whose run has the worktree ([`cleanup_space`]), else
+/// the calling window's. The T18 guard still refuses a session of any other Space.
 #[tauri::command(async)]
-pub fn git_orchestration_worktree_remove(
+pub fn git_orchestration_worktree_remove<R: Runtime>(
+    window: WebviewWindow<R>,
     cwd: String,
     path: String,
     store: State<'_, SessionStore>,
@@ -868,8 +998,12 @@ pub fn git_orchestration_worktree_remove(
     }
     let tree = removal_target(&root, &path)?;
     let branch = tree.branch.clone();
+    let window_space = crate::spaces::window_space(&store, window.label())?;
     let conn = store.lock_conn()?;
-    let removed = remove_with_sessions(&conn, &root, &path, true, true)?;
+    let space = cleanup_space(&conn, &path, window_space.as_deref())?;
+    let removed = remove_with_sessions(&conn, &root, &path, &space, true, true)?;
+    drop(conn);
+    crate::spaces::projects::emit_changed(window.app_handle());
     if let Some(branch) = branch {
         if branch.starts_with("mc/orch-") {
             if let Err(error) = git(Path::new(&removed.project_cwd), &["branch", "-D", &branch]) {
@@ -908,6 +1042,7 @@ pub async fn git_orchestration_branch_remove(cwd: String, branch: String) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spaces::{self, FIRST_SPACE};
 
     struct Repo(PathBuf);
     impl Drop for Repo {
@@ -1127,6 +1262,81 @@ mod tests {
         ));
     }
 
+    // F4, T18, a second form of P4. Defect: a Space removes a worktree another
+    // Space's session uses, or rewrites that session's folder when it keeps
+    // sessions; a Space cannot remove its own; the guard reads the wrong field
+    // of a session, or the refusal is not the page's text.
+    #[test]
+    fn a_worktree_another_spaces_session_uses_stays() {
+        let repo = repo();
+        let root = repo.0.join("repo").canonicalize().unwrap();
+        let tree = create(&root, "feature", "main", false).unwrap();
+        let path = Path::new(&tree.path);
+        let store = SessionStore::open_in_memory().unwrap();
+        spaces::create(&store, "Space 2", None, 1).unwrap();
+        let conn = store.lock_conn().unwrap();
+        for (id, cwd, worktree, space) in [
+            (
+                "two-shared",
+                path_to_js(&root),
+                Some(tree.path.clone()),
+                "space-2",
+            ),
+            ("two-main", path_to_js(&root), None, "space-2"),
+        ] {
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, worktree_cwd, space_id) VALUES (?1, ?2, 'codex', 'test', 'auto', 't', 1, 1, ?3, ?4)",
+                rusqlite::params![id, cwd, worktree, space],
+            )
+            .unwrap();
+        }
+        let refusal = "A session in Space 2 uses this worktree.";
+        assert_eq!(
+            refuse_other_space(&conn, path, FIRST_SPACE),
+            Err(refusal.into())
+        );
+        assert_eq!(refuse_other_space(&conn, path, "space-2"), Ok(()));
+        assert_eq!(refuse_other_space(&conn, &root, "space-2"), Ok(()));
+        for keep_sessions in [false, true] {
+            let refused =
+                remove_with_sessions(&conn, &root, path, FIRST_SPACE, true, keep_sessions);
+            assert_eq!(refused.err().as_deref(), Some(refusal));
+            assert!(path.exists(), "the worktree went");
+        }
+        let cwd: String = conn
+            .query_row(
+                "SELECT cwd FROM sessions WHERE id = 'two-shared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cwd, path_to_js(&root), "keep-sessions rewrote its folder");
+        conn.execute(
+            "UPDATE sessions SET space_id = 'space-9' WHERE id = 'two-shared'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            refuse_other_space(&conn, path, "space-2"),
+            Err("A session in space-9 uses this worktree.".into()),
+            "a Space with no row is named by its id"
+        );
+        conn.execute(
+            "UPDATE sessions SET space_id = 'space-2' WHERE id = 'two-shared'",
+            [],
+        )
+        .unwrap();
+        let removed = remove_with_sessions(&conn, &root, path, "space-2", true, true).unwrap();
+        assert_eq!(removed.session_ids, ["two-shared"]);
+        assert!(!path.exists());
+        conn.execute_batch("ALTER TABLE sessions RENAME TO gone")
+            .unwrap();
+        assert!(
+            refuse_other_space(&conn, path, "space-2").is_err(),
+            "a failed read passed the guard"
+        );
+    }
+
     #[test]
     fn removal_preserves_shared_archived_and_direct_sessions() {
         let repo = repo();
@@ -1147,12 +1357,12 @@ mod tests {
                 rusqlite::params![id, cwd, blocks, worktree, archived],
             ).unwrap();
         }
-        assert!(remove_with_sessions(&conn, &root, path, true, false).is_err());
+        assert!(remove_with_sessions(&conn, &root, path, FIRST_SPACE, true, false).is_err());
         // An actual Git removal failure must roll back the database changes.
         std::fs::write(path.join("dirty"), "uncommitted").unwrap();
-        assert!(remove_with_sessions(&conn, &root, path, false, true).is_err());
+        assert!(remove_with_sessions(&conn, &root, path, FIRST_SPACE, false, true).is_err());
         assert_eq!(session_ids(&conn, path).unwrap().len(), 3);
-        let mut removed = remove_with_sessions(&conn, path, path, true, true).unwrap();
+        let mut removed = remove_with_sessions(&conn, path, path, FIRST_SPACE, true, true).unwrap();
         removed.session_ids.sort();
         assert_eq!(removed.session_ids, vec!["archived", "direct", "shared"]);
         // Git omits the verbatim prefix added by canonicalize() on Windows.
@@ -1337,7 +1547,10 @@ mod tests {
              BEGIN SELECT RAISE(ABORT, 'journal unavailable'); END;",
         )
         .unwrap();
-        assert!(remove_with_sessions(&conn, &root, Path::new(&tree.path), true, true).is_err());
+        assert!(
+            remove_with_sessions(&conn, &root, Path::new(&tree.path), FIRST_SPACE, true, true)
+                .is_err()
+        );
         assert!(Path::new(&tree.path).exists());
         assert_eq!(session_ids(&conn, Path::new(&tree.path)).unwrap(), ["s1"]);
         conn.execute_batch("DROP TRIGGER fail_prepare").unwrap();
@@ -1347,7 +1560,8 @@ mod tests {
         )
         .unwrap();
         let removed =
-            remove_with_sessions(&conn, &root, Path::new(&tree.path), true, true).unwrap();
+            remove_with_sessions(&conn, &root, Path::new(&tree.path), FIRST_SPACE, true, true)
+                .unwrap();
         assert_eq!(removed.session_ids, ["s1"]);
         assert!(!Path::new(&tree.path).exists());
         let detached: bool = conn
