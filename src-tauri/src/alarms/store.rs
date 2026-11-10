@@ -423,8 +423,15 @@ impl Rows {
     }
 }
 
-/// The notice and queue items earlier episodes of `actors` already
-/// listed: each counts toward one episode only (lead N5).
+/// The notice and queue items earlier episodes of `actors` already told
+/// someone of: each counts toward one episode only (lead N5). An episode whose
+/// message the repeat limit held and that closed unsent told no one, so its
+/// items still count, or a stuck item would never alarm.
+///
+/// Every build that records sends writes an episode's level-1 send row when
+/// it opens it, before the limit decides, so an episode with no send row at
+/// all was written by a build that did not record them. It was never held, so
+/// its items count as such a build counted them (ADE-271).
 fn counted(conn: &Connection, actors: &[String]) -> rusqlite::Result<HashSet<(String, String)>> {
     if actors.is_empty() {
         return Ok(HashSet::new());
@@ -435,7 +442,12 @@ fn counted(conn: &Connection, actors: &[String]) -> rusqlite::Result<HashSet<(St
            FROM alarm_episodes e, json_each(e.open_work_json) w
           WHERE e.actor IN (SELECT value FROM json_each(?1))
             AND e.closed_active_ms IS NOT NULL AND json_valid(e.open_work_json)
-            AND json_extract(w.value, '$.kind') IN ('notice', 'queued')",
+            AND json_extract(w.value, '$.kind') IN ('notice', 'queued')
+            AND (NOT EXISTS (SELECT 1 FROM alarm_sends s WHERE s.episode_id = e.id)
+                 OR EXISTS (SELECT 1 FROM alarm_sends s
+                              LEFT JOIN alarm_prompts p ON p.outbox_key = s.outbox_key
+                             WHERE s.episode_id = e.id
+                               AND (s.recipient = 'tyler' OR p.outbox_key IS NOT NULL)))",
         [serde_json::to_string(actors).unwrap_or_default()],
     )?
     .into_iter()

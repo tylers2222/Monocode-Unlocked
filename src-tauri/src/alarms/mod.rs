@@ -8,6 +8,7 @@
 pub(crate) mod act;
 mod activity;
 pub(crate) mod deliver;
+mod limit;
 mod live;
 mod provisioner;
 mod rights;
@@ -35,6 +36,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     activity::ensure_table(conn)?;
     store::ensure_tables(conn)?;
     store::ensure_indexes(conn)?;
+    limit::ensure_table(conn)?;
     route::ensure_tables(conn)
 }
 
@@ -119,6 +121,13 @@ pub(crate) fn alarm_session<R: Runtime>(
 #[cfg(test)]
 pub(crate) mod test_taps {
     pub(crate) use super::store::outbox_key;
+
+    /// Episode `id`, a row the test wrote, opens as `Pass::open` opens one.
+    pub(crate) fn opened(conn: &rusqlite::Connection, id: &str, active: i64) {
+        let settings = super::store::Settings::load(conn).unwrap();
+        let mut notices = crate::mono_messages::Notices::default();
+        super::route::opened(conn, &mut notices, id, &settings, active).unwrap();
+    }
 
     /// `session`'s row as `(turn_state, turn_id, last_progress, tool_running)`.
     pub(crate) fn row(

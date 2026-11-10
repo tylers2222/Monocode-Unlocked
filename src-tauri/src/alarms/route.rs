@@ -5,6 +5,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::limit;
 use super::provisioner::{self, Provisioner};
 use super::store::{agent_stall_minutes, outbox_key, Settings, MINUTE_MS};
 use super::text::{self, DialogLine, Missed, Next, Stall, Who};
@@ -335,6 +336,7 @@ pub(crate) fn stall(
         last_activity: last_activity(conn, &episode.actor)?,
         dialog,
         escalate_minutes: settings.escalate_minutes,
+        held: 0,
     })
 }
 
@@ -377,7 +379,10 @@ fn level_text(
     settings: &Settings,
     active: i64,
 ) -> rusqlite::Result<String> {
-    let stall = stall(conn, episode, settings, active)?;
+    let mut stall = stall(conn, episode, settings, active)?;
+    if level == 1 {
+        stall.held = limit::grouped(conn, episode)?;
+    }
     let missed = match chain.get(level - 1) {
         Some(Provisioner::Agent(actor)) if level >= 2 => Some(Missed {
             who: who(conn, actor)?,
@@ -394,19 +399,17 @@ fn level_text(
     ))
 }
 
-/// Writes level `level` of `episode` for `to` once: its send row and, for
-/// an agent, its outbox row and text, and names the recipient's chat. The
-/// level's escalation clock starts now; Tyler's level never escalates. A
-/// level already written is left as it is.
-fn send(
+/// Writes level `level` of `episode` for `to` once, and says if it did: its
+/// send row, and its escalation clock, which starts now; Tyler's level never
+/// escalates. `chain` reads these rows by position, so a level whose message
+/// is held has its row all the same. A level already written is left as it is.
+fn log_level(
     tx: &Connection,
-    notices: &mut Notices,
     episode: &str,
     level: i64,
     to: &Provisioner,
-    text: &str,
     (active, escalate_ms): (i64, i64),
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<bool> {
     let key = match to {
         Provisioner::Agent(_) => Some(outbox_key(episode, level)),
         Provisioner::Tyler => None,
@@ -416,20 +419,6 @@ fn send(
          VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (episode_id, level) DO NOTHING",
         params![episode, level, to.stored(), key, active],
     )? == 1;
-    if let (true, Provisioner::Agent(recipient), Some(key)) = (inserted, to, key) {
-        let recipient = recipient.to_string();
-        tx.execute(
-            "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
-             VALUES (?1, NULL, 'alarm', ?2, ?3) ON CONFLICT (key) DO NOTHING",
-            params![key, recipient, active],
-        )?;
-        tx.execute(
-            "INSERT INTO alarm_prompts (outbox_key, episode_id, text) VALUES (?1, ?2, ?3)
-             ON CONFLICT (outbox_key) DO NOTHING",
-            params![key, episode, text],
-        )?;
-        crate::ask_scheduler::name_chat(tx, notices, &recipient)?;
-    }
     if inserted {
         let due = matches!(to, Provisioner::Agent(_)).then_some(active + escalate_ms);
         tx.execute(
@@ -437,10 +426,91 @@ fn send(
             params![episode, level, due],
         )?;
     }
+    Ok(inserted)
+}
+
+/// Puts level `level`'s message for `recipient` in the outbox, with its text,
+/// and names the recipient's chat.
+fn enqueue(
+    tx: &Connection,
+    notices: &mut Notices,
+    episode: &str,
+    level: i64,
+    recipient: &Actor,
+    text: &str,
+    active: i64,
+) -> rusqlite::Result<()> {
+    let key = outbox_key(episode, level);
+    let recipient = recipient.to_string();
+    tx.execute(
+        "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
+         VALUES (?1, NULL, 'alarm', ?2, ?3) ON CONFLICT (key) DO NOTHING",
+        params![key, recipient, active],
+    )?;
+    tx.execute(
+        "INSERT INTO alarm_prompts (outbox_key, episode_id, text) VALUES (?1, ?2, ?3)
+         ON CONFLICT (outbox_key) DO NOTHING",
+        params![key, episode, text],
+    )?;
+    crate::ask_scheduler::name_chat(tx, notices, &recipient)
+}
+
+/// Writes a level and its message at once: every level above the first.
+fn send(
+    tx: &Connection,
+    notices: &mut Notices,
+    episode: &str,
+    level: i64,
+    to: &Provisioner,
+    text: &str,
+    clock: (i64, i64),
+) -> rusqlite::Result<()> {
+    if let (true, Provisioner::Agent(recipient)) = (log_level(tx, episode, level, to, clock)?, to) {
+        enqueue(tx, notices, episode, level, recipient, text, clock.0)?;
+    }
     Ok(())
 }
 
-/// Episode `id` just opened: level 1 goes to its stored provisioner.
+/// The level-1 message goes now, whether it was just opened or was held: its
+/// window starts and the count it carries is spent.
+fn tell_level_one(
+    tx: &Connection,
+    notices: &mut Notices,
+    episode: &EpisodeRow,
+    chain: &[Provisioner],
+    recipient: &Actor,
+    settings: &Settings,
+    active: i64,
+) -> rusqlite::Result<()> {
+    let text = level_text(tx, episode, chain, 1, settings, active)?;
+    limit::sent(tx, episode, active)?;
+    enqueue(tx, notices, &episode.id, 1, recipient, &text, active)
+}
+
+/// The held level-1 message of `episode` goes now. Its escalation clock has
+/// run since the episode opened, so it says the whole minutes that are left.
+pub(super) fn send_held(
+    tx: &Connection,
+    notices: &mut Notices,
+    episode: &EpisodeRow,
+    settings: &Settings,
+    active: i64,
+) -> rusqlite::Result<()> {
+    let chain = chain(tx, episode, settings.root_giga.as_deref())?;
+    let Some(Provisioner::Agent(recipient)) = chain.get(1) else {
+        return Ok(());
+    };
+    let left = episode.next_escalate.unwrap_or(active) - active;
+    let settings = Settings {
+        escalate_minutes: (left / MINUTE_MS).max(1),
+        ..settings.clone()
+    };
+    tell_level_one(tx, notices, episode, &chain, recipient, &settings, active)
+}
+
+/// Episode `id` just opened: level 1 goes to its stored provisioner, unless
+/// the limit holds its message. Its send row and escalation clock start either
+/// way.
 pub(crate) fn opened(
     tx: &Connection,
     notices: &mut Notices,
@@ -474,16 +544,15 @@ pub(crate) fn opened(
             )?;
         }
     }
-    let text = level_text(tx, &episode, &chain, 1, settings, active)?;
-    send(
-        tx,
-        notices,
-        id,
-        1,
-        &to,
-        &text,
-        (active, settings.escalate_minutes * MINUTE_MS),
-    )
+    let clock = (active, settings.escalate_minutes * MINUTE_MS);
+    log_level(tx, id, 1, &to, clock)?;
+    let Provisioner::Agent(recipient) = &to else {
+        return Ok(());
+    };
+    if limit::holds(tx, &episode, active)? {
+        return Ok(());
+    }
+    tell_level_one(tx, notices, &episode, &chain, recipient, settings, active)
 }
 
 /// The request id of the dialog episode `id` alarmed about.
@@ -590,6 +659,7 @@ pub(crate) fn run(
 ) -> rusqlite::Result<()> {
     let active = at.0;
     record_sent(tx)?;
+    limit::release_due(tx, notices, settings, active)?;
     for episode in open_episodes(tx)? {
         if let Some(acted) = episode.acted_active {
             let stall_minutes =
