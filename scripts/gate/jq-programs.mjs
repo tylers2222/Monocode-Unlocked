@@ -93,10 +93,27 @@ function afterHeredocs(text, from, tags) {
   return at;
 }
 
-/**
- * The index after each `jq` that starts a command, outside quotes, comments and heredocs.
- * A string instead names what it could not read, so the caller skips the file.
- */
+/** The heredoc opener at `at`, null when none opens there, or a string naming one it cannot read. */
+function heredocAt(text, at) {
+  if (!text.startsWith("<<", at) || text[at - 1] === "<" || text[at + 2] === "<") return null;
+  const opener = HEREDOC.exec(text.slice(at, at + 200));
+  return opener && !opener[1] ? opener : `a heredoc it cannot read: ${text.slice(at, at + 20).split("\n")[0]}`;
+}
+
+/** The index of the line end for a comment that starts at `at`, or -1 when none starts there. */
+function commentEnd(text, at) {
+  if (text[at] !== "#" || !/[\s;(]/.test(text[at - 1] ?? " ")) return -1;
+  return text.indexOf("\n", at) < 0 ? text.length : text.indexOf("\n", at);
+}
+
+/** True when a `jq` at `at` starts a command. */
+function jqStartsAt(text, at) {
+  const before = text.slice(Math.max(0, at - 200), at).replaceAll("\\\n", " ");
+  return /^jq[ \t\\]/.test(text.slice(at, at + 3)) && COMMAND_BEFORE.test(before);
+}
+
+/** The index after each `jq` that starts a command, outside quotes, comments and heredocs. */
+// A string instead names what it could not read, so the caller skips the file.
 function jqCommandEnds(text) {
   const stack = [];
   const ends = [];
@@ -105,24 +122,24 @@ function jqCommandEnds(text) {
   while (at < text.length) {
     const char = text[at];
     const top = stack.at(-1);
-    const heredoc = text.startsWith("<<", at) && text[at - 1] !== "<" && text[at + 2] !== "<";
+    const opener = heredocAt(text, at);
+    const comment = commentEnd(text, at);
     if (top === "'" || top === '"') {
       at = step(stack, text, at);
     } else if (char === "\n" && heredocs.length > 0) {
       at = afterHeredocs(text, at + 1, heredocs);
       if (at < 0) return "a heredoc with no end line";
       heredocs = [];
-    } else if (char === "#" && /[\s;(]/.test(text[at - 1] ?? " ")) {
-      at = text.indexOf("\n", at) < 0 ? text.length : text.indexOf("\n", at);
-    } else if (heredoc) {
-      const opener = HEREDOC.exec(text.slice(at, at + 200));
-      if (!opener || opener[1]) return `a heredoc it cannot read: ${text.slice(at, at + 20).split("\n")[0]}`;
+    } else if (comment >= 0) {
+      at = comment;
+    } else if (typeof opener === "string") {
+      return opener;
+    } else if (opener) {
       heredocs.push(opener[3]);
       at += opener[0].length;
     } else {
       if (char === "(") stack.push(char);
-      const before = text.slice(Math.max(0, at - 200), at).replaceAll("\\\n", " ");
-      if (/^jq[ \t\\]/.test(text.slice(at, at + 3)) && COMMAND_BEFORE.test(before)) ends.push(at + 2);
+      if (jqStartsAt(text, at)) ends.push(at + 2);
       at = char === "(" ? at + 1 : step(stack, text, at);
     }
   }
