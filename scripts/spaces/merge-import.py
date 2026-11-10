@@ -70,6 +70,8 @@ COPY = {
     "mono_asks": (("id",), ("due_active_ms", "paused_at_active_ms", "next_due_active_ms")),
     "mono_ask_events": (("ask_id", "kind", "seq"), ("at_active_ms",)),
     "mono_outbox": (("key",), ("at_active_ms",)),
+    # A ci.watch's wall-clock row; its wake is a mono_outbox row above.
+    "ci_watches": (("id",), ()),
     "mono_messages": (("id",), ()),
     # The stall detector's rows move with their agents, as the asks do: an
     # import reads to the detector as a restart (alarms design section 8).

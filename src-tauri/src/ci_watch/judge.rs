@@ -538,6 +538,7 @@ mod tests {
     fn a_pending_status_does_not_hold_the_wake() {
         let mut review = check("review/agent", "pending", 0, "a");
         review.workflow = String::new();
+        review.url = Some("https://github.com/acme/web/pull/7".into());
         let read = open(vec![review.clone(), check("ci", "pass", 20, "a")]);
         let (_, text) = ended(twice(&read));
         assert!(text.contains("  review/agent: pending\n"), "{text}");
