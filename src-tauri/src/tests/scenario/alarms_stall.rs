@@ -614,10 +614,13 @@ fn wake(world: &mut World, kind: &str, giga: &Mono, mono: &Mono) {
 
 // Defect (S1 r2 F1): only a paused queue's own items are exempt, so a
 // paused chat's claimed reminder or untaken message still alarms its Giga as
-// wake_missed. A completion result owed to the chat is the exception (review
-// r1b M2a, ADE-271): a user Stop holds the queue, not the result.
+// wake_missed.
+// Rule (General, ruling on #574 r1b M2a): M2a beats this pinned F1 for owed
+// completion results only. A user Stop holds the queue, not a result owed to
+// the chat (ADE-271), so a paused chat's completion result still alarms as
+// wake_missed; its message, reminder and queue item stay silent until resumed.
 #[test]
-fn a_paused_chat_misses_no_wake_on_any_path() {
+fn a_paused_chat_misses_no_wake_except_an_owed_completion_result() {
     for kind in ["message", "reminder", "notice", "queued"] {
         let mut world = World::new(&format!("alarm-paused-{kind}"));
         let giga = world.add_mono_in("alz-general", MonoRole::Giga, &[P]);

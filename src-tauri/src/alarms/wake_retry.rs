@@ -17,14 +17,18 @@
 //! Both read a turn as progress, and a turn end restarts wake_missed, so an
 //! agent that keeps taking turns while its item stays stuck would never alarm.
 //! The ceiling bounds that: an idle-type stall that began `CEILING_MS` ago
-//! opens with no retry or re-check, from its original start.
+//! opens with no retry or re-check, from its original start. Turns under the
+//! wake threshold apart never make wake_missed due at all, so the ceiling also
+//! counts from each waiting item's first sight (`alarm_wake_items`): an idle
+//! agent whose turn ended after that, with the item still waiting a ceiling
+//! on, opens idle_open_work from that first sight.
 
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::activity;
 use super::live::Live;
 pub(crate) use super::state::Cause;
-use super::state::{self, Episode, Facts};
+use super::state::{self, Episode, Facts, Turn, Wake};
 use super::store::MINUTE_MS;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{Notices, SessionId};
@@ -67,7 +71,7 @@ fn run_start(
     actor: &Actor,
     (stalled_since, seen): (i64, i64),
 ) -> rusqlite::Result<i64> {
-    let first: Option<i64> = tx
+    let first: Option<Option<i64>> = tx
         .query_row(
             "SELECT first_stalled_since_active_ms FROM alarm_wake_retries WHERE actor = ?1",
             [actor.to_string()],
@@ -75,7 +79,9 @@ fn run_start(
         )
         .optional()?;
     Ok(match first {
-        Some(first) if seen <= first => first.min(stalled_since),
+        Some(Some(first)) if seen <= first => first.min(stalled_since),
+        // No row, a row of another run, or a row from a build before the
+        // column, which reads null: the run begins at this stall.
         _ => stalled_since,
     })
 }
@@ -83,16 +89,23 @@ fn run_start(
 /// Whether the turn that closes episode `id` as progress left its item where
 /// it was. An alarm the ceiling opened counts from its run's start, so every
 /// turn since reads as progress; its item moved only when the wake that waited
-/// from then was taken. A failure here says no: the episode closes as before.
+/// from then was taken, or for idle_open_work, when no item first seen by then
+/// still waits (`items_since`). A failure here says no: the episode closes as
+/// before.
 pub(super) fn still_stuck(
     tx: &Connection,
-    id: &str,
+    (id, actor): (&str, &Actor),
     episode: &Episode,
-    wake_pending_since: Option<i64>,
+    facts: &Facts,
 ) -> bool {
-    if !matches!(episode.cause, Ok(Cause::WakeMissed))
-        || wake_pending_since.is_none_or(|seen| seen > episode.stalled_since)
-    {
+    let waits = match episode.cause {
+        Ok(Cause::WakeMissed) => facts
+            .wake_pending_since
+            .is_some_and(|seen| seen <= episode.stalled_since),
+        Ok(Cause::IdleOpenWork) => item_waits(tx, actor, episode.stalled_since),
+        _ => false,
+    };
+    if !waits {
         return false;
     }
     let opened = tx.query_row(
@@ -107,6 +120,96 @@ pub(super) fn still_stuck(
             false
         }
     }
+}
+
+/// Whether an item `actor`'s ceiling counts from, first seen by `since`,
+/// still waits. A failure here says no.
+fn item_waits(tx: &Connection, actor: &Actor, since: i64) -> bool {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM alarm_wake_items
+                         WHERE actor = ?1 AND first_seen_active_ms <= ?2)",
+        params![actor.to_string(), since],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the waiting items of {actor}: {error}");
+        false
+    })
+}
+
+/// The first sight of the oldest item still waiting for `actor`, after this
+/// pass records what waits now (`wakes`). An item is a completion result, or
+/// the queue as one: a queue moves when any of its items is taken, so a long
+/// queue that drains is no stuck item. A message or reminder has no id, so
+/// only the wake threshold watches it. A failure here gives none: the other
+/// paths still alarm.
+pub(super) fn items_since(
+    tx: &Connection,
+    actor: &Actor,
+    wakes: &[Wake],
+    active: i64,
+) -> Option<i64> {
+    record_items(tx, actor, wakes, active).unwrap_or_else(|error| {
+        eprintln!("Could not record the waiting items of {actor}: {error}");
+        None
+    })
+}
+
+fn record_items(
+    tx: &Connection,
+    actor: &Actor,
+    wakes: &[Wake],
+    active: i64,
+) -> rusqlite::Result<Option<i64>> {
+    let actor = actor.to_string();
+    let items: Vec<String> = wakes
+        .iter()
+        .filter_map(|wake| match wake {
+            Wake::Notice { id } => Some(format!("notice:{id}")),
+            Wake::Queued { id } => Some(format!("queued:{id}")),
+            Wake::Message | Wake::Reminder => None,
+        })
+        .collect();
+    let items = serde_json::to_string(&items).unwrap_or_default();
+    let queue_moved: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM alarm_wake_items
+                         WHERE actor = ?1 AND item LIKE 'queued:%'
+                           AND item NOT IN (SELECT value FROM json_each(?2)))",
+        params![actor, items],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "DELETE FROM alarm_wake_items
+          WHERE actor = ?1 AND item NOT IN (SELECT value FROM json_each(?2))",
+        params![actor, items],
+    )?;
+    if queue_moved {
+        tx.execute(
+            "UPDATE alarm_wake_items SET first_seen_active_ms = ?2
+              WHERE actor = ?1 AND item LIKE 'queued:%'",
+            params![actor, active],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO alarm_wake_items (actor, item, first_seen_active_ms)
+         SELECT ?1, value, ?3 FROM json_each(?2)",
+        params![actor, items, active],
+    )?;
+    tx.query_row(
+        "SELECT MIN(first_seen_active_ms) FROM alarm_wake_items WHERE actor = ?1",
+        [actor],
+        |row| row.get(0),
+    )
+}
+
+/// Where an idle_open_work alarm opens for an item first seen at `since`
+/// (`items_since`) that turns did not take: the agent is idle, a turn of it
+/// ended after that sight, and a ceiling passed. A running turn opens nothing
+/// here: an item can wait behind it without being stuck.
+pub(super) fn items_past_ceiling(since: Option<i64>, turn: Turn, active: i64) -> Option<i64> {
+    let since = since?;
+    let turned = matches!(turn, Turn::Idle { ended_at, .. } if ended_at > since);
+    (turned && active - since >= CEILING_MS).then_some(since)
 }
 
 /// Whether the agent of an idle-type alarm took a turn after its stall
@@ -127,18 +230,33 @@ pub(super) fn turned_since(
     Ok(turned.flatten().unwrap_or(false))
 }
 
-/// One row per agent: its last retry, the stall it was for, and where that
-/// stall's run began (`run_start`). A stall is its stalled-since, which moves
-/// with a new turn end or a new wake, so a new stall replaces the row and gets
-/// its own retry.
+/// `alarm_wake_retries` has one row per agent: its last retry, the stall it
+/// was for, and where that stall's run began (`run_start`). A stall is its
+/// stalled-since, which moves with a new turn end or a new wake, so a new
+/// stall replaces the row and gets its own retry. A database from before
+/// `first_stalled_since_active_ms` gets the column, and its rows read null.
+/// `alarm_wake_items` has one row per item waiting for an agent and when it
+/// was first seen (`items_since`).
 pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS alarm_wake_retries (
            actor                   TEXT PRIMARY KEY,
            stalled_since_active_ms INTEGER NOT NULL,
            retried_active_ms       INTEGER NOT NULL,
-           first_stalled_since_active_ms INTEGER NOT NULL
+           first_stalled_since_active_ms INTEGER
+         );
+         CREATE TABLE IF NOT EXISTS alarm_wake_items (
+           actor                TEXT NOT NULL,
+           item                 TEXT NOT NULL,
+           first_seen_active_ms INTEGER NOT NULL,
+           PRIMARY KEY (actor, item)
          );",
+    )?;
+    crate::session_store::ensure_column(
+        conn,
+        "alarm_wake_retries",
+        "first_stalled_since_active_ms",
+        "INTEGER",
     )
 }
 

@@ -498,6 +498,153 @@ fn turns_that_never_take_a_stuck_item_alarm_at_the_ceiling_from_its_start() {
     assert_eq!(sends(&world), [GIGA, "tyler"]);
 }
 
+/// When `session`'s wake was first seen waiting.
+fn wake_seen(world: &World, session: &SessionId) -> i64 {
+    world
+        .conn()
+        .query_row(
+            "SELECT wake_pending_since_active_ms FROM agent_activity WHERE session_id = ?1",
+            [session.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+// Defect (condition 3, every turn spacing): turns under the wake threshold
+// apart never make wake_missed due, and each turn end restarts idle_open_work,
+// so an item they never take waits for ever with nobody told. At the ceiling
+// idle_open_work opens from the item's first sight, says the agent is alive,
+// stays open through more turns and reaches Tyler.
+#[test]
+fn turns_under_two_minutes_apart_that_leave_an_item_alarm_at_the_ceiling() {
+    let mut world = World::new("alarm-retry-ceiling-quick");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
+    world.advance(PASS);
+    let seen = wake_seen(&world, &mono.chat);
+    let mut flip = 0;
+    while episodes(&world).is_empty() {
+        assert!(
+            world.active_ms() - seen < CEILING + 2 * MINUTE,
+            "no alarm by the ceiling"
+        );
+        world.advance(WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("quick-{flip}"));
+        flip += 1;
+    }
+    let (cause, since, opened, text): (String, i64, i64, String) = world
+        .conn()
+        .query_row(
+            "SELECT e.cause, e.stalled_since_active_ms, e.opened_active_ms, p.text
+               FROM alarm_episodes e JOIN alarm_prompts p ON p.episode_id = e.id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(cause, "idle_open_work");
+    assert_eq!(since, seen, "the alarm keeps the item's first sight");
+    let gap = opened - since;
+    assert!((CEILING..CEILING + 2 * MINUTE).contains(&gap), "{gap}");
+    assert!(
+        text.contains("taking turns, but the item has not moved"),
+        "{text}"
+    );
+    assert_eq!(sends(&world), [GIGA]);
+
+    for more in 0..8 {
+        world.advance(WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("more-{more}"));
+    }
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert!(episode.open, "a turn that leaves the item is no progress");
+    assert_eq!(sends(&world), [GIGA, "tyler"]);
+}
+
+// Control: a queue that drains under quick turns is no stuck item. Each turn
+// takes one item, so the queue's wait restarts, though some item always waits.
+#[test]
+fn a_queue_that_drains_under_quick_turns_opens_no_alarm() {
+    let mut world = World::new("alarm-retry-ceiling-drains");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    let items: Vec<String> = (0..40).map(|n| format!("item-{n}")).collect();
+    for n in 0..items.len() - 1 {
+        let left: Vec<_> = items[n..].iter().map(|id| json!({"id": id})).collect();
+        save_queue(&world, &mono.chat, json!(left), "active");
+        world.advance(WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("take-{n}"));
+    }
+    assert_eq!(episodes(&world), Vec::new());
+}
+
+// Upgrade (General's ruling): a database from a build before
+// `first_stalled_since_active_ms` has retry rows without it. On the first
+// start they read null, which starts no run: the agent's next stall gets its
+// retry first, then one alarm from its first sight. Nothing opens at once, and
+// the other agents' old rows open nothing.
+#[test]
+fn retry_rows_from_before_the_run_column_read_null_and_open_nothing_at_first_start() {
+    let mut world = World::new("alarm-retry-upgrade");
+    let (giga, mono) = add_monos(&world);
+    align(&mut world);
+    // Past the ceiling on the active clock, so a run read as starting at 0
+    // would open at once.
+    world.advance(CEILING);
+    assert_eq!(episodes(&world), Vec::new());
+    world
+        .conn()
+        .execute_batch(
+            "DROP TABLE alarm_wake_items;
+             DROP TABLE alarm_wake_retries;
+             CREATE TABLE alarm_wake_retries (
+               actor                   TEXT PRIMARY KEY,
+               stalled_since_active_ms INTEGER NOT NULL,
+               retried_active_ms       INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+    let old = [
+        format!("mono:{}", mono.id.as_str()),
+        GIGA.to_string(),
+        "session:old-chat".to_string(),
+    ];
+    for (n, actor) in (1..).zip(&old) {
+        world
+            .conn()
+            .execute(
+                "INSERT INTO alarm_wake_retries VALUES (?1, ?2, ?2)",
+                rusqlite::params![actor, n * MINUTE],
+            )
+            .unwrap();
+    }
+    world.kill();
+    world.restart();
+    assert_eq!(
+        count(
+            &world,
+            "SELECT COUNT(*) FROM alarm_wake_retries WHERE first_stalled_since_active_ms IS NULL"
+        ),
+        3,
+        "old rows read null"
+    );
+
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    send(&world, &giga, &mono, "wake-1");
+    assert_eq!(
+        named(&mut world, WAKE + PASS, &mono.chat),
+        1,
+        "the retry first"
+    );
+    assert_eq!(episodes(&world), Vec::new(), "no alarm at first start");
+    world.advance(WAKE);
+    assert_one_alarm_from_the_first_sight(&world, &mono.chat, WAKE);
+    assert_eq!(sends(&world), [GIGA], "one alarm, no storm");
+}
+
 // The climb after a drop reaches each provisioner on its own clock.
 #[test]
 fn a_dropped_alarm_escalates_to_each_next_provisioner_on_schedule() {

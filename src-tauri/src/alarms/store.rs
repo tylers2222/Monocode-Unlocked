@@ -669,12 +669,22 @@ impl Pass<'_> {
         let actor_text = actor.to_string();
         let episode = self.rows.episodes.get(&actor_text);
         if facts.gone && episode.is_none() {
+            wake_retry::items_since(tx, actor, &[], self.active);
             return activity::forget(tx, &row.session);
         }
         if facts.wake_pending_since != row.wake_pending_since {
             activity::set_wake_pending(tx, &row.session, facts.wake_pending_since)?;
         }
+        let wakes = self.wakes(actor, &row.session, facts.gone);
+        let waiting = wake_retry::items_since(tx, actor, &wakes, self.active);
+        let quick = wake_retry::items_past_ceiling(waiting, facts.turn, self.active);
         match (state::next_state(facts, self.active, limits), episode) {
+            // Turns under the wake threshold apart never make a stall due, so
+            // an item they leave waiting opens at the ceiling (ADE-276).
+            (Transition::Stay, None) => match quick {
+                Some(since) => self.open(actor, facts, row, &wakes, (Cause::IdleOpenWork, since)),
+                None => Ok(()),
+            },
             (Transition::Stay, _) | (Transition::Close(_), None) => Ok(()),
             (
                 Transition::Open {
@@ -702,13 +712,12 @@ impl Pass<'_> {
                 {
                     return Ok(());
                 }
-                let wakes = self.wakes(actor, &row.session, facts.gone);
                 let since = ceiling.unwrap_or(stalled_since);
                 self.open(actor, facts, row, &wakes, (cause, since))
             }
             // The ceiling's alarm stays open while its wake still waits.
             (Transition::Close(CloseReason::Progress), Some((id, episode)))
-                if wake_retry::still_stuck(tx, id, episode, facts.wake_pending_since) =>
+                if wake_retry::still_stuck(tx, (id.as_str(), actor), episode, facts) =>
             {
                 Ok(())
             }
