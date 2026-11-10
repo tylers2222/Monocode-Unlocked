@@ -60,6 +60,31 @@ export function setSpaceSettings(
   return invoke<SpaceSettings>("spaces_settings_set", { patch });
 }
 
+/** A project with a stored fact in the window's Space. */
+export type SpaceProject = {
+  path: string;
+  assigned: boolean;
+  linked: boolean;
+  monos: string[];
+};
+
+/** `spaces_project_list`: the calling window's Space, in one read. */
+export type SpaceProjectList = {
+  spaceId: string;
+  projects: SpaceProject[];
+  monoHeld: string[];
+  noRowIsHere: boolean;
+  assignedElsewhere: string[];
+};
+
+/** T1 and T2: lists a project in the calling window's Space. */
+export function addProjectToSpace(
+  projectPath: string,
+  knownToWindow: boolean,
+): Promise<"assigned" | "linked"> {
+  return invoke("spaces_project_add", { projectPath, knownToWindow });
+}
+
 /** Archive and unarchive write only localStorage; this tells other windows. */
 export function notifySpaceProjectsChanged(): void {
   // Only a courtesy to other windows: the write it reports has already landed.
