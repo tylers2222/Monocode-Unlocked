@@ -21,7 +21,7 @@ use crate::mono_roster::MonoRole;
 use crate::session_store::SessionStore;
 
 /// The app endpoint and token `session`'s provider process starts with.
-fn provider_env(app: &AppHandle<MockRuntime>, session: &str) -> (String, String) {
+pub(super) fn provider_env(app: &AppHandle<MockRuntime>, session: &str) -> (String, String) {
     let mut cmd = Command::new("true");
     control::configure_child(app, session, &mut cmd);
     let env = |key: &str| {
@@ -37,7 +37,7 @@ fn provider_env(app: &AppHandle<MockRuntime>, session: &str) -> (String, String)
 /// One `monocode app <action>` call over the loopback endpoint. `web_app`
 /// runs each control event the window gets and returns its reply, which
 /// goes back through `control_reply`. The CLI's answer, with the events.
-fn app_call(
+pub(super) fn app_call(
     (endpoint, token): &(String, String),
     action: &str,
     input: Value,
@@ -72,7 +72,7 @@ fn app_call(
 /// The app on `world`'s database with the commands a turn's window calls,
 /// its loopback endpoint up, window `main`, and the control events `main`
 /// gets.
-fn app_with_window(
+pub(super) fn app_with_window(
     world: &World,
 ) -> (
     App<MockRuntime>,

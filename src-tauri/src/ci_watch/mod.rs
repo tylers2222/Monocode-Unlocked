@@ -34,8 +34,13 @@ const REQUIRED: [&str; 5] = [
     "gate/integrity",
 ];
 
-/// How often the thread looks for a PR that is due a read.
-const TICK: Duration = Duration::from_secs(15);
+/// How often the thread looks for a PR that is due a read. A test's app
+/// ticks fast, so a test can see the thread's first pass.
+const TICK: Duration = if cfg!(test) {
+    Duration::from_millis(20)
+} else {
+    Duration::from_secs(15)
+};
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     store::ensure_tables(conn)
@@ -248,6 +253,7 @@ pub(crate) fn poll(
 
 /// One GraphQL read of a PR through `gh`, under the app's shared GitHub
 /// rate-limit backoff. No logs are fetched.
+#[cfg_attr(test, allow(dead_code))]
 fn read_pr(repo: &str, pr: i64) -> Result<Snapshot, String> {
     let pr = pr.to_string();
     let json = crate::fs::gh_run(
@@ -266,14 +272,19 @@ fn read_pr(repo: &str, pr: i64) -> Result<Snapshot, String> {
     judge::parse(&json)
 }
 
-/// Starts the thread that reads the watched PRs and sends the wakes.
-pub(crate) fn init(app: &tauri::AppHandle) {
+/// Starts the thread that reads the watched PRs and sends the wakes. Tests
+/// never call GitHub: each of their reads fails.
+pub(crate) fn init<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    #[cfg(not(test))]
+    let read = read_pr;
+    #[cfg(test)]
+    let read = |_: &str, _: i64| Err::<Snapshot, String>("tests read no PR".into());
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
         let store = app.state::<SessionStore>();
         let clock = |conn: &Connection| crate::alarms::now(&store.alarms, conn);
-        match poll(&store, clock, read_pr) {
+        match poll(&store, clock, read) {
             Ok(notices) => notices.emit(&app),
             Err(error) => eprintln!("Could not read the CI watches: {error}"),
         }

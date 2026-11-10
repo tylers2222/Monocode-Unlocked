@@ -441,3 +441,65 @@ fn an_outbox_from_the_alarms_build_takes_ci_rows() {
     drop(store);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The wall time of watch `id`'s last read, if any.
+fn polled(world: &World, id: &str) -> Option<i64> {
+    let sql = "SELECT polled_wall_ms FROM ci_watches WHERE id = ?1";
+    let conn = world.conn();
+    conn.query_row(sql, [id], |row| row.get(0)).unwrap()
+}
+
+// Defect: the app never starts the thread that reads the watched PRs, so a
+// watch never wakes anyone.
+#[test]
+fn the_app_thread_reads_each_watched_pr() {
+    use std::time::{Duration, Instant};
+
+    let world = World::new("ci-watch-thread");
+    let lead = world.add_session("ciw-thread", "/p", None);
+    let id = register(&world, &lead, "w1");
+    let store = crate::session_store::SessionStore::open(world.path().to_path_buf()).unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(store)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    ci_watch::init(app.handle());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while polled(&world, &id).is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(polled(&world, &id).is_some(), "the thread read the PR");
+}
+
+/// A window that answers every control event: no ci.* call may reach it.
+fn no_window(_: &Value) -> Value {
+    json!({"ok": false, "code": "window"})
+}
+
+// Defect: the control service sends a ci.* call to the window, or answers
+// it for another namespace, instead of the watch store.
+#[test]
+fn a_lead_registers_and_lists_a_watch_over_the_app_endpoint() {
+    use super::s5_scheduler::P;
+    use super::wake_turn::{app_call, app_with_window, provider_env};
+    use crate::mono_messages::tests::invoke_command;
+    use crate::mono_roster::MonoRole;
+
+    let world = World::new("ci-watch-route");
+    let mono = world.add_mono_in("ciw-mono", MonoRole::Mono, &[P]);
+    let lead = world.start_lead(&mono, "ciw-route-lead", P);
+    let (app, main, events) = app_with_window(&world);
+    let cwd = world.path().parent().unwrap().to_str().unwrap().to_string();
+    let turn = json!({"sessionId": lead.as_str(), "cwd": cwd, "appAccess": true, "turnId": "t1"});
+    invoke_command(&main, "control_authorize_turn", &turn).unwrap();
+    let token = provider_env(app.handle(), lead.as_str());
+    let input = json!({"repo": REPO, "pr": 7, "sha": SHA});
+    let (watched, seen) = app_call(&token, "ci.watch", input, "r1", &main, &events, no_window);
+    assert!(seen.is_empty(), "the window got {seen:?}");
+    let id = watched["result"]["id"].as_str().unwrap_or_default();
+    assert!(id.starts_with("cw_"), "{watched}");
+    let none = json!({});
+    let (listed, seen) = app_call(&token, "ci.list", none, "r2", &main, &events, no_window);
+    assert!(seen.is_empty(), "the window got {seen:?}");
+    assert_eq!(listed["result"]["watches"][0]["id"], id, "{listed}");
+}
