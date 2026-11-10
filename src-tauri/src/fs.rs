@@ -4500,7 +4500,35 @@ fn parse_github_rate_limit_backoff(json: &str) -> Result<Option<SystemTime>, Str
 fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
-    let mut cmd = Command::new(&program);
+    gh_run_program(&program, root, args, allow_empty, None)
+}
+
+/// `gh_run` for a caller that must not hang: `gh` is stopped, and the call
+/// fails, after `timeout`. Empty output fails.
+pub(crate) fn gh_run_within(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
+    let program = crate::harness::resolve_gui_binary("gh")
+        .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
+    gh_with_backoff(
+        &GITHUB_RATE_LIMIT_BACKOFF,
+        args,
+        false,
+        |args, allow_empty| gh_run_program(&program, root, args, allow_empty, Some(timeout)),
+    )
+}
+
+/// Runs `gh` at `program` in `root`, stopped after `timeout` if one is given.
+fn gh_run_program(
+    program: &Path,
+    root: &Path,
+    args: &[&str],
+    allow_empty: bool,
+    timeout: Option<Duration>,
+) -> Result<String, String> {
+    let mut cmd = Command::new(program);
     cmd.current_dir(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -4509,12 +4537,20 @@ fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, S
         .env("GIT_PAGER", "cat");
     crate::harness::apply_gui_env(&mut cmd);
     crate::hide_window_console(&mut cmd);
-    let output = cmd.output().map_err(|error| {
+    let output = match timeout {
+        None => cmd.output().map(Some),
+        Some(timeout) => output_within(&mut cmd, timeout),
+    }
+    .map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             "GitHub CLI (`gh`) is not installed.".to_string()
         } else {
             error.to_string()
         }
+    })?
+    .ok_or_else(|| {
+        let after = timeout.unwrap_or_default();
+        format!("gh {} was stopped after {after:?}", args.join(" "))
     })?;
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -4536,6 +4572,48 @@ fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, S
         format!("gh {} failed", args.join(" "))
     };
     Err(detail)
+}
+
+/// Runs `cmd` to its end and gives its output, or kills it and gives None
+/// after `timeout`. Its stdout and stderr are read while it runs, so a long
+/// output cannot fill a pipe and hold it.
+pub(crate) fn output_within(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    Ok(Some(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    }))
 }
 
 pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, String> {
@@ -6870,6 +6948,79 @@ mod tests {
                 Err(error) => panic!("{}", error),
             }
         }
+    }
+
+    /// `gh_run_program` with `sh -c script` standing in for `gh`.
+    #[cfg(unix)]
+    fn sh(script: &str, allow_empty: bool, timeout: Option<Duration>) -> Result<String, String> {
+        let dir = tmp("gh-sh");
+        gh_run_program(
+            Path::new("/bin/sh"),
+            &dir.0,
+            &["-c", script],
+            allow_empty,
+            timeout,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_run_program_reads_output_and_errors_with_or_without_a_timeout() {
+        for timeout in [None, Some(Duration::from_secs(20))] {
+            assert_eq!(sh("echo '  out  '", false, timeout).unwrap(), "out");
+            assert_eq!(sh("true", true, timeout).unwrap(), "");
+            assert_eq!(
+                sh("true", false, timeout).unwrap_err(),
+                "gh returned no output"
+            );
+            assert_eq!(
+                sh("echo o; echo bad >&2; exit 1", false, timeout).unwrap_err(),
+                "bad"
+            );
+            assert_eq!(sh("echo o; exit 1", false, timeout).unwrap_err(), "o");
+            assert_eq!(
+                sh("exit 1", false, timeout).unwrap_err(),
+                "gh -c exit 1 failed"
+            );
+            let dir = tmp("gh-missing");
+            let missing = dir.0.join("no-gh");
+            assert_eq!(
+                gh_run_program(&missing, &dir.0, &["pr"], false, timeout).unwrap_err(),
+                "GitHub CLI (`gh`) is not installed."
+            );
+        }
+        let long = sh(
+            "head -c 300000 /dev/zero | tr '\\0' a",
+            false,
+            Some(Duration::from_secs(20)),
+        );
+        assert_eq!(
+            long.unwrap().len(),
+            300_000,
+            "a long output does not hold the call"
+        );
+    }
+
+    // Defect: a hung `gh` read holds the CI watch thread, so no watch wakes.
+    #[cfg(unix)]
+    #[test]
+    fn a_gh_call_past_its_timeout_is_stopped() {
+        let started = Instant::now();
+        let error = sh("sleep 30", false, Some(Duration::from_millis(200))).unwrap_err();
+        assert!(error.contains("was stopped after 200ms"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_gh_call_that_fails_is_an_error() {
+        let dir = tmp("gh-fail");
+        let args = ["--no-such-flag-for-a-monocode-test"];
+        assert!(gh_run_within(&dir.0, &args, Duration::from_secs(20)).is_err());
+        assert!(gh_run_raw(&dir.0, &args, true).is_err());
     }
 
     #[test]

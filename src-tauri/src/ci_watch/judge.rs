@@ -8,6 +8,10 @@ use crate::fs::{parse_github_pr_checks, GitHubPrCheck};
 /// A watch gives up this long after it was registered.
 pub(crate) const GIVE_UP_MS: i64 = 6 * 60 * 60_000;
 
+/// A finished set ends a watch only when a read this long after the watch
+/// first held it sees the same set.
+pub(crate) const DEBOUNCE_MS: i64 = 60_000;
+
 /// One read of a PR: its state, its head and the checks on that head.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Snapshot {
@@ -56,6 +60,8 @@ pub(crate) struct Watch {
     pub created_wall_ms: i64,
     /// The finished set the last read saw, not yet confirmed by a second.
     pub settled: Option<String>,
+    /// The wall time this watch first held `settled`.
+    pub settled_wall_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,9 +101,9 @@ pub(crate) enum Judged {
 }
 
 /// What read `read` at wall time `now` means for `watch`. A finished set
-/// ends the watch only when the next read finds the same set (the debounce:
-/// a run that starts late joins the set first). A read that failed keeps
-/// what the watch had.
+/// ends the watch only when a read `DEBOUNCE_MS` or more after the watch
+/// held it finds the same set (a run that starts late joins the set
+/// first). A read that failed keeps what the watch had.
 pub(crate) fn judge(watch: &Watch, read: &Result<Snapshot, String>, now: i64) -> Judged {
     let given_up = now - watch.created_wall_ms >= GIVE_UP_MS;
     let snapshot = match read {
@@ -153,7 +159,11 @@ pub(crate) fn judge(watch: &Watch, read: &Result<Snapshot, String>, now: i64) ->
             .any(|check| is_run(check) && check.state == "pending");
     if finished {
         let seen = fingerprint(&set);
-        if watch.settled.as_deref() == Some(seen.as_str()) {
+        let held = watch.settled.as_deref() == Some(seen.as_str());
+        let held_long = watch
+            .settled_wall_ms
+            .is_some_and(|since| now - since >= DEBOUNCE_MS);
+        if held && held_long {
             return end(watch, Outcome::Finished, report(&set, &watch.required));
         }
         if !given_up {
@@ -198,16 +208,25 @@ fn is_run(check: &GitHubPrCheck) -> bool {
 }
 
 /// One result per check: a re-run's newer attempt replaces the older one.
-/// GitHub can list both attempts of a job; the later start wins, and on a
-/// tie the one listed last.
+/// GitHub can list both attempts of a job. An unfinished attempt wins (no
+/// re-run starts while an attempt runs), then one not started yet (a queued
+/// attempt has no `startedAt`), then the later start; on a tie the one
+/// listed last.
 fn latest(checks: &[GitHubPrCheck]) -> Vec<&GitHubPrCheck> {
+    let rank = |check: &GitHubPrCheck| {
+        (
+            check.state == "pending",
+            check.started_at.is_none(),
+            check.started_at.clone(),
+        )
+    };
     let mut kept: Vec<&GitHubPrCheck> = Vec::new();
     for check in checks {
         match kept
             .iter_mut()
             .find(|seen| seen.workflow == check.workflow && seen.name == check.name)
         {
-            Some(seen) if check.started_at >= seen.started_at => *seen = check,
+            Some(seen) if rank(check) >= rank(seen) => *seen = check,
             Some(_) => {}
             None => kept.push(check),
         }
@@ -340,6 +359,7 @@ mod tests {
         }
     }
 
+    /// A watch that held `settled` from wall time 0.
     fn watch(settled: Option<String>) -> Watch {
         Watch {
             id: "cw_t".into(),
@@ -348,6 +368,7 @@ mod tests {
             sha: SHA.into(),
             required: vec!["gate/lint".into(), "ci".into(), "review/agent".into()],
             created_wall_ms: 0,
+            settled_wall_ms: settled.as_ref().map(|_| 0),
             settled,
         }
     }
@@ -508,6 +529,78 @@ mod tests {
             judge(&watch(None), &running, 0),
             Judged::Wait { settled: None },
             "a re-run in progress is not finished"
+        );
+    }
+
+    // Defect: a queued re-run has no startedAt, so it loses to the old
+    // finished attempt and the watch wakes with the old result.
+    #[test]
+    fn a_queued_rerun_with_no_start_holds_the_wake() {
+        let mut queued = check("ci", "pending", 21, "");
+        queued.started_at = None;
+        let read = open(vec![
+            check("ci", "fail", 20, "2026-11-10T01:00:00Z"),
+            queued.clone(),
+        ]);
+        assert_eq!(
+            judge(&watch(None), &read, 0),
+            Judged::Wait { settled: None }
+        );
+        let listed_first = open(vec![
+            queued,
+            check("ci", "fail", 20, "2026-11-10T01:00:00Z"),
+        ]);
+        assert_eq!(
+            judge(&watch(None), &listed_first, 0),
+            Judged::Wait { settled: None },
+            "the order GitHub lists the attempts in does not matter"
+        );
+    }
+
+    #[test]
+    fn a_running_attempt_wins_over_a_later_finished_one() {
+        let read = open(vec![
+            check("ci", "pending", 21, "2026-11-10T01:00:00Z"),
+            check("ci", "pass", 20, "2026-11-10T02:00:00Z"),
+        ]);
+        assert_eq!(
+            judge(&watch(None), &read, 0),
+            Judged::Wait { settled: None }
+        );
+    }
+
+    #[test]
+    fn a_set_held_less_than_the_debounce_waits() {
+        let read = open(vec![check("ci", "pass", 20, "a")]);
+        let Judged::Wait { settled } = judge(&watch(None), &read, 0) else {
+            panic!("the first read ended the watch");
+        };
+        let held = Watch {
+            settled_wall_ms: Some(10_000),
+            ..watch(settled.clone())
+        };
+        assert_eq!(
+            judge(&held, &read, 10_000 + DEBOUNCE_MS - 1),
+            Judged::Wait { settled },
+            "a read under the debounce after the hold keeps the set"
+        );
+        assert!(matches!(
+            judge(&held, &read, 10_000 + DEBOUNCE_MS),
+            Judged::End {
+                outcome: Outcome::Finished,
+                ..
+            }
+        ));
+        let never_held = Watch {
+            settled_wall_ms: None,
+            ..held
+        };
+        assert!(
+            matches!(
+                judge(&never_held, &read, GIVE_UP_MS - 1),
+                Judged::Wait { .. }
+            ),
+            "a set with no hold time is not confirmed"
         );
     }
 

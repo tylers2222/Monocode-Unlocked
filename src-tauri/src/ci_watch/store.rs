@@ -12,7 +12,18 @@ use crate::mono_messages::Notices;
 /// The poll reads each PR at most once in this much wall time.
 pub(crate) const POLL_MS: i64 = 60_000;
 
-pub(super) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
+/// One poll pass reads at most this many PRs. The thread passes every 15 s,
+/// so the app makes at most 8 GraphQL reads a minute, 480 an hour, for all
+/// watches together.
+pub(crate) const READS_PER_PASS: i64 = 2;
+
+/// At most this many watches are open at once, over all callers.
+pub(crate) const OPEN_CAP: i64 = 30;
+
+/// An ended watch, and its sent wake, are deleted this long after the end.
+pub(crate) const KEEP_ENDED_MS: i64 = 7 * 24 * 60 * 60_000;
+
+pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ci_watches (
            id              TEXT PRIMARY KEY,
@@ -26,6 +37,7 @@ pub(super) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            created_wall_ms INTEGER NOT NULL,
            polled_wall_ms  INTEGER,
            settled         TEXT,
+           settled_wall_ms INTEGER,
            outcome         TEXT,
            text            TEXT,
            ended_wall_ms   INTEGER,
@@ -47,14 +59,19 @@ pub(super) struct New<'a> {
     pub request_id: &'a str,
 }
 
-/// Registers `new` at wall time `wall`: its id, and whether it was there
-/// before (the same request again, or an open watch of the same PR, sha
-/// and recipient).
-pub(super) fn register(
-    conn: &Connection,
-    new: &New,
-    wall: i64,
-) -> rusqlite::Result<(String, bool)> {
+/// What `register` did.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Registered {
+    New(String),
+    /// The same request again, or an open watch of the same PR, sha and
+    /// recipient.
+    Before(String),
+    /// `OPEN_CAP` watches are open.
+    Full,
+}
+
+/// Registers `new` at wall time `wall`.
+pub(super) fn register(conn: &Connection, new: &New, wall: i64) -> rusqlite::Result<Registered> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let before: Option<String> = tx
         .query_row(
@@ -75,7 +92,15 @@ pub(super) fn register(
         )
         .optional()?;
     if let Some(id) = before {
-        return Ok((id, true));
+        return Ok(Registered::Before(id));
+    }
+    let open: i64 = tx.query_row(
+        "SELECT count(*) FROM ci_watches WHERE outcome IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if open >= OPEN_CAP {
+        return Ok(Registered::Full);
     }
     let id = format!("cw_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
     tx.execute(
@@ -87,7 +112,7 @@ pub(super) fn register(
             new.repo,
             new.pr,
             new.sha,
-            serde_json::to_string(new.required).unwrap_or_else(|_| "[]".into()),
+            Value::from(new.required).to_string(),
             new.recipient.to_string(),
             new.by.to_string(),
             new.request_id,
@@ -95,7 +120,7 @@ pub(super) fn register(
         ],
     )?;
     tx.commit()?;
-    Ok((id, false))
+    Ok(Registered::New(id))
 }
 
 /// The open watches `caller` registered or is woken by.
@@ -163,15 +188,55 @@ pub(super) fn cancel(
     Ok(Ok(()))
 }
 
-/// Each PR with an open watch that was not read in the last `POLL_MS`, once.
+/// Up to `READS_PER_PASS` PRs with an open watch that was not read in the
+/// last `POLL_MS`, each once, the one read longest ago first.
 pub(crate) fn due(conn: &Connection, wall: i64) -> rusqlite::Result<Vec<(String, i64)>> {
     conn.prepare(
         "SELECT repo, pr FROM ci_watches
           WHERE outcome IS NULL AND (polled_wall_ms IS NULL OR polled_wall_ms <= ?1)
-          GROUP BY repo, pr ORDER BY MIN(created_wall_ms)",
+          GROUP BY repo, pr
+          ORDER BY MIN(COALESCE(polled_wall_ms, 0)), MIN(created_wall_ms)
+          LIMIT ?2",
     )?
-    .query_map([wall - POLL_MS], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .query_map(params![wall - POLL_MS, READS_PER_PASS], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?
     .collect()
+}
+
+/// Marks the open watches of `repo` PR `pr` read at `wall`, when their
+/// `apply` failed, so the PR waits its turn and the next PR is read.
+pub(crate) fn mark_read(
+    conn: &Connection,
+    (repo, pr): (&str, i64),
+    wall: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE ci_watches SET polled_wall_ms = ?3
+          WHERE repo = ?1 AND pr = ?2 AND outcome IS NULL",
+        params![repo, pr, wall],
+    )?;
+    Ok(())
+}
+
+/// Deletes each watch that ended `KEEP_ENDED_MS` or more before `wall`, with
+/// its wake once that wake was sent (a wake not sent keeps its watch, whose
+/// text it reads).
+pub(crate) fn prune(conn: &Connection, wall: i64) -> rusqlite::Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let old = "SELECT cw.id FROM ci_watches cw
+                 LEFT JOIN mono_outbox o ON o.key = 'ci-' || cw.id
+                WHERE cw.outcome IS NOT NULL AND cw.ended_wall_ms <= ?1
+                  AND (o.key IS NULL OR o.sent_at IS NOT NULL)";
+    let ids = tx
+        .prepare(old)?
+        .query_map([wall - KEEP_ENDED_MS], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in &ids {
+        tx.execute("DELETE FROM mono_outbox WHERE key = 'ci-' || ?1", [id])?;
+        tx.execute("DELETE FROM ci_watches WHERE id = ?1", [id])?;
+    }
+    tx.commit()
 }
 
 /// Judges every open watch of `repo` PR `pr` on one read of it. A watch
@@ -186,8 +251,8 @@ pub(crate) fn apply(
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let watches = tx
         .prepare(
-            "SELECT id, sha, required, created_wall_ms, settled, recipient FROM ci_watches
-              WHERE repo = ?1 AND pr = ?2 AND outcome IS NULL",
+            "SELECT id, sha, required, created_wall_ms, settled, recipient, settled_wall_ms
+               FROM ci_watches WHERE repo = ?1 AND pr = ?2 AND outcome IS NULL",
         )?
         .query_map(params![repo, pr], |row| {
             let required: String = row.get(2)?;
@@ -200,6 +265,7 @@ pub(crate) fn apply(
                     required: serde_json::from_str(&required).unwrap_or_default(),
                     created_wall_ms: row.get(3)?,
                     settled: row.get(4)?,
+                    settled_wall_ms: row.get(6)?,
                 },
                 row.get::<_, String>(5)?,
             ))
@@ -210,7 +276,12 @@ pub(crate) fn apply(
         match judge(&watch, read, wall) {
             Judged::Wait { settled } => {
                 tx.execute(
-                    "UPDATE ci_watches SET polled_wall_ms = ?2, settled = ?3 WHERE id = ?1",
+                    "UPDATE ci_watches SET polled_wall_ms = ?2, settled = ?3,
+                       settled_wall_ms = CASE
+                         WHEN ?3 IS NULL THEN NULL
+                         WHEN settled IS ?3 AND settled_wall_ms IS NOT NULL THEN settled_wall_ms
+                         ELSE ?2 END
+                     WHERE id = ?1",
                     params![watch.id, wall, settled],
                 )?;
             }

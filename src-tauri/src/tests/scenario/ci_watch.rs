@@ -301,6 +301,10 @@ fn bad_input_is_refused() {
             "unknown field",
         ),
         (
+            json!({"repo": "ac\"me/web", "pr": 7, "sha": SHA}),
+            "owner/name",
+        ),
+        (
             json!({"repo": REPO, "pr": 7, "sha": SHA, "required": [""]}),
             "up to 20",
         ),
@@ -502,4 +506,174 @@ fn a_lead_registers_and_lists_a_watch_over_the_app_endpoint() {
     let (listed, seen) = app_call(&token, "ci.list", none, "r2", &main, &events, no_window);
     assert!(seen.is_empty(), "the window got {seen:?}");
     assert_eq!(listed["result"]["watches"][0]["id"], id, "{listed}");
+}
+
+/// One poll pass at the World's clocks; `read` answers PR by number. The PRs
+/// read are returned in the order they were read.
+fn poll_prs(world: &World, read: impl Fn(i64) -> Result<Snapshot, String>) -> Vec<i64> {
+    let mut seen = Vec::new();
+    ci_watch::poll(
+        world.store(),
+        |_: &rusqlite::Connection| Ok((world.active_ms(), world.now())),
+        |repo, pr| {
+            assert_eq!(repo, REPO);
+            seen.push(pr);
+            read(pr)
+        },
+    )
+    .unwrap();
+    seen
+}
+
+fn watch_pr(world: &World, session: &SessionId, pr: i64, request_id: &str) -> Value {
+    call(
+        world,
+        session,
+        "ci.watch",
+        json!({"repo": REPO, "pr": pr, "sha": SHA}),
+        request_id,
+    )
+}
+
+fn moved() -> Result<Snapshot, String> {
+    snapshot("OPEN", NEW_SHA, vec![])
+}
+
+fn watch_rows(world: &World) -> i64 {
+    let sql = "SELECT count(*) FROM ci_watches";
+    world.conn().query_row(sql, [], |row| row.get(0)).unwrap()
+}
+
+// Defect: a new watch on a PR makes the PR due at once, and that read
+// confirms the set another watch of the PR held 15 s before.
+#[test]
+fn a_second_watch_does_not_shorten_the_debounce() {
+    let mut world = World::new("ci-watch-debounce");
+    let lead = world.add_session("ciw-lead", "/p", None);
+    let worker = world.add_session("ciw-worker", "/p", Some("ciw-lead"));
+    register(&world, &lead, "w1");
+    assert_eq!(poll(&world, &finished()), 1);
+    world.jump_wall(15_000);
+    register(&world, &worker, "w2");
+    assert_eq!(
+        poll(&world, &finished()),
+        1,
+        "the new watch is read at once"
+    );
+    assert_eq!(
+        outbox_rows(&world),
+        0,
+        "the lead's set, held 15 s, is not confirmed"
+    );
+    world.jump_wall(MINUTE);
+    assert_eq!(poll(&world, &finished()), 1);
+    assert_eq!(outbox_rows(&world), 2, "both sets were held a minute");
+}
+
+// Defect: the number of open watches has no bound, and each watched PR is
+// read once a minute, so many watches spend the shared GitHub budget.
+#[test]
+fn open_watches_and_reads_per_pass_are_capped() {
+    let world = World::new("ci-watch-cap");
+    let lead = world.add_session("ciw-lead", "/p", None);
+    let cap = ci_watch::OPEN_CAP;
+    for pr in 1..=cap {
+        let watched = watch_pr(&world, &lead, pr, &format!("w{pr}"));
+        assert_eq!(watched["ok"], true, "{watched}");
+    }
+    let full = watch_pr(&world, &lead, cap + 1, "full");
+    assert_eq!(full["code"], "too_many_watches", "{full}");
+    let again = watch_pr(&world, &lead, 1, "again");
+    assert_eq!(
+        again["result"]["duplicate"], true,
+        "a duplicate is no new watch"
+    );
+    let first = watch_pr(&world, &lead, 1, "w1")["result"]["id"].clone();
+    let cancelled = call(&world, &lead, "ci.cancel", json!({"id": first}), "c1");
+    assert_eq!(cancelled["ok"], true, "{cancelled}");
+    let room = watch_pr(&world, &lead, cap + 1, "room");
+    assert_eq!(room["ok"], true, "a cancel makes room: {room}");
+
+    let per_pass = usize::try_from(ci_watch::READS_PER_PASS).unwrap();
+    let in_progress = |_: i64| snapshot("OPEN", SHA, vec![running(20)]);
+    let one = poll_prs(&world, in_progress);
+    assert_eq!(one.len(), per_pass, "{one:?}");
+    let two = poll_prs(&world, in_progress);
+    assert_eq!(two.len(), per_pass, "{two:?}");
+    assert!(
+        one.iter().all(|pr| !two.contains(pr)),
+        "the next pass reads the PRs not read yet: {one:?} then {two:?}"
+    );
+}
+
+// Defect: ended watches, and their sent wakes, are kept forever.
+#[test]
+fn ended_watches_are_deleted_a_week_after_their_wake_was_sent() {
+    let mut world = World::new("ci-watch-prune");
+    let lead = world.add_session("ciw-lead", "/p", None);
+    let worker = world.add_session("ciw-worker", "/p", Some("ciw-lead"));
+    let sent = register(&world, &lead, "w1");
+    register(&world, &worker, "w2");
+    poll(&world, &moved());
+    let key = format!("ci-{sent}");
+    {
+        let conn = world.conn();
+        let claimed = ask_scheduler::claim(&conn, &key, "main", &HashMap::new(), false).unwrap();
+        assert!(claimed.is_some());
+        assert!(ask_scheduler::sent(&conn, &key, "main", world.now()).unwrap());
+    }
+    let cancelled = watch_pr(&world, &lead, 8, "w3")["result"]["id"].clone();
+    call(&world, &lead, "ci.cancel", json!({"id": cancelled}), "c1");
+    assert_eq!((watch_rows(&world), outbox_rows(&world)), (3, 2));
+    world.jump_wall(ci_watch::KEEP_ENDED_MS - 1);
+    poll(&world, &moved());
+    assert_eq!(
+        (watch_rows(&world), outbox_rows(&world)),
+        (3, 2),
+        "kept a week"
+    );
+    world.jump_wall(1);
+    poll(&world, &moved());
+    assert_eq!(
+        (watch_rows(&world), outbox_rows(&world)),
+        (1, 1),
+        "the sent and the cancelled watch are gone; the wake not sent stays"
+    );
+    assert_eq!(
+        wakes(&world, &worker).len(),
+        1,
+        "the unsent wake still has its text"
+    );
+}
+
+// Defect: one PR whose judging fails returns from the pass, so every PR
+// after it is never judged, and the same PR is read again each tick.
+#[test]
+fn one_failed_pr_does_not_stop_the_pass() {
+    let mut world = World::new("ci-watch-isolate");
+    let lead = world.add_session("ciw-lead", "/p", None);
+    let bad = watch_pr(&world, &lead, 7, "w1")["result"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    world.jump_wall(1);
+    watch_pr(&world, &lead, 8, "w2");
+    world
+        .conn()
+        .execute_batch(&format!(
+            "CREATE TRIGGER ci_fail BEFORE INSERT ON mono_outbox WHEN NEW.key = 'ci-{bad}'
+             BEGIN SELECT RAISE(ABORT, 'disk says no'); END;"
+        ))
+        .unwrap();
+    assert_eq!(poll_prs(&world, |_| moved()), vec![7, 8]);
+    assert_eq!(outbox_rows(&world), 1, "PR 8 woke after PR 7 failed");
+    assert_eq!(
+        poll_prs(&world, |_| moved()),
+        Vec::<i64>::new(),
+        "the failed PR waits its turn"
+    );
+    world.conn().execute_batch("DROP TRIGGER ci_fail").unwrap();
+    world.jump_wall(MINUTE);
+    assert_eq!(poll_prs(&world, |_| moved()), vec![7]);
+    assert_eq!(outbox_rows(&world), 2);
 }

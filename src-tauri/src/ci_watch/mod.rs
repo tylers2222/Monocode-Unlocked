@@ -23,6 +23,9 @@ use crate::session_store::SessionStore;
 #[cfg(test)]
 pub(crate) use judge::parse as parse_snapshot;
 pub(crate) use judge::Snapshot;
+pub(crate) use store::ensure_tables;
+#[cfg(test)]
+pub(crate) use store::{KEEP_ENDED_MS, OPEN_CAP, READS_PER_PASS};
 
 /// The checks a wake names one by one unless the watch names others: the
 /// required checks of the tyler/main ruleset.
@@ -42,9 +45,8 @@ const TICK: Duration = if cfg!(test) {
     Duration::from_secs(15)
 };
 
-pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
-    store::ensure_tables(conn)
-}
+/// A `gh` read of a PR that takes longer than this is stopped and fails.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Why a `ci.*` call was refused: a code and a hint, as every app refusal.
 #[derive(Debug, PartialEq, Eq)]
@@ -55,6 +57,7 @@ enum Refusal {
     UnknownWatch,
     NotYourWatch,
     WatchEnded(String),
+    TooManyWatches,
     Failed,
 }
 
@@ -85,6 +88,13 @@ impl Refusal {
             Refusal::WatchEnded(outcome) => (
                 "watch_ended",
                 format!("This watch already ended ({outcome})."),
+            ),
+            Refusal::TooManyWatches => (
+                "too_many_watches",
+                format!(
+                    "{} CI watches are open, the most MonoCode keeps. Cancel one (ci.list, ci.cancel) or wait for one to end.",
+                    store::OPEN_CAP
+                ),
             ),
             Refusal::Failed => (
                 "failed",
@@ -173,9 +183,14 @@ fn watch(
     wall: i64,
 ) -> Result<Value, Refusal> {
     let invalid = |hint: &str| Refusal::InvalidInput(hint.into());
-    let (owner, name) = crate::fs::split_github_repo(&input.repo)
-        .map_err(|_| invalid("repo must be owner/name, such as tylers2222/Monocode-Unlocked."))?;
+    let repo_hint = "repo must be owner/name, such as tylers2222/Monocode-Unlocked.";
+    let (owner, name) =
+        crate::fs::split_github_repo(&input.repo).map_err(|_| invalid(repo_hint))?;
     let repo = format!("{owner}/{name}");
+    let github_name = |byte: u8| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte);
+    if !format!("{owner}{name}").bytes().all(github_name) {
+        return Err(invalid(repo_hint));
+    }
     if input.pr <= 0 {
         return Err(invalid("pr must be a positive PR number."));
     }
@@ -203,7 +218,7 @@ fn watch(
     if !crate::alarms::provisions(conn, by, &recipient)? {
         return Err(Refusal::NotifyForbidden);
     }
-    let (id, duplicate) = store::register(
+    let registered = store::register(
         conn,
         &store::New {
             repo: &repo,
@@ -216,6 +231,11 @@ fn watch(
         },
         wall,
     )?;
+    let (id, duplicate) = match registered {
+        store::Registered::New(id) => (id, false),
+        store::Registered::Before(id) => (id, true),
+        store::Registered::Full => return Err(Refusal::TooManyWatches),
+    };
     Ok(json!({
         "id": id,
         "repo": repo,
@@ -226,9 +246,11 @@ fn watch(
     }))
 }
 
-/// One pass: reads each due PR once, judges its watches and returns the
-/// chats to name. `clock` gives (active, wall) time; the store lock is let
-/// go while `read` runs.
+/// One pass: deletes old ended watches, reads each due PR once, judges its
+/// watches and returns the chats to name. A PR whose judging fails is
+/// logged and waits its next turn; the pass goes on to the next PR.
+/// `clock` gives (active, wall) time; the store lock is let go while `read`
+/// runs.
 pub(crate) fn poll(
     store: &SessionStore,
     clock: impl Fn(&Connection) -> rusqlite::Result<(i64, i64)>,
@@ -237,6 +259,9 @@ pub(crate) fn poll(
     let due = {
         let conn = store.lock_conn()?;
         let (_, wall) = clock(&conn).map_err(|error| error.to_string())?;
+        if let Err(error) = store::prune(&conn, wall) {
+            eprintln!("Could not delete the old CI watches: {error}");
+        }
         store::due(&conn, wall).map_err(|error| error.to_string())?
     };
     let mut notices = Notices::default();
@@ -244,18 +269,24 @@ pub(crate) fn poll(
         let read = read(&repo, pr);
         let conn = store.lock_conn()?;
         let now = clock(&conn).map_err(|error| error.to_string())?;
-        notices.merge(
-            store::apply(&conn, (&repo, pr), &read, now).map_err(|error| error.to_string())?,
-        );
+        match store::apply(&conn, (&repo, pr), &read, now) {
+            Ok(named) => notices.merge(named),
+            Err(error) => {
+                eprintln!("Could not judge the CI watches of {repo}#{pr}: {error}");
+                if let Err(error) = store::mark_read(&conn, (&repo, pr), now.1) {
+                    eprintln!("Could not mark {repo}#{pr} read: {error}");
+                }
+            }
+        }
     }
     Ok(notices)
 }
 
 /// One GraphQL read of a PR through `gh`, under the app's shared GitHub
-/// rate-limit backoff. No logs are fetched.
+/// rate-limit backoff, stopped after `READ_TIMEOUT`. No logs are fetched.
 fn read_pr(repo: &str, pr: i64) -> Result<Snapshot, String> {
     let pr = pr.to_string();
-    let json = crate::fs::gh_run(
+    let json = crate::fs::gh_run_within(
         &std::env::temp_dir(),
         &[
             "pr",
@@ -266,7 +297,7 @@ fn read_pr(repo: &str, pr: i64) -> Result<Snapshot, String> {
             "--json",
             "state,headRefOid,statusCheckRollup",
         ],
-        false,
+        READ_TIMEOUT,
     )?;
     judge::parse(&json)
 }
