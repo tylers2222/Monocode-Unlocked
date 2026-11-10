@@ -3,6 +3,8 @@
 // It reads only .sh files the PR changes, and only a literal program of jq where a
 // command starts. It skips what it cannot read for certain: a program in a variable or
 // double quotes, an argument string such as bash -c "jq ...", a heredoc body, a comment.
+// What it cannot read safely (a <<- heredoc, an odd heredoc tag, a <( ) in a flag value,
+// a scan that loses its place) it skips with one printed line: E2E still catches a miss.
 // jq compiles each one without running it, so an argument it would get at run time
 // ($app) is no problem: only a syntax error counts.
 // Usage: node scripts/gate/jq-programs.mjs <base-rev> | <file ...>
@@ -10,10 +12,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const TWO_VALUE_FLAGS = new Set(["--arg", "--argjson", "--slurpfile", "--rawfile"]);
-const NO_LITERAL_PROGRAM = new Set(["-f", "--from-file"]);
+const FLAG_VALUES = { "--arg": 2, "--argjson": 2, "--slurpfile": 2, "--rawfile": 2, "-L": 1, "--indent": 1 };
+// -f, --from-file and a short flag group with f in it (-rf) read the program from a file.
+const FROM_FILE = /^(?:-[a-zA-Z]*f[a-zA-Z]*|--from-file)$/;
 const COMMAND_BEFORE = /(?:^|[;|&(!{]|\b(?:if|then|elif|else|do|while|until))\s*(?:\w+=\S*\s+)*(?![\s\S])/m;
-const HEREDOC = /^<<(?!<)(-?)\s*(['"]?)([\w.-]+)\2/;
+const HEREDOC = /^<<(-?)\s*(['"]?)([\w.-]+)\2/;
 
 /** Moves past one shell character. The stack holds the open quotes and $( ). */
 function step(stack, text, at) {
@@ -70,27 +73,30 @@ function programAt(text, from) {
   while (text[at] === "-") {
     const end = wordEnd(text, at);
     const flag = text.slice(at, end);
-    if (NO_LITERAL_PROGRAM.has(flag)) return null;
+    if (FROM_FILE.test(flag)) return null;
     at = skipBlanks(text, end);
-    if (TWO_VALUE_FLAGS.has(flag)) {
-      at = skipBlanks(text, wordEnd(text, at));
-      at = skipBlanks(text, wordEnd(text, at));
-    }
+    for (let left = FLAG_VALUES[flag] ?? 0; left > 0; left -= 1) at = skipBlanks(text, wordEnd(text, at));
   }
+  // wordEnd does not balance a <( ) or >( ) in a flag value, so what follows it is unsure.
+  if (/[<>]\(/.test(text.slice(from, at))) return { unreadable: "a <( ) or >( ) in a flag value" };
   return text[at] === "'" ? singleQuoted(text, at) : null;
 }
 
-/** Start of the line after the body of each heredoc opened on the line that just ended. */
-function afterHeredocs(text, from, heredocs) {
+/** Start of the line after the body of each heredoc opened on the line that just ended, or -1. */
+function afterHeredocs(text, from, tags) {
   let at = from;
-  for (const { dash, tag } of heredocs) {
-    const end = new RegExp(`^${dash ? "\\s*" : ""}${tag.replace(/\./g, "\\.")}$`, "m").exec(text.slice(at));
-    at = end ? at + end.index + end[0].length : text.length;
+  for (const tag of tags) {
+    const end = new RegExp(`^${tag.replace(/\./g, "\\.")}$`, "m").exec(text.slice(at));
+    if (!end) return -1;
+    at += end.index + end[0].length;
   }
   return at;
 }
 
-/** The index after each `jq` that starts a command, outside quotes, comments and heredocs. */
+/**
+ * The index after each `jq` that starts a command, outside quotes, comments and heredocs.
+ * A string instead names what it could not read, so the caller skips the file.
+ */
 function jqCommandEnds(text) {
   const stack = [];
   const ends = [];
@@ -99,16 +105,19 @@ function jqCommandEnds(text) {
   while (at < text.length) {
     const char = text[at];
     const top = stack.at(-1);
-    const opener = char === "<" ? HEREDOC.exec(text.slice(at, at + 200)) : null;
+    const heredoc = text.startsWith("<<", at) && text[at - 1] !== "<" && text[at + 2] !== "<";
     if (top === "'" || top === '"') {
       at = step(stack, text, at);
     } else if (char === "\n" && heredocs.length > 0) {
       at = afterHeredocs(text, at + 1, heredocs);
+      if (at < 0) return "a heredoc with no end line";
       heredocs = [];
     } else if (char === "#" && /[\s;(]/.test(text[at - 1] ?? " ")) {
       at = text.indexOf("\n", at) < 0 ? text.length : text.indexOf("\n", at);
-    } else if (opener) {
-      heredocs.push({ dash: opener[1] === "-", tag: opener[3] });
+    } else if (heredoc) {
+      const opener = HEREDOC.exec(text.slice(at, at + 200));
+      if (!opener || opener[1]) return `a heredoc it cannot read: ${text.slice(at, at + 20).split("\n")[0]}`;
+      heredocs.push(opener[3]);
       at += opener[0].length;
     } else {
       if (char === "(") stack.push(char);
@@ -118,17 +127,22 @@ function jqCommandEnds(text) {
     }
   }
   // Open quotes at the end mean this pass lost its place, so it is sure of nothing.
-  return stack.length > 0 ? [] : ends;
+  return stack.length > 0 ? "an open quote or $( at the end" : ends;
 }
 
-/** Each literal jq program in a shell script, with the line its command starts on. */
+/** Each literal jq program in a shell script, with its line, and a line for each thing skipped. */
 export function jqPrograms(text) {
+  const ends = jqCommandEnds(text);
+  if (typeof ends === "string") return { programs: [], skipped: [`the whole file, for ${ends}`] };
   const programs = [];
-  for (const end of jqCommandEnds(text)) {
+  const skipped = [];
+  for (const end of ends) {
+    const line = text.slice(0, end).split("\n").length;
     const program = programAt(text, end);
-    if (program !== null) programs.push({ line: text.slice(0, end).split("\n").length, program });
+    if (program?.unreadable) skipped.push(`line ${line}, for ${program.unreadable}`);
+    else if (program !== null) programs.push({ line, program });
   }
-  return programs;
+  return { programs, skipped };
 }
 
 /** jq's first syntax error for a program, or null. Throws when jq could not judge it. */
@@ -159,7 +173,9 @@ if (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   let checked = 0;
   const problems = [];
   for (const file of files) {
-    for (const { line, program } of jqPrograms(readFileSync(file, "utf8"))) {
+    const { programs, skipped } = jqPrograms(readFileSync(file, "utf8"));
+    for (const what of skipped) console.log(`jq programs: skipped ${file} ${what}`);
+    for (const { line, program } of programs) {
       checked += 1;
       const error = syntaxError(program);
       if (error) problems.push(`${file}:${line}: ${error}`);

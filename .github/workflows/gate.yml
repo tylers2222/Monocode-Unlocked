@@ -59,7 +59,9 @@ jobs:
 
       - name: Literal jq programs parse
         if: ${{ !cancelled() }}
-        run: node scripts/gate/jq-programs.mjs "$BASE"
+        run: |
+          jq --version
+          node scripts/gate/jq-programs.mjs "$BASE"
 
       - name: ESLint
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
