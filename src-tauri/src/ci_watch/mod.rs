@@ -253,7 +253,6 @@ pub(crate) fn poll(
 
 /// One GraphQL read of a PR through `gh`, under the app's shared GitHub
 /// rate-limit backoff. No logs are fetched.
-#[cfg_attr(test, allow(dead_code))]
 fn read_pr(repo: &str, pr: i64) -> Result<Snapshot, String> {
     let pr = pr.to_string();
     let json = crate::fs::gh_run(
@@ -275,10 +274,11 @@ fn read_pr(repo: &str, pr: i64) -> Result<Snapshot, String> {
 /// Starts the thread that reads the watched PRs and sends the wakes. Tests
 /// never call GitHub: each of their reads fails.
 pub(crate) fn init<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    #[cfg(not(test))]
-    let read = read_pr;
-    #[cfg(test)]
-    let read = |_: &str, _: i64| Err::<Snapshot, String>("tests read no PR".into());
+    let read: fn(&str, i64) -> Result<Snapshot, String> = if cfg!(test) {
+        |_, _| Err("tests read no PR".into())
+    } else {
+        read_pr
+    };
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
