@@ -70,6 +70,9 @@ run() {
   echo "== $suite: $name"
   "$@" 2>&1 | tee "$log"
   status=${PIPESTATUS[0]}
+  # The app's and the puppet's startup times, on a pass too, so a failure's can
+  # be read against a pass's (ADE-273).
+  cp "$EVAL_HOME/.puppet/timing.jsonl" "${log%.log}-puppet-timing.jsonl" 2>/dev/null || true
   if ((status == 0)); then
     row "$suite" "$name" passed $((SECONDS - started)) ""
     return 0
