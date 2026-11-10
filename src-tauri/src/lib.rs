@@ -15,6 +15,7 @@ mod azure_devops;
 mod background_work;
 mod chat_background;
 mod checkpoint;
+mod child_output;
 mod claude_deny;
 mod codex_agent_state;
 mod codex_mono_store;
