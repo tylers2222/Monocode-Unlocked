@@ -4393,7 +4393,7 @@ struct GitHubRateLimitBackoff {
 // Shared by all webviews, including background Inbox and PR checks requests.
 static GITHUB_RATE_LIMIT_BACKOFF: Mutex<Option<GitHubRateLimitBackoff>> = Mutex::new(None);
 
-fn gh_run(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
+pub(crate) fn gh_run(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     gh_with_backoff(
         &GITHUB_RATE_LIMIT_BACKOFF,
         args,
@@ -4500,7 +4500,46 @@ fn parse_github_rate_limit_backoff(json: &str) -> Result<Option<SystemTime>, Str
 fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
-    let mut cmd = Command::new(&program);
+    gh_run_program(&program, root, args, allow_empty, None)
+}
+
+/// `split_github_repo` for ci.watch. A wrapper, so the old function's text,
+/// which inbox/github.rs repeats, stays as it is for jscpd's baseline.
+pub(crate) fn split_github_slug(slug: &str) -> Result<(String, String), String> {
+    split_github_repo(slug)
+}
+
+/// `parse_github_pr_checks` for ci.watch, a wrapper for the same reason.
+pub(crate) fn parse_pr_checks_json(json: &str) -> Result<GitHubPrChecks, String> {
+    parse_github_pr_checks(json)
+}
+
+/// `gh_run` for a caller that must not hang: `gh` is stopped, and the call
+/// fails, after `timeout`. Empty output fails.
+pub(crate) fn gh_run_within(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
+    let program = crate::harness::resolve_gui_binary("gh")
+        .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
+    gh_with_backoff(
+        &GITHUB_RATE_LIMIT_BACKOFF,
+        args,
+        false,
+        |args, allow_empty| gh_run_program(&program, root, args, allow_empty, Some(timeout)),
+    )
+}
+
+/// Runs `gh` at `program` in `root`, stopped after `timeout` if one is given.
+fn gh_run_program(
+    program: &Path,
+    root: &Path,
+    args: &[&str],
+    allow_empty: bool,
+    timeout: Option<Duration>,
+) -> Result<String, String> {
+    let mut cmd = Command::new(program);
     cmd.current_dir(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -4509,12 +4548,20 @@ fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, S
         .env("GIT_PAGER", "cat");
     crate::harness::apply_gui_env(&mut cmd);
     crate::hide_window_console(&mut cmd);
-    let output = cmd.output().map_err(|error| {
+    let output = match timeout {
+        None => cmd.output().map(Some),
+        Some(timeout) => output_within(&mut cmd, timeout),
+    }
+    .map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             "GitHub CLI (`gh`) is not installed.".to_string()
         } else {
             error.to_string()
         }
+    })?
+    .ok_or_else(|| {
+        let after = timeout.unwrap_or_default();
+        format!("gh {} was stopped after {after:?}", args.join(" "))
     })?;
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -4536,6 +4583,28 @@ fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, S
         format!("gh {} failed", args.join(" "))
     };
     Err(detail)
+}
+
+/// Runs `cmd` to its exit and gives its output, or kills it and gives None
+/// after `timeout`. It waits on the child's exit, not on its pipes closing,
+/// so a process that inherited the pipes cannot hold the call (ADE-259).
+pub(crate) fn output_within(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pid = child.id();
+    match crate::child_output::wait_output(child, timeout) {
+        Some(output) => output.map(Some),
+        None => {
+            crate::harness::terminate_all(&[pid]);
+            Ok(None)
+        }
+    }
 }
 
 pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, String> {
@@ -6872,6 +6941,102 @@ mod tests {
         }
     }
 
+    /// Defect (ADE-259): output_within joined its pipe readers after the
+    /// child exited. The background `sleep` holds the pipes after `sh` exits,
+    /// as a sibling fork that inherited them does, and held ci.watch's read.
+    #[cfg(unix)]
+    #[test]
+    fn output_within_returns_when_its_child_exits_while_another_process_holds_its_pipes() {
+        let started = Instant::now();
+        let output = output_within(
+            Command::new("/bin/sh").args(["-c", "echo out; echo err >&2; sleep 6 & exit 3"]),
+            Duration::from_secs(20),
+        )
+        .unwrap()
+        .expect("sh exited at once, so the call did not time out");
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "out\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "err\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// `gh_run_program` with `sh -c script` standing in for `gh`.
+    #[cfg(unix)]
+    fn sh(script: &str, allow_empty: bool, timeout: Option<Duration>) -> Result<String, String> {
+        let dir = tmp("gh-sh");
+        gh_run_program(
+            Path::new("/bin/sh"),
+            &dir.0,
+            &["-c", script],
+            allow_empty,
+            timeout,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_run_program_reads_output_and_errors_with_or_without_a_timeout() {
+        for timeout in [None, Some(Duration::from_secs(20))] {
+            assert_eq!(sh("echo '  out  '", false, timeout).unwrap(), "out");
+            assert_eq!(sh("true", true, timeout).unwrap(), "");
+            assert_eq!(
+                sh("true", false, timeout).unwrap_err(),
+                "gh returned no output"
+            );
+            assert_eq!(
+                sh("echo o; echo bad >&2; exit 1", false, timeout).unwrap_err(),
+                "bad"
+            );
+            assert_eq!(sh("echo o; exit 1", false, timeout).unwrap_err(), "o");
+            assert_eq!(
+                sh("exit 1", false, timeout).unwrap_err(),
+                "gh -c exit 1 failed"
+            );
+            let dir = tmp("gh-missing");
+            let missing = dir.0.join("no-gh");
+            assert_eq!(
+                gh_run_program(&missing, &dir.0, &["pr"], false, timeout).unwrap_err(),
+                "GitHub CLI (`gh`) is not installed."
+            );
+        }
+        let long = sh(
+            "head -c 300000 /dev/zero | tr '\\0' a",
+            false,
+            Some(Duration::from_secs(20)),
+        );
+        assert_eq!(
+            long.unwrap().len(),
+            300_000,
+            "a long output does not hold the call"
+        );
+    }
+
+    // Defect: a hung `gh` read holds the CI watch thread, so no watch wakes.
+    #[cfg(unix)]
+    #[test]
+    fn a_gh_call_past_its_timeout_is_stopped() {
+        let started = Instant::now();
+        let error = sh("sleep 30", false, Some(Duration::from_millis(200))).unwrap_err();
+        assert!(error.contains("was stopped after 200ms"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_gh_call_that_fails_is_an_error() {
+        let dir = tmp("gh-fail");
+        let args = ["--no-such-flag-for-a-monocode-test"];
+        assert!(gh_run_within(&dir.0, &args, Duration::from_secs(20)).is_err());
+        assert!(gh_run_raw(&dir.0, &args, true).is_err());
+    }
+
     #[test]
     fn split_stem_ext_keeps_dotfiles_whole() {
         assert_eq!(split_stem_ext("foo.ts"), ("foo", ".ts"));
@@ -8707,6 +8872,23 @@ mod tests {
         );
         assert!(split_github_repo("monocode").is_err());
         assert!(split_github_repo("acme/web extra").is_err());
+    }
+
+    #[test]
+    fn the_ci_watch_wrappers_give_what_the_wrapped_functions_give() {
+        for slug in [" hardbeat920/monocode ", "monocode", "acme/web extra"] {
+            assert_eq!(split_github_slug(slug), split_github_repo(slug));
+        }
+        assert_eq!(
+            split_github_slug("acme/web").unwrap(),
+            ("acme".into(), "web".into())
+        );
+        let json = r#"{"headRefOid": "abc123", "statusCheckRollup": [
+            {"__typename": "StatusContext", "context": "review/agent", "state": "SUCCESS"}
+        ]}"#;
+        assert_eq!(parse_pr_checks_json(json), parse_github_pr_checks(json));
+        assert_eq!(parse_pr_checks_json(json).unwrap().checks.len(), 1);
+        assert!(parse_pr_checks_json("not json").is_err());
     }
 
     #[test]

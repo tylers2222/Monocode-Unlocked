@@ -16,6 +16,7 @@ mod alarms_turns;
 mod alarms_unseen;
 mod alarms_wakes;
 mod asks;
+mod ci_watch;
 mod clock;
 mod completions;
 mod cross_space;

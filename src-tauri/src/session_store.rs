@@ -1304,6 +1304,8 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::ask_scheduler::ensure_tables(conn)?;
     // The outbox read joins the alarms' sends, so they come after it.
     crate::alarms::ensure_tables(conn)?;
+    // The outbox read joins the watches' wake text too.
+    crate::ci_watch::ensure_tables(conn)?;
     Ok(())
 }
 

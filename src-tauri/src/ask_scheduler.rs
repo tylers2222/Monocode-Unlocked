@@ -61,14 +61,15 @@ const LADDER: &[Rung] = &[
 ];
 
 /// The outbox table under `name`, so the stage rebuild copies into the
-/// same shape. `alarm`, `hold` and `nudge` are the alarms' rows.
+/// same shape. `alarm`, `hold` and `nudge` are the alarms' rows, `ci` a
+/// `ci.watch` wake.
 fn outbox_sql(name: &str) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {name} (
            key          TEXT PRIMARY KEY,
            ask_id       TEXT REFERENCES mono_asks(id),
            stage        TEXT NOT NULL CHECK (stage IN
-                          ('t5', 'deadline', 'why', 'blocked', 'resume', 'alarm', 'hold', 'nudge')),
+                          ('t5', 'deadline', 'why', 'blocked', 'resume', 'alarm', 'hold', 'nudge', 'ci')),
            recipient    TEXT NOT NULL,
            at_active_ms INTEGER NOT NULL,
            claimed_by   TEXT,
@@ -97,7 +98,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// A table from before the alarms allows only the reminder stages. SQLite
+/// A table from before `ci.watch` lacks its stage, and one from before the
+/// alarms allows only the reminder stages. SQLite
 /// cannot change a CHECK in place, so the rows move to a new table in one
 /// transaction; keyed on the table's own SQL, so it runs once.
 fn rebuild_with_stages(conn: &Connection) -> rusqlite::Result<()> {
@@ -108,7 +110,7 @@ fn rebuild_with_stages(conn: &Connection) -> rusqlite::Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    if sql.is_none_or(|sql| sql.contains("'nudge'")) {
+    if sql.is_none_or(|sql| sql.contains("'ci'")) {
         return Ok(());
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
@@ -266,22 +268,27 @@ fn reminder_text(
 
 /// An outbox row as a window reads it: who it goes to, and what its prompt
 /// names. Only a blocked row joins its question's seq and text (R15), an
-/// alarm row the text its open episode stored, and a nudge row its text.
+/// alarm row the text its open episode stored, a nudge row its text, and a
+/// ci row the wake text its watch stored.
 const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body,
-       al.id, ap.text, o.claimed_by
+       al.id, ap.text, o.claimed_by, cw.text
      FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
      LEFT JOIN mono_ask_events e ON o.stage = 'blocked' AND e.ask_id = o.ask_id
        AND e.kind = 'question' AND o.key = 'blocked:' || e.ask_id || ':' || e.seq
      LEFT JOIN mono_messages m ON m.id = e.message_id
      LEFT JOIN alarm_prompts ap ON o.stage IN ('alarm', 'nudge') AND ap.outbox_key = o.key
      LEFT JOIN alarm_episodes al ON al.id = ap.episode_id
-       AND (al.closed_active_ms IS NULL OR o.stage = 'nudge')";
+       AND (al.closed_active_ms IS NULL OR o.stage = 'nudge')
+     LEFT JOIN ci_watches cw ON o.stage = 'ci' AND o.key = 'ci-' || cw.id";
 
 /// The key, recipient and prompt of a `ROW`; no prompt for a row with no
 /// ask, or at a stage this build does not send. An alarm row has one only
 /// while its episode is open.
 fn row_text(row: &rusqlite::Row) -> rusqlite::Result<(String, String, Option<String>)> {
     let (ask_id, stage): (Option<String>, String) = (row.get(2)?, row.get(3)?);
+    if stage == "ci" {
+        return Ok((row.get(0)?, row.get(1)?, row.get(10)?));
+    }
     if matches!(stage.as_str(), "alarm" | "nudge") {
         let text = match (row.get::<_, Option<String>>(7)?, row.get(8)?) {
             (Some(_), Some::<String>(text)) => Some(text),

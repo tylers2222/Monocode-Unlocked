@@ -304,6 +304,11 @@ fn space_two(data: &Path) {
              INSERT INTO agent_alarm_settings (actor, stall_minutes) VALUES ('session:s2-b', 30);
              INSERT INTO alarm_repeat_limit (actor, cause, sent_active_ms, held_count, held_episode)
                VALUES ('session:s2-b', 'idle_open_work', 1200, 1, 'al_2');
+             INSERT INTO ci_watches (id, repo, pr, sha, required, recipient, registered_by,
+               request_id, created_wall_ms, outcome, text)
+               VALUES ('cw_2', 'acme/web', 7, 'abc', '[]', 'session:s2-b', 'session:s2-b', 'w1', 4,
+                       'finished', '<ci_watch>');
+             INSERT INTO mono_outbox (key, stage, recipient, at_active_ms) VALUES ('ci-cw_2', 'ci', 'session:s2-b', 1600);
              INSERT INTO alarm_settings (key, value) VALUES ('stall_minutes', '20');
              {APPROVAL} VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2', '/q', 'Made-up', 'S',
                '{{\"pros\":[],\"cons\":[]}}', '[]', 'blocking', '[]', 'm2', 'Two', 1, 'open');
@@ -430,7 +435,9 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 29);
+    assert_eq!(row("ci_watches")["insert"], 1);
+    // 29 before ci.watch, plus its ci_watches row and its mono_outbox row.
+    assert_eq!(plan["changes"], 31);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
@@ -826,6 +833,14 @@ fn app_reads_the_rows(rig: &Rig) {
         (
             "SELECT stall_minutes FROM agent_alarm_settings WHERE actor = 'session:s2-b'",
             30,
+        ),
+        (
+            "SELECT created_wall_ms FROM ci_watches WHERE id = 'cw_2' AND text = '<ci_watch>'",
+            4,
+        ),
+        (
+            "SELECT at_active_ms FROM mono_outbox WHERE key = 'ci-cw_2'",
+            1600 + DELTA,
         ),
         ("SELECT count(*) FROM alarm_settings", 0),
         ("SELECT active_ms FROM mono_clock WHERE id = 1", 5000),

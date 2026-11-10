@@ -16,6 +16,7 @@ mod background_work;
 mod chat_background;
 mod checkpoint;
 mod child_output;
+mod ci_watch;
 mod claude_deny;
 mod codex_agent_state;
 mod codex_mono_store;
@@ -319,6 +320,7 @@ pub fn run() {
             reminders::init(app.handle());
             active_clock::init(app.handle())?;
             alarms::init(app.handle());
+            ci_watch::init(app.handle());
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
