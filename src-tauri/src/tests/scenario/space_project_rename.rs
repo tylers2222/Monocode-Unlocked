@@ -352,3 +352,79 @@ fn a_failed_rename_leaves_every_store_as_it_was() {
     assert_eq!(everything(), before, "a failed rename changed a store");
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// Defect (T12, G13): a rename to another form of the same project, such as
+/// its trailing slash, unites the project with itself, and that drops its link
+/// and login and rewrites its Mono lists. A rename that starts at `~` moves
+/// what `~` holds.
+#[test]
+fn a_rename_to_the_same_project_or_from_no_project_moves_nothing() {
+    let rig = Rig::new();
+    rig.assign(OLD, TWO);
+    rig.link(FIRST_SPACE, OLD);
+    rig.login(OLD, "work");
+    rig.mono("slash", &json!(["/work/old/"]));
+    let rows = || {
+        [
+            "SELECT project_path || ' ' || space_id FROM space_projects",
+            "SELECT space_id || ' ' || project_path FROM space_project_links",
+            "SELECT project_path || ' ' || account_id FROM space_project_accounts",
+            "SELECT id || ' ' || data_json FROM monos",
+        ]
+        .map(|sql| rig.strings(sql))
+    };
+    let before = rows();
+
+    rig.rename("/work/old/", OLD);
+    assert_eq!(rows(), before, "the same project, written two ways");
+
+    rig.login("~", "home");
+    rig.mono("home", &json!(["~"]));
+    let before = rows();
+    rig.rename("~", "/work/home");
+    assert_eq!(rows(), before, "`~` is no project");
+}
+
+/// Defect (G13): the forms `rebase_project` moves miss a stored form of the old
+/// path, or the path as written, or hold one twice. A path that is no project
+/// key moves only as written.
+#[test]
+fn every_stored_form_of_the_old_path_is_moved_once() {
+    let rig = Rig::new();
+    let session = |id: &str, cwd: &str| {
+        rig.sql(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+             VALUES (?1, ?2, 'codex', 'm', 'auto', 't', 1, 1)",
+            params![id, cwd],
+        );
+    };
+    let forms = |path: &str| {
+        let mut forms = crate::spaces::project_rename::stored_forms(
+            &rig.store.lock_conn().unwrap(),
+            "sessions",
+            "cwd",
+            path,
+        )
+        .unwrap();
+        forms.sort();
+        forms
+    };
+    session("slash", "/work/old/");
+    session("keep", "/work/keep");
+    assert_eq!(
+        forms(OLD),
+        [OLD, "/work/old/"],
+        "the path as written is not stored, and still a form"
+    );
+    session("plain", OLD);
+    assert_eq!(forms(OLD), [OLD, "/work/old/"], "each form once");
+    assert_eq!(forms("/work/keep"), ["/work/keep"], "the only form, once");
+
+    session("relative", "work/loose");
+    rig.rename("work/loose", NEW);
+    assert_eq!(
+        rig.strings("SELECT cwd FROM sessions WHERE id = 'relative'"),
+        [NEW],
+        "no project key: the path as written moves"
+    );
+}
