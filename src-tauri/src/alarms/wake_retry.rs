@@ -183,12 +183,12 @@ fn ended_since(tx: &Connection, session: &SessionId, since: i64) -> bool {
 /// The first sight of the oldest item still waiting for `actor`, after this
 /// pass records what waits now (`wakes`, and its own `open` work). An item is
 /// a completion result, the queue as one (a queue moves when any of its items
-/// is taken, so a long queue that drains is no stuck item), an open ask, an
-/// unfinished todo list, or a child's result not read. A turn end does not
-/// restart an item, so turns under the stall thresholds apart still reach the
-/// ceiling (General's ruling B). A message or reminder has no id, so only the
-/// wake threshold watches it. A failure here gives none: the other paths
-/// still alarm.
+/// is taken, so a long queue that drains is no stuck item), an open ask past
+/// its deadline (`past_due`), an unfinished todo list, or a child's result not
+/// read. A turn end does not restart an item, so turns under the stall
+/// thresholds apart still reach the ceiling (General's ruling B). A message or
+/// reminder has no id, so only the wake threshold watches it. A failure here
+/// gives none: the other paths still alarm.
 pub(super) fn items_since(
     tx: &Connection,
     actor: &Actor,
@@ -213,12 +213,18 @@ fn record_items(
         Wake::Queued { id } => Some(format!("queued:{id}")),
         Wake::Message | Wake::Reminder => None,
     });
-    let owned = open.iter().map(|work| match work {
-        OpenWork::Ask { id } => format!("ask:{id}"),
-        OpenWork::ChildResult { child } => format!("child:{child}"),
-        OpenWork::Todo => "todo".to_string(),
-    });
-    let items: Vec<String> = waiting.chain(owned).collect();
+    let mut items: Vec<String> = waiting.collect();
+    for work in open {
+        match work {
+            OpenWork::Ask { id } => {
+                if past_due(tx, id, active)? {
+                    items.push(format!("ask:{id}"));
+                }
+            }
+            OpenWork::ChildResult { child } => items.push(format!("child:{child}")),
+            OpenWork::Todo => items.push("todo".to_string()),
+        }
+    }
     let items = serde_json::to_string(&items).unwrap_or_default();
     let queue_moved: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM alarm_wake_items
@@ -247,6 +253,19 @@ fn record_items(
     tx.query_row(
         "SELECT MIN(first_seen_active_ms) FROM alarm_wake_items WHERE actor = ?1",
         [actor],
+        |row| row.get(0),
+    )
+}
+
+/// Whether open ask `id` is past its deadline at `active`, so the ceiling
+/// counts it: before that, its own reminders and miss cover it (review r3
+/// M1). A Giga's ask has no deadline and never counts. A paused ask's clock
+/// stops (`resumed_due`), so it is past due only if it was when it paused.
+fn past_due(tx: &Connection, id: &str, active: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mono_asks
+                         WHERE id = ?1 AND due_active_ms <= ifnull(paused_at_active_ms, ?2))",
+        params![id, active],
         |row| row.get(0),
     )
 }

@@ -486,7 +486,7 @@ fn took_a_turn(world: &mut World, session: &SessionId) {
 }
 
 /// `from` asks `to` with the longest deadline, and `to`'s chat takes it.
-fn ask_and_take(world: &mut World, from: &Mono, to: &Mono, key: &str) {
+pub(super) fn ask_and_take(world: &mut World, from: &Mono, to: &Mono, key: &str) {
     let input =
         json!({"message": format!("Do {key}"), "send_to": to.id.as_str(), "due_minutes": 480});
     world.tool(&mono_caller(from, key), key, "ask", input, &[&to.chat]);

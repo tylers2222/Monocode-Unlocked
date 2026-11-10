@@ -9,8 +9,8 @@ use serde_json::json;
 
 use super::agents::Mono;
 use super::alarms_stall::{
-    align, claude_tap, episodes, ran_a_turn, save_queue, start_lead, turn, Episode, MINUTE, N, P,
-    PASS, PERMISSION, SECOND,
+    align, ask_and_take, claude_tap, episodes, ran_a_turn, save_queue, start_lead, turn, Episode,
+    MINUTE, N, P, PASS, PERMISSION, SECOND,
 };
 use super::world::World;
 use crate::alarms::taps::Pipe;
@@ -711,25 +711,64 @@ fn a_queue_that_moves_every_turn_gets_no_ceiling_alarm() {
     );
 }
 
-// Review r2 probes P8 and P9 (General's ruling B, open work): an agent with
-// an open ask and turns 10 min or 90 s apart never stalled, as each turn end
-// restarts idle_open_work. The ask's first sight is the ceiling's start, so the
-// alarm opens from it while the turns go on.
+/// The deadline of the lead's ask in the M1 rows: past the ceiling.
+const DUE: i64 = 40 * MINUTE;
+
+/// A lead that ran a turn and holds its Mono's ask, now due `DUE` on, and
+/// that due time. Only the deadline moves: the reminder rungs keep the long
+/// deadline's times, so no reminder wakes the lead in these rows.
+fn lead_holding_an_ask(name: &str) -> (World, SessionId, i64) {
+    let mut world = World::new(name);
+    let (_, mono) = add_monos(&world);
+    let lead = start_lead(&world, &mono, "art-lead");
+    align(&mut world);
+    ran_a_turn(&mut world, &lead);
+    let due = world.active_ms() + DUE;
+    let moved = world
+        .conn()
+        .execute(
+            "UPDATE mono_asks SET due_active_ms = ?1 WHERE child_actor = 'session:art-lead'",
+            [due],
+        )
+        .unwrap();
+    assert_eq!(moved, 1);
+    (world, lead, due)
+}
+
+/// `session` takes a turn every `gap` and leaves its open work, until an
+/// alarm opens or the next turn would end after `until`.
+fn turns_until(world: &mut World, session: &SessionId, gap: i64, until: i64) {
+    while episodes(world).is_empty() && world.active_ms() + gap + MINUTE <= until {
+        world.advance(gap);
+        let name = format!("hold-{}", world.active_ms());
+        ran_a_turn_named(world, session, &name);
+    }
+}
+
+// Review r3 M1, row 1: an ask with a deadline counts toward the ceiling only
+// past its due time; before it, its own reminders and miss cover it. A lead
+// that holds it past the ceiling, turns 10 min or 90 s apart, gets no alarm.
 #[test]
-fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
+fn a_deadline_ask_before_its_due_opens_no_ceiling_alarm() {
     for gap in [9 * MINUTE, 30 * SECOND] {
-        let mut world = World::new(&format!("alarm-retry-p8-{gap}"));
-        let (_, mono) = add_monos(&world);
-        let lead = start_lead(&world, &mono, "art-lead");
-        align(&mut world);
-        ran_a_turn(&mut world, &lead);
-        let start = world.active_ms();
-        let mut flip = 0;
-        while episodes(&world).is_empty() && world.active_ms() - start < CEILING + N {
-            world.advance(gap);
-            ran_a_turn_named(&mut world, &lead, &format!("p8-{flip}"));
-            flip += 1;
-        }
+        let (mut world, lead, due) = lead_holding_an_ask(&format!("alarm-retry-m1-due-{gap}"));
+        turns_until(&mut world, &lead, gap, due);
+        let held = world.active_ms() - (due - DUE);
+        assert!(held > CEILING, "{gap}: held {held} ms, past the ceiling");
+        assert_eq!(episodes(&world), Vec::new(), "{gap}: not due yet");
+    }
+}
+
+// Review r3 M1, row 2, and r2 probes P8 and P9 (General's ruling B, open
+// work): the same ask past its due time. Each turn end restarts
+// idle_open_work, so it never stalls; the ceiling opens idle_open_work from
+// the ask's first sight past due while the turns go on, and it stays open
+// while the ask waits.
+#[test]
+fn a_deadline_ask_past_its_due_alarms_by_the_ceiling() {
+    for gap in [9 * MINUTE, 30 * SECOND] {
+        let (mut world, lead, due) = lead_holding_an_ask(&format!("alarm-retry-p8-{gap}"));
+        turns_until(&mut world, &lead, gap, due + CEILING + N);
         let all = episodes(&world);
         assert_eq!(all.len(), 1, "{gap}: one alarm by the ceiling");
         assert_eq!(all[0].cause, "idle_open_work", "{gap}");
@@ -742,10 +781,9 @@ fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
             )
             .unwrap();
         assert!(
-            since <= start,
-            "{gap}: from the ask's first sight, not a turn end"
+            (due..=due + PASS).contains(&since),
+            "{gap}: from the ask's first sight past due ({due}), not a turn end: {since}"
         );
-        // Its turns go on and the ask stays open: the alarm stays open too.
         for more in 0..3 {
             world.advance(gap);
             ran_a_turn_named(&mut world, &lead, &format!("p8-more-{more}"));
@@ -754,6 +792,27 @@ fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
         assert_eq!(all.len(), 1, "{gap}: no new alarm");
         assert!(all[0].open, "{gap}: open while the ask waits");
     }
+}
+
+// Review r3 M1, row 3: a Giga's ask has no deadline, so it never opens the
+// ceiling by itself. A Mono that holds one for 2 h while it takes turns gets
+// no alarm; only the idle alarm watches it.
+#[test]
+fn a_no_deadline_ask_held_2_h_with_turns_opens_no_ceiling_alarm() {
+    let mut world = World::new("alarm-retry-m1-giga");
+    let (giga, mono) = add_monos(&world);
+    align(&mut world);
+    ask_and_take(&mut world, &giga, &mono, "giga-ask");
+    let start = world.active_ms();
+    let open = count(
+        &world,
+        "SELECT COUNT(*) FROM mono_asks
+          WHERE child_actor = 'mono:art-mono' AND state = 'open' AND due_active_ms IS NULL",
+    );
+    assert_eq!(open, 1, "the Mono holds a Giga's ask, with no deadline");
+    turns_until(&mut world, &mono.chat, 9 * MINUTE, start + 120 * MINUTE);
+    assert!(world.active_ms() - start > 110 * MINUTE);
+    assert_eq!(episodes(&world), Vec::new());
 }
 
 /// When `session`'s wake was first seen waiting.
