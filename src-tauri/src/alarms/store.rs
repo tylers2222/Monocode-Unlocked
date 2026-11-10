@@ -669,15 +669,21 @@ impl Pass<'_> {
         let actor_text = actor.to_string();
         let episode = self.rows.episodes.get(&actor_text);
         if facts.gone && episode.is_none() {
-            wake_retry::items_since(tx, actor, &[], self.active);
+            wake_retry::items_since(tx, actor, (&[], &[]), self.active);
             return activity::forget(tx, &row.session);
         }
         if facts.wake_pending_since != row.wake_pending_since {
             activity::set_wake_pending(tx, &row.session, facts.wake_pending_since)?;
         }
         let wakes = self.wakes(actor, &row.session, facts.gone);
-        let waiting = wake_retry::items_since(tx, actor, &wakes, self.active);
-        let quick = wake_retry::items_past_ceiling(waiting, facts.turn, self.active);
+        let open = state::open_work(facts);
+        let waiting = wake_retry::items_since(tx, actor, (&wakes, &open), self.active);
+        // An agent that waits on a running child or a background task is not
+        // stuck, however long its open work stays open.
+        let quick = match state::status(facts, self.active, limits) {
+            state::Status::Waiting => None,
+            _ => wake_retry::items_past_ceiling(waiting, facts.turn, self.active),
+        };
         match (state::next_state(facts, self.active, limits), episode) {
             // Turns under the wake threshold apart never make a stall due, so
             // an item they leave waiting opens at the ceiling (ADE-276).

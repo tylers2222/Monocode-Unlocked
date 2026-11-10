@@ -674,12 +674,11 @@ fn a_queue_that_moves_every_turn_gets_no_ceiling_alarm() {
     );
 }
 
-// Review r2 probes P8 and P9 (ruling B, open work): an agent with an open ask
-// and turns 10 min or 90 s apart never stalls. Ignored: open work has no item
-// first sight, and keeping one (the ask's) would alarm every ask a lead works
-// on for more than a ceiling. This needs the orchestrator's decision.
+// Review r2 probes P8 and P9 (General's ruling B, open work): an agent with
+// an open ask and turns 10 min or 90 s apart never stalled, as each turn end
+// restarts idle_open_work. The ask's first sight is the ceiling's start, so the
+// alarm opens from it while the turns go on.
 #[test]
-#[ignore = "needs a ruling: open work has no first sight (review r2 M1)"]
 fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
     for gap in [9 * MINUTE, 30 * SECOND] {
         let mut world = World::new(&format!("alarm-retry-p8-{gap}"));
@@ -694,7 +693,21 @@ fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
             ran_a_turn_named(&mut world, &lead, &format!("p8-{flip}"));
             flip += 1;
         }
-        assert_eq!(episodes(&world).len(), 1, "{gap}");
+        let all = episodes(&world);
+        assert_eq!(all.len(), 1, "{gap}: one alarm by the ceiling");
+        assert_eq!(all[0].cause, "idle_open_work", "{gap}");
+        let since: i64 = world
+            .conn()
+            .query_row(
+                "SELECT stalled_since_active_ms FROM alarm_episodes",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            since <= start,
+            "{gap}: from the ask's first sight, not a turn end"
+        );
     }
 }
 

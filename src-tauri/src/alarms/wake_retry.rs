@@ -28,7 +28,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::activity;
 use super::live::Live;
 pub(crate) use super::state::Cause;
-use super::state::{self, Episode, Facts, Turn, Wake};
+use super::state::{self, Episode, Facts, OpenWork, Turn, Wake};
 use super::store::MINUTE_MS;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{Notices, SessionId};
@@ -159,18 +159,21 @@ fn item_waits(tx: &Connection, actor: &Actor, since: i64) -> bool {
 }
 
 /// The first sight of the oldest item still waiting for `actor`, after this
-/// pass records what waits now (`wakes`). An item is a completion result, or
-/// the queue as one: a queue moves when any of its items is taken, so a long
-/// queue that drains is no stuck item. A message or reminder has no id, so
-/// only the wake threshold watches it. A failure here gives none: the other
-/// paths still alarm.
+/// pass records what waits now (`wakes`, and its own `open` work). An item is
+/// a completion result, the queue as one (a queue moves when any of its items
+/// is taken, so a long queue that drains is no stuck item), an open ask, an
+/// unfinished todo list, or a child's result not read. A turn end does not
+/// restart an item, so turns under the stall thresholds apart still reach the
+/// ceiling (General's ruling B). A message or reminder has no id, so only the
+/// wake threshold watches it. A failure here gives none: the other paths
+/// still alarm.
 pub(super) fn items_since(
     tx: &Connection,
     actor: &Actor,
-    wakes: &[Wake],
+    (wakes, open): (&[Wake], &[OpenWork]),
     active: i64,
 ) -> Option<i64> {
-    record_items(tx, actor, wakes, active).unwrap_or_else(|error| {
+    record_items(tx, actor, (wakes, open), active).unwrap_or_else(|error| {
         eprintln!("Could not record the waiting items of {actor}: {error}");
         None
     })
@@ -179,18 +182,21 @@ pub(super) fn items_since(
 fn record_items(
     tx: &Connection,
     actor: &Actor,
-    wakes: &[Wake],
+    (wakes, open): (&[Wake], &[OpenWork]),
     active: i64,
 ) -> rusqlite::Result<Option<i64>> {
     let actor = actor.to_string();
-    let items: Vec<String> = wakes
-        .iter()
-        .filter_map(|wake| match wake {
-            Wake::Notice { id } => Some(format!("notice:{id}")),
-            Wake::Queued { id } => Some(format!("queued:{id}")),
-            Wake::Message | Wake::Reminder => None,
-        })
-        .collect();
+    let waiting = wakes.iter().filter_map(|wake| match wake {
+        Wake::Notice { id } => Some(format!("notice:{id}")),
+        Wake::Queued { id } => Some(format!("queued:{id}")),
+        Wake::Message | Wake::Reminder => None,
+    });
+    let owned = open.iter().map(|work| match work {
+        OpenWork::Ask { id } => format!("ask:{id}"),
+        OpenWork::ChildResult { child } => format!("child:{child}"),
+        OpenWork::Todo => "todo".to_string(),
+    });
+    let items: Vec<String> = waiting.chain(owned).collect();
     let items = serde_json::to_string(&items).unwrap_or_default();
     let queue_moved: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM alarm_wake_items
