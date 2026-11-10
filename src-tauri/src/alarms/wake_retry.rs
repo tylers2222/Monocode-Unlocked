@@ -252,12 +252,16 @@ fn record_items(
 }
 
 /// Where an idle_open_work alarm opens for an item first seen at `since`
-/// (`items_since`) that turns did not take: the agent is idle, a turn of it
-/// ended after that sight, and a ceiling passed. A running turn opens nothing
-/// here: an item can wait behind it without being stuck.
+/// (`items_since`) that turns did not take: the agent is idle, a whole turn
+/// of it ran after that sight, and a ceiling passed. A running turn opens
+/// nothing here, nor does the end of the turn that was running at the sight:
+/// an item can wait behind it without being stuck.
 pub(super) fn items_past_ceiling(since: Option<i64>, turn: Turn, active: i64) -> Option<i64> {
     let since = since?;
-    let turned = matches!(turn, Turn::Idle { ended_at, .. } if ended_at > since);
+    let turned = matches!(
+        turn,
+        Turn::Idle { started_at: Some(started), .. } if started >= since
+    );
     (turned && active - since >= CEILING_MS).then_some(since)
 }
 
