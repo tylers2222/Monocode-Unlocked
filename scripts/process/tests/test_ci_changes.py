@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -21,6 +22,10 @@ from ci_changes import MAP, parse  # noqa: E402
 
 REAL_MAP = MAP.read_text()
 JOBS = list(parse(REAL_MAP).jobs)
+REACH = tomllib.loads(REAL_MAP)["reach"]
+UNMATCHED_PATHS = tomllib.loads(REAL_MAP)["unmatched"]
+REPO = HERE.parents[2]
+REACH_AT = REAL_MAP.index("\n[reach]\n") + 1
 # The run block of the `changes` step in ci.yml, e2e.yml and native.yml.
 CHANGES_STEP = ("set -euo pipefail\n"
                 'python3 scripts/process/ci_changes.py github "$EVENT" "$HEAD" | tee -a "$GITHUB_OUTPUT"\n')
@@ -235,17 +240,19 @@ class FirstParentDiff(unittest.TestCase):
         self.assertEqual((run.returncode, run.stdout), (2, ""), "exit 2 turns the changes job red; no job line reaches GITHUB_OUTPUT")
 
 
-class MapErrors(unittest.TestCase):
-    """A map that parse() refuses ends the `changes` step red with no output line. An empty
-    output is not 'false', so every gated job runs, and ci_verdict.py fails the red `changes`
-    job. Each map is the real map with one fault, run through the workflows' own step on a PR
-    for which the faulty map, if it were read, would skip a job that the real map runs."""
+class MapStep(unittest.TestCase):
+    """Runs the workflows' `changes` step with a given map."""
     SPEC = ["tests/browser/a.spec.ts"]
     MAP_ONLY = ["scripts/process/ci-map.toml"]
 
     def step(self, map_text: str, files: list[str]) -> tuple[int, str]:
         """The step's exit code and what it appended to GITHUB_OUTPUT, with map_text as the
         map beside ci_changes.py in the checkout."""
+        code, output, _ = self.run_step(map_text, files)
+        return code, output
+
+    def run_step(self, map_text: str, files: list[str]) -> tuple[int, str, str]:
+        """step() and the last line the step wrote to stderr."""
         repo = Repo(files)
         self.addCleanup(repo.dir.cleanup)
         process = repo.path / "scripts/process"
@@ -256,7 +263,7 @@ class MapErrors(unittest.TestCase):
         output.touch()
         env = {**os.environ, "EVENT": "pull_request", "HEAD": repo.merge, "GITHUB_OUTPUT": str(output)}
         run = subprocess.run(["bash", "-c", CHANGES_STEP], cwd=repo.path, env=env, capture_output=True, text=True)
-        return run.returncode, output.read_text()
+        return run.returncode, output.read_text(), (run.stderr.strip().splitlines() or [""])[-1]
 
     def faulty(self, old: str, new: str) -> str:
         self.assertEqual(REAL_MAP.count(old), 1, old)
@@ -266,6 +273,13 @@ class MapErrors(unittest.TestCase):
         text, n = re.subn(rf"(?ms)^{re.escape(key)} = \[.*?^\]", f"{key} = []", REAL_MAP)
         self.assertEqual(n, 1, key)
         return text
+
+
+class MapErrors(MapStep):
+    """A map that parse() refuses ends the `changes` step red with no output line. An empty
+    output is not 'false', so every gated job runs, and ci_verdict.py fails the red `changes`
+    job. Each map is the real map with one fault, run through the workflows' own step on a PR
+    for which the faulty map, if it were read, would skip a job that the real map runs."""
 
     def test_the_real_map_runs_the_jobs_these_prs_need(self):
         """Control: each PR below runs a job under the real map that a faulty map would skip."""
@@ -278,7 +292,7 @@ class MapErrors(unittest.TestCase):
         self.assertEqual((code, output), (0, "".join(f"{job}=false\n" for job in JOBS)))
 
     def test_a_faulty_map_fails_the_step_with_no_output(self):
-        jobs_at = REAL_MAP.index("[jobs]")
+        jobs_at, reach = REAL_MAP.index("\n[jobs]\n") + 1, REAL_MAP[REACH_AT:]
         cases = {
             "an extra top-level key": ("stray = [\"src/**\"]\n" + REAL_MAP, self.SPEC),
             "no none key": (self.faulty("\nnone = [", "\nnone_ = ["), self.SPEC),
@@ -288,8 +302,8 @@ class MapErrors(unittest.TestCase):
             "an empty glob": (self.faulty("\nbrowser = [\n", "\nbrowser = [\n  \"\",\n"), self.SPEC),
             "a glob that is no string": (self.faulty("\nbrowser = [\n", "\nbrowser = [\n  1,\n"), self.SPEC),
             "a glob list that is no list": (self.faulty("\nbrowser = [\n", "\nbrowser = \"src/**\"\nbrowser_ = [\n"), self.SPEC),
-            "an empty [jobs] table": (REAL_MAP[:jobs_at] + "[jobs]\n", PR_429_SCRIPT),
-            "a jobs key that is no table": (REAL_MAP[:jobs_at] + "jobs = [\"browser\"]\n", PR_429_SCRIPT),
+            "an empty [jobs] table": (REAL_MAP[:jobs_at] + "[jobs]\n" + reach, PR_429_SCRIPT),
+            "a jobs key that is no table": (REAL_MAP[:jobs_at] + "jobs = [\"browser\"]\n" + reach, PR_429_SCRIPT),
             "a TOML syntax error": (REAL_MAP + "[jobs\n", PR_429_SCRIPT),
         }
         for fault, (map_text, files) in cases.items():
@@ -297,7 +311,72 @@ class MapErrors(unittest.TestCase):
                 self.assertEqual(self.step(map_text, files), (1, ""))
 
 
+class MapReach(MapStep):
+    """A map that parses but whose globs would skip a job on a later PR is refused too
+    (ADE-301). Each fault is one plausible edit to the real map. The PR is one the edit
+    would mis-route if the map were read: the map's own PR runs every job, so the harm lands
+    on the PRs after it."""
+
+    def test_a_map_whose_globs_miss_a_needed_path_fails_the_step_with_no_output(self):
+        none_scripts = self.faulty('  "scripts/spaces/**",\n  "scripts/bump-version.mjs",\n  "scripts/test-remote-ssh.py",\n',
+                                   '  "scripts/**",\n')
+        cases = {
+            # The new file would be none and skip every job; the real map runs every job for it.
+            "a none glob of every file": (self.faulty('\nnone = [\n', '\nnone = [\n  "**",\n'), ["newtool/config.yaml"],
+                                          "ci-map.toml: unmatched path newtool/config.yaml is none, so a new file there would not run every job"),
+            "a none glob of every top-level file": (self.faulty('\nnone = [\n', '\nnone = [\n  "*",\n'), ["new-config.ts"],
+                                                    "ci-map.toml: unmatched path new-config.ts is none, so a new file there would not run every job"),
+            "none tidied to scripts/**": (none_scripts, ["scripts/new-tool.sh"],
+                                          "ci-map.toml: unmatched path scripts/new-tool.sh is none, so a new file there would not run every job"),
+            # The spec would run no browser job; the real map runs browser for it.
+            "a job glob with a typo": (self.faulty('  "tests/browser/**",\n', '  "test/browser/**",\n'), self.SPEC,
+                                       "ci-map.toml: reach.browser path tests/browser/ade179-space-switcher.spec.ts runs check, not browser"),
+            "a job glob dropped": (self.faulty('  "scripts/release-channel*",\n', ''), ["scripts/release-channel.test.cjs"],
+                                   "ci-map.toml: reach.release-channel path scripts/release-channel.test.cjs runs unmatched, not release-channel"),
+            "a reach path moved to all": (self.faulty('  ".npmrc",\n]', '  ".npmrc",\n  "scripts/repack-appimage.sh",\n]'), self.SPEC,
+                                          "ci-map.toml: reach.appimage path scripts/repack-appimage.sh runs all, not appimage"),
+            "a new job with no reach": (self.faulty('\n[reach]\n', '\nlint = ["src/**"]\n\n[reach]\n'), self.SPEC,
+                                        "ci-map.toml: [reach] must list exactly the jobs in [jobs]; it has " + str(sorted(JOBS))),
+            "a reach entry for no job": (REAL_MAP + 'lint = ["src/app/App.tsx"]\n', self.SPEC,
+                                         "ci-map.toml: [reach] must list exactly the jobs in [jobs]; it has " + str(sorted([*JOBS, "lint"]))),
+            "no [reach] table": (REAL_MAP[:REACH_AT], self.SPEC,
+                                             "ci-map.toml needs exactly the keys all, none, unmatched, [jobs] and [reach]; it has ['all', 'jobs', 'none', 'unmatched']"),
+            "an empty reach list": (self.faulty('\nappimage = ["scripts/repack-appimage.sh"]\n', '\nappimage = []\n'), self.SPEC,
+                                    "ci-map.toml: reach.appimage must be a non-empty list of globs or paths"),
+            "an empty unmatched list": (self.emptied("unmatched"), ["newtool/config.yaml"],
+                                        "ci-map.toml: unmatched must be a non-empty list of globs or paths"),
+        }
+        for fault, (map_text, files, error) in cases.items():
+            with self.subTest(fault):
+                code, output, stderr = self.run_step(map_text, files)
+                self.assertEqual((code, output), (1, ""))
+                self.assertEqual(stderr, f"ValueError: {error}")
+
+    def test_the_real_map_reaches_what_these_prs_need(self):
+        """Control for the cases above: the real map runs these PRs' jobs."""
+        for files, want in [(["newtool/config.yaml"], set(JOBS)), (["new-config.ts"], set(JOBS)),
+                            (["scripts/new-tool.sh"], set(JOBS)), (self.SPEC, {"browser", "check"}),
+                            (["scripts/release-channel.test.cjs"], {"release-channel"})]:
+            with self.subTest(files=files):
+                code, output = self.step(REAL_MAP, files)
+                self.assertEqual(code, 0)
+                self.assertEqual({line.split("=")[0] for line in output.splitlines() if line.endswith("=true")}, want)
+
+
 class FileClasses(unittest.TestCase):
+    def test_each_reach_path_is_a_real_file_that_runs_its_job_in_box_ci(self):
+        paths = sorted({path for listed in REACH.values() for path in listed})
+        self.assertEqual([path for path in paths if not (REPO / path).is_file()], [], "reach paths must be real files")
+        got = classes(paths)
+        for job, listed in REACH.items():
+            for path in listed:
+                with self.subTest(job=job, path=path):
+                    self.assertIn(job, got[path].split(","))
+
+    def test_unmatched_paths_are_new_files_that_run_every_job_in_box_ci(self):
+        self.assertEqual([path for path in UNMATCHED_PATHS if (REPO / path).exists()], [], "unmatched paths must not exist yet")
+        self.assertEqual(classes(UNMATCHED_PATHS), {path: "unmatched" for path in UNMATCHED_PATHS})
+
     def test_box_ci_classes(self):
         self.assertEqual(classes([".github/workflows/ci.yml", "scripts/process/ci-map.toml", "newtool/x",
                                   "scripts/process/tier.py", "scripts/process/heavy-lock.sh",
