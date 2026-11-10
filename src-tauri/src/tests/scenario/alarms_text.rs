@@ -823,6 +823,9 @@ fn a_reply_line_does_not_guess_from_a_stale_turn_row() {
 #[test]
 fn the_moved_line_gives_its_own_session_and_those_it_started() {
     let mut scene = lead("att-moved");
+    // The clock starts at 0: the lead's own turn comes later, so its minutes
+    // count from that turn, not from the start.
+    scene.world.advance(10 * MINUTE);
     align(&mut scene.world);
     ran_a_turn(&mut scene.world, &scene.lead.clone());
     let worker = scene

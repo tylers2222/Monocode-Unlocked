@@ -634,6 +634,29 @@ Your provisioner nudged you: PR S1 builder (session:9f3c) is stalled since 14:05
         );
     }
 
+    // Defect (ADE-277): a known cause reads as "state unknown", or as another
+    // cause's state, in the alarm's first line.
+    #[test]
+    fn each_cause_names_its_own_state_in_the_first_line() {
+        for (cause, words) in [
+            ("idle_open_work", "no turn"),
+            ("dialog", "waiting on a dialog"),
+            ("hung", "turn running, no output"),
+            ("wake_missed", "a wake not taken"),
+            ("hold_missing", "sleep hold missing"),
+        ] {
+            let stall = Stall {
+                cause: cause.into(),
+                ..stall()
+            };
+            let text = alarm(&stall, 1, None, &Next::Tyler);
+            assert!(
+                text.contains(&format!("since 14:05 (17 min, {words}).\n")),
+                "{cause}: {text}"
+            );
+        }
+    }
+
     // Defect (ADE-277): "yes" or "no" prints for the other answer, or the
     // others' count hides how many there are.
     #[test]
