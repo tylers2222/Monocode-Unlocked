@@ -13,6 +13,11 @@
 # A file that matches only `none` runs no gated job. gate/lint, gate/integrity,
 # gate/mutation and review/agent are never gated: they run on every pull request.
 #
+# The map is refused when it is read (the `changes` job goes red and every job runs) if a
+# path in [reach] does not run its job through the job's own globs, or a path in
+# `unmatched` matches any glob. That catches a job glob with a typo and a `none` glob that
+# is too broad, which would otherwise skip jobs on later pull requests (ADE-301).
+#
 # This map is one of two filters. scripts/process/ci_level.py is the other: a draft runs
 # only the fast set, whatever this map says. See that script.
 
@@ -53,6 +58,16 @@ none = [
   "eslint.config.js",
   "eslint-suppressions.json",
   ".jscpd.json",
+]
+
+# New files that no glob lists yet, so they run every job. None of them may exist in the
+# repo. A `none` glob that reaches one of them, such as `**`, `*` or `scripts/**`, would
+# skip every job for a new file that a job may need.
+unmatched = [
+  "newtool/config.yaml",
+  "new-config.ts",
+  "scripts/new-tool.sh",
+  "crates/new-crate/src/lib.rs",
 ]
 
 # One entry per gated job; the key is the job id and the name of the `changes` output.
@@ -186,3 +201,17 @@ native = [
   "scripts/native-editor/**",
   "scripts/native-settings/**",
 ]
+
+# For each job, real files that it must run for through its own globs (not through `all`).
+# A job glob with a typo, or one that is dropped, leaves its path here without the job.
+[reach]
+release-channel = ["scripts/release-channel.test.cjs"]
+browser = ["src/app/App.tsx", "tests/browser/ade179-space-switcher.spec.ts"]
+host = ["host/engine.ts", "src-tauri/src/remote_bootstrap.sh"]
+check = ["src-tauri/src/lib.rs", "scripts/process/heavy-lock.sh"]
+rpm = ["src-tauri/src/lib.rs", "scripts/install-linux-deps-fedora.sh"]
+appimage = ["scripts/repack-appimage.sh"]
+e2e-linux = ["src-tauri/src/lib.rs", "docker/e2e-report.mjs", "evals/promptfooconfig.yaml"]
+e2e-macos = ["src-tauri/src/lib.rs", "scripts/e2e-macos.sh"]
+mobile = ["mobile/src/app/_layout.tsx", "src/app/App.tsx"]
+native = ["crates/monocode-core/src/store.rs", "scripts/native-release.mjs"]

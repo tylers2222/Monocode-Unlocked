@@ -46,20 +46,44 @@ class CiMap:
     jobs: Mapping[str, tuple[re.Pattern[str], ...]]
 
 
+def strings(where: str, value: object) -> list[str]:
+    if not isinstance(value, list) or not value or not all(isinstance(s, str) and s for s in value):
+        raise ValueError(f"ci-map.toml: {where} must be a non-empty list of globs or paths")
+    return value
+
+
 def parse(text: str) -> CiMap:
+    """The map, or ValueError when its shape is wrong or its globs miss the paths in
+    `unmatched` and [reach] (see check_reach)."""
     data = tomllib.loads(text)
-    if set(data) != {"all", "none", "jobs"}:
-        raise ValueError(f"ci-map.toml needs exactly the keys all, none and [jobs]; it has {sorted(data)}")
+    if set(data) != {"all", "none", "unmatched", "jobs", "reach"}:
+        raise ValueError(f"ci-map.toml needs exactly the keys all, none, unmatched, [jobs] and [reach]; it has {sorted(data)}")
 
     def globs(where: str, value: object) -> tuple[re.Pattern[str], ...]:
-        if not isinstance(value, list) or not value or not all(isinstance(g, str) and g for g in value):
-            raise ValueError(f"ci-map.toml: {where} must be a non-empty list of globs")
-        return tuple(glob_re(g) for g in value)
+        return tuple(glob_re(g) for g in strings(where, value))
 
     if not isinstance(data["jobs"], dict) or not data["jobs"]:
         raise ValueError("ci-map.toml: [jobs] must name at least one job")
-    return CiMap(globs("all", data["all"]), globs("none", data["none"]),
-                 {job: globs(f"jobs.{job}", value) for job, value in data["jobs"].items()})
+    ci_map = CiMap(globs("all", data["all"]), globs("none", data["none"]),
+                   {job: globs(f"jobs.{job}", value) for job, value in data["jobs"].items()})
+    check_reach(ci_map, strings("unmatched", data["unmatched"]), data["reach"])
+    return ci_map
+
+
+def check_reach(ci_map: CiMap, unmatched: list[str], reach: object) -> None:
+    """Fail closed on a map that parses but would skip a job (ADE-301): each path in
+    `unmatched` must match no glob, so a new file still runs every job, and each job's
+    [reach] paths must run that job through its own globs."""
+    for path in unmatched:
+        if (kind := classify(ci_map, path)) != UNMATCHED:
+            raise ValueError(f"ci-map.toml: unmatched path {path} is {describe(kind)}, so a new file there would not run every job")
+    if not isinstance(reach, dict) or set(reach) != set(ci_map.jobs):
+        raise ValueError(f"ci-map.toml: [reach] must list exactly the jobs in [jobs]; it has {sorted(reach) if isinstance(reach, dict) else reach!r}")
+    for job, paths in reach.items():
+        for path in strings(f"reach.{job}", paths):
+            kind = classify(ci_map, path)
+            if not isinstance(kind, frozenset) or job not in kind:
+                raise ValueError(f"ci-map.toml: reach.{job} path {path} runs {describe(kind)}, not {job}")
 
 
 def classify(ci_map: CiMap, path: str) -> str | frozenset[str]:
