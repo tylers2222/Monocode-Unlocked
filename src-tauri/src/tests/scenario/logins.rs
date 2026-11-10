@@ -370,8 +370,14 @@ esac"#,
 /// it, and `on_settings_start_with_the_default_allows` is the check that fails
 /// (#512). macOS only, with srt 0.0.81 on the search PATH, as ci.yml installs
 /// it. In the home folder, since every spawn may write the temp dir.
+///
+/// Not in the parallel suite: the session runs under the agents' disk throttle
+/// (`IOPOL_THROTTLE`), and the suite's own disk work at normal priority holds
+/// it back for as long as it lasts, past the 20 s `wait_for` (ADE-313). ci.yml
+/// runs both real-srt tests in a step of their own, after `cargo test`.
 #[test]
 #[cfg(target_os = "macos")]
+#[ignore = "ci.yml runs it after the suite, in a step of its own (ADE-313)"]
 fn a_linked_login_signs_in_under_the_real_srt() {
     if crate::harness::resolve_gui_binary("srt").is_none() {
         assert!(std::env::var_os("CI").is_none(), "srt is not installed");
@@ -416,9 +422,11 @@ esac"#,
 /// Defect: under the real srt, a Codex Mono cannot write its private home, can
 /// read another login's, or can add a file to the app data folder (ADE-224:
 /// srt cannot open one folder inside a denied one to writes, so the homes are
-/// beside it). macOS only, as `a_linked_login_signs_in_under_the_real_srt`.
+/// beside it). macOS only, and run after the suite, as
+/// `a_linked_login_signs_in_under_the_real_srt`.
 #[test]
 #[cfg(target_os = "macos")]
+#[ignore = "ci.yml runs it after the suite, in a step of its own (ADE-313)"]
 fn a_codex_mono_writes_only_its_home_under_the_real_srt() {
     if crate::harness::resolve_gui_binary("srt").is_none() {
         assert!(std::env::var_os("CI").is_none(), "srt is not installed");

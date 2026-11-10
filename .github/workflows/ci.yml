@@ -292,7 +292,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - run: npm ci --prefer-offline --no-audit --no-fund
-      # The real srt for scenario::logins::a_linked_login_signs_in_under_the_real_srt
+      # The real srt for scenario::logins::*_under_the_real_srt
       # (ADE-224), the version agent_sandbox.rs pins.
       - run: npm install -g @anthropic-ai/sandbox-runtime@0.0.81
         if: runner.os == 'macOS'
@@ -310,6 +310,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
         if: runner.os != 'Linux' || github.event_name != 'pull_request'
       - run: cargo test
+      # The two real-srt login tests, once the suite has ended. Their session runs
+      # under the agents' disk throttle, so the suite's disk work stalls it (ADE-313).
+      # A filter that matches nothing passes, so the count is checked.
+      - run: |
+          cargo test -p monocode --lib -- --ignored under_the_real_srt | tee "$RUNNER_TEMP/real-srt.log"
+          grep -q "test result: ok. 2 passed" "$RUNNER_TEMP/real-srt.log"
+        if: runner.os == 'macOS'
 
   appimage:
     name: AppImage host libraries
