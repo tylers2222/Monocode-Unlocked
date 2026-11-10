@@ -145,9 +145,9 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        # Pull requests run ubuntu only; the macOS and Windows legs run after the
-        # merge (a push), and a red one opens the "tyler/main CI red" issue.
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        # Pull requests run ubuntu only; the macOS leg runs after the merge (a
+        # push), and a red one opens the "tyler/main CI red" issue.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -228,9 +228,9 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        # The Windows leg runs after the merge (a push) only; a red one opens the
-        # "tyler/main CI red" issue. The macOS leg is in the full set only.
-        os: ${{ github.event_name == 'push' && fromJSON('["macos-latest", "ubuntu-latest", "windows-latest"]') || needs.changes.outputs.level == 'fast' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "ubuntu-latest"]') }}
+        # The macOS leg is in the full set only. Windows is not a supported
+        # platform (2026-11-10), so no leg runs there.
+        os: ${{ github.event_name == 'push' && fromJSON('["macos-latest", "ubuntu-latest"]') || needs.changes.outputs.level == 'fast' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -245,7 +245,8 @@ jobs:
           cache: npm
 
       # Same pinned version as gate/lint: clippy here checks the same baseline
-      # #[expect] markers, three of them only on macOS or Windows.
+      # #[expect] markers, some of them only on macOS (CI no longer builds the
+      # Windows-only ones).
       - id: rust-version
         shell: bash
         run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
@@ -269,8 +270,7 @@ jobs:
       # (ADE-224), the version agent_sandbox.rs pins.
       - run: npm install -g @anthropic-ai/sandbox-runtime@0.0.81
         if: runner.os == 'macOS'
-      # vitest and tsc do not depend on the OS, so macOS skips them. Windows keeps
-      # vitest: its path handling has failed there before.
+      # vitest and tsc do not depend on the OS, so macOS skips them.
       - run: npm test
         if: runner.os != 'macOS'
       - run: npx tsc --noEmit
@@ -535,7 +535,7 @@ jobs:
       actions: write
     uses: ./.github/workflows/stop-useless-runs.yml
 
-  # Pull requests skip the Windows, host macOS and packaging legs, so a break there
+  # Pull requests skip the host macOS and packaging legs, so a break there
   # first shows on tyler/main. One open issue tracks it; the next green run closes it.
   # A cancelled run says nothing about the code, so it leaves the issue as it is.
   main-red:
