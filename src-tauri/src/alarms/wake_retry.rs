@@ -92,11 +92,13 @@ fn run_start(
 /// it was. An alarm the ceiling opened counts from its run's start, so every
 /// turn since reads as progress; its item moved only when the wake that waited
 /// from then was taken, or for idle_open_work, when no item first seen by then
-/// still waits (`items_since`). A failure here says no: the episode closes as
-/// before.
+/// still waits (`items_since`). Open work holds the alarm only for an agent
+/// that took a turn after its stall began, as the ceiling's own alarm did: a
+/// nudged agent's first turn on its work is progress. A failure here says no:
+/// the episode closes as before.
 pub(super) fn still_stuck(
     tx: &Connection,
-    (id, actor): (&str, &Actor),
+    (id, actor, session): (&str, &Actor, &SessionId),
     episode: &Episode,
     facts: &Facts,
 ) -> bool {
@@ -107,7 +109,10 @@ pub(super) fn still_stuck(
                 .is_some_and(|seen| seen <= episode.stalled_since)
                 && !item_moved(tx, actor, episode.stalled_since)
         }
-        Ok(Cause::IdleOpenWork) => item_waits(tx, actor, episode.stalled_since),
+        Ok(Cause::IdleOpenWork) => {
+            let turned = ended_since(tx, session, episode.stalled_since);
+            item_waits(tx, actor, (episode.stalled_since, turned))
+        }
         _ => false,
     };
     if !waits {
@@ -144,16 +149,33 @@ fn item_moved(tx: &Connection, actor: &Actor, since: i64) -> bool {
 }
 
 /// Whether an item `actor`'s ceiling counts from, first seen by `since`,
-/// still waits. A failure here says no.
-fn item_waits(tx: &Connection, actor: &Actor, since: i64) -> bool {
+/// still waits: a wake always, its own open work only when it `turned`. A
+/// failure here says no.
+fn item_waits(tx: &Connection, actor: &Actor, (since, turned): (i64, bool)) -> bool {
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM alarm_wake_items
-                         WHERE actor = ?1 AND first_seen_active_ms <= ?2)",
-        params![actor.to_string(), since],
+                         WHERE actor = ?1 AND first_seen_active_ms <= ?2
+                           AND (item LIKE 'notice:%' OR item LIKE 'queued:%' OR ?3))",
+        params![actor.to_string(), since, turned],
         |row| row.get(0),
     )
     .unwrap_or_else(|error| {
         eprintln!("Could not read the waiting items of {actor}: {error}");
+        false
+    })
+}
+
+/// Whether a turn of `session` ended after `since`. The turn running now
+/// keeps the last turn's end. A failure here says no.
+fn ended_since(tx: &Connection, session: &SessionId, since: i64) -> bool {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM agent_activity
+                         WHERE session_id = ?1 AND turn_ended_active_ms > ?2)",
+        params![session.as_str(), since],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the turns of {}: {error}", session.as_str());
         false
     })
 }

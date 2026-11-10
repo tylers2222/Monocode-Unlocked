@@ -708,6 +708,14 @@ fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
             since <= start,
             "{gap}: from the ask's first sight, not a turn end"
         );
+        // Its turns go on and the ask stays open: the alarm stays open too.
+        for more in 0..3 {
+            world.advance(gap);
+            ran_a_turn_named(&mut world, &lead, &format!("p8-more-{more}"));
+        }
+        let all = episodes(&world);
+        assert_eq!(all.len(), 1, "{gap}: no new alarm");
+        assert!(all[0].open, "{gap}: open while the ask waits");
     }
 }
 

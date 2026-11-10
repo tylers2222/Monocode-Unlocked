@@ -676,13 +676,20 @@ impl Pass<'_> {
             activity::set_wake_pending(tx, &row.session, facts.wake_pending_since)?;
         }
         let wakes = self.wakes(actor, &row.session, facts.gone);
-        let open = state::open_work(facts);
-        let waiting = wake_retry::items_since(tx, actor, (&wakes, &open), self.active);
         // An agent that waits on a running child or a background task is not
-        // stuck, however long its open work stays open.
-        let quick = match state::status(facts, self.active, limits) {
-            state::Status::Waiting => None,
-            _ => wake_retry::items_past_ceiling(waiting, facts.turn, self.active),
+        // stuck, however long its open work stays open: its open work is
+        // first seen again when the wait ends.
+        let waits = state::status(facts, self.active, limits) == state::Status::Waiting;
+        let open = if waits {
+            Vec::new()
+        } else {
+            state::open_work(facts)
+        };
+        let waiting = wake_retry::items_since(tx, actor, (&wakes, &open), self.active);
+        let quick = if waits {
+            None
+        } else {
+            wake_retry::items_past_ceiling(waiting, facts.turn, self.active)
         };
         match (state::next_state(facts, self.active, limits), episode) {
             // Turns under the wake threshold apart never make a stall due, so
@@ -724,7 +731,12 @@ impl Pass<'_> {
             }
             // The ceiling's alarm stays open while its wake still waits.
             (Transition::Close(CloseReason::Progress), Some((id, episode)))
-                if wake_retry::still_stuck(tx, (id.as_str(), actor), episode, facts) =>
+                if wake_retry::still_stuck(
+                    tx,
+                    (id.as_str(), actor, &row.session),
+                    episode,
+                    facts,
+                ) =>
             {
                 Ok(())
             }
