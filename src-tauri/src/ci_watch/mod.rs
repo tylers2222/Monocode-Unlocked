@@ -25,7 +25,7 @@ pub(crate) use judge::parse as parse_snapshot;
 pub(crate) use judge::Snapshot;
 pub(crate) use store::ensure_tables;
 #[cfg(test)]
-pub(crate) use store::{KEEP_ENDED_MS, OPEN_CAP, READS_PER_PASS};
+pub(crate) use store::{OPEN_CAP, READS_PER_PASS};
 
 /// The checks a wake names one by one unless the watch names others: the
 /// required checks of the tyler/main ruleset.

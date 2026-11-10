@@ -16,6 +16,9 @@ const SHA: &str = "0f4432e0d46670e4afed982a0d2a8d0ca13dbe34";
 const NEW_SHA: &str = "2222222222222222222222222222222222222222";
 const REPO: &str = "acme/web";
 const MINUTE: i64 = 60_000;
+/// The stated age of an ended watch at its deletion, as a literal: a test that
+/// read `ci_watch::KEEP_ENDED_MS` would follow any change to it.
+const WEEK: i64 = 7 * 24 * 60 * MINUTE;
 
 /// One job of a `statusCheckRollup`, as `gh pr view --json` gives it.
 fn job(name: &str, status: &str, conclusion: &str, run: u32) -> Value {
@@ -625,7 +628,7 @@ fn ended_watches_are_deleted_a_week_after_their_wake_was_sent() {
     let cancelled = watch_pr(&world, &lead, 8, "w3")["result"]["id"].clone();
     call(&world, &lead, "ci.cancel", json!({"id": cancelled}), "c1");
     assert_eq!((watch_rows(&world), outbox_rows(&world)), (3, 2));
-    world.jump_wall(ci_watch::KEEP_ENDED_MS - 1);
+    world.jump_wall(WEEK - 1);
     poll(&world, &moved());
     assert_eq!(
         (watch_rows(&world), outbox_rows(&world)),

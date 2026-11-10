@@ -21,7 +21,7 @@ pub(crate) const READS_PER_PASS: i64 = 2;
 pub(crate) const OPEN_CAP: i64 = 30;
 
 /// An ended watch, and its sent wake, are deleted this long after the end.
-pub(crate) const KEEP_ENDED_MS: i64 = 7 * 24 * 60 * 60_000;
+const KEEP_ENDED_MS: i64 = 7 * 24 * 60 * 60_000;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
