@@ -191,7 +191,7 @@ jobs:
 
   # Publishes what the other jobs built: no npm ci, toolchain or signing keys here.
   release:
-    needs: [macos, linux, linux-rpm, windows, host]
+    needs: [macos, linux, linux-rpm, host]
     runs-on: macos-latest
     permissions:
       contents: write
@@ -231,12 +231,6 @@ jobs:
           name: linux-rpm-package
           path: target/release/bundle/rpm
 
-      - name: Download Windows packages
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-packages
-          path: target/release/bundle/nsis
-
       - name: Download host packages
         uses: actions/download-artifact@v4
         with:
@@ -262,8 +256,6 @@ jobs:
           ARM_DMGS=("$ARM_BUNDLE"/dmg/*.dmg)
           INTEL_TARS=("$INTEL_BUNDLE"/macos/*.app.tar.gz)
           INTEL_DMGS=("$INTEL_BUNDLE"/dmg/*.dmg)
-          WINDOWS_INSTALLERS=("$BUNDLE"/nsis/*.exe)
-          WINDOWS_SIGNATURES=("$BUNDLE"/nsis/*.exe.sig)
           LINUX_APPIMAGES=("$BUNDLE"/linux/*.AppImage)
           LINUX_APPIMAGE_SIGNATURES=("$BUNDLE"/linux/*.AppImage.sig)
           if (( ${#ARM_TARS[@]} != 1 || ${#ARM_DMGS[@]} != 1 )); then
@@ -272,10 +264,6 @@ jobs:
           fi
           if (( ${#INTEL_TARS[@]} != 1 || ${#INTEL_DMGS[@]} != 1 )); then
             echo "Expected exactly one Intel updater archive and DMG" >&2
-            exit 1
-          fi
-          if (( ${#WINDOWS_INSTALLERS[@]} != 1 || ${#WINDOWS_SIGNATURES[@]} != 1 )); then
-            echo "Expected exactly one Windows installer and updater signature" >&2
             exit 1
           fi
           if (( ${#LINUX_APPIMAGES[@]} != 1 || ${#LINUX_APPIMAGE_SIGNATURES[@]} != 1 )); then
@@ -288,8 +276,6 @@ jobs:
           INTEL_TAR="${INTEL_TARS[0]}"
           INTEL_SIG="${INTEL_TAR}.sig"
           INTEL_DMG="${INTEL_DMGS[0]}"
-          WINDOWS_INSTALLER="${WINDOWS_INSTALLERS[0]}"
-          WINDOWS_SIGNATURE="${WINDOWS_SIGNATURES[0]}"
           LINUX_APPIMAGE="${LINUX_APPIMAGES[0]}"
           LINUX_APPIMAGE_SIGNATURE="${LINUX_APPIMAGE_SIGNATURES[0]}"
           for artifact in "$ARM_SIG" "$INTEL_SIG"; do
@@ -307,8 +293,6 @@ jobs:
           INTEL_TAR_KEY="${RELEASE_PREFIX}/MonoCode_x64.app.tar.gz"
           INTEL_SIG_KEY="${INTEL_TAR_KEY}.sig"
           INTEL_DMG_KEY="${RELEASE_PREFIX}/MonoCode_${VERSION}_x64.dmg"
-          WINDOWS_INSTALLER_KEY="${RELEASE_PREFIX}/MonoCode_${VERSION}_x64-setup.exe"
-          WINDOWS_SIGNATURE_KEY="${WINDOWS_INSTALLER_KEY}.sig"
           LINUX_APPIMAGE_KEY="${RELEASE_PREFIX}/MonoCode_${VERSION}_amd64.AppImage"
           LINUX_APPIMAGE_SIGNATURE_KEY="${LINUX_APPIMAGE_KEY}.sig"
 
@@ -317,8 +301,6 @@ jobs:
             ARM_TAR_URL="$BASE/$ARM_TAR_KEY" \
             INTEL_SIG="$INTEL_SIG" \
             INTEL_TAR_URL="$BASE/$INTEL_TAR_KEY" \
-            WINDOWS_SIGNATURE="$WINDOWS_SIGNATURE" \
-            WINDOWS_INSTALLER_URL="$BASE/$WINDOWS_INSTALLER_KEY" \
             LINUX_APPIMAGE_SIGNATURE="$LINUX_APPIMAGE_SIGNATURE" \
             LINUX_APPIMAGE_URL="$BASE/$LINUX_APPIMAGE_KEY" \
             node <<'NODE'
@@ -342,12 +324,6 @@ jobs:
                       .readFileSync(process.env.INTEL_SIG, "utf8")
                       .trim(),
                     url: process.env.INTEL_TAR_URL,
-                  },
-                  "windows-x86_64": {
-                    signature: fs
-                      .readFileSync(process.env.WINDOWS_SIGNATURE, "utf8")
-                      .trim(),
-                    url: process.env.WINDOWS_INSTALLER_URL,
                   },
                   // AppImage only: the installer-specific key keeps .deb and
                   // .rpm installs (which have no `linux-x86_64` entry) on
@@ -375,8 +351,6 @@ jobs:
           aws s3 cp "$INTEL_DMG" "s3://${R2_BUCKET_NAME}/${INTEL_DMG_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$INTEL_TAR" "s3://${R2_BUCKET_NAME}/${INTEL_TAR_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$INTEL_SIG" "s3://${R2_BUCKET_NAME}/${INTEL_SIG_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
-          aws s3 cp "$WINDOWS_INSTALLER" "s3://${R2_BUCKET_NAME}/${WINDOWS_INSTALLER_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
-          aws s3 cp "$WINDOWS_SIGNATURE" "s3://${R2_BUCKET_NAME}/${WINDOWS_SIGNATURE_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$LINUX_APPIMAGE" "s3://${R2_BUCKET_NAME}/${LINUX_APPIMAGE_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$LINUX_APPIMAGE_SIGNATURE" "s3://${R2_BUCKET_NAME}/${LINUX_APPIMAGE_SIGNATURE_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           # Keep stable links for both architectures, but never let the CDN
@@ -411,9 +385,7 @@ jobs:
             exit 1
           fi
           RPM="${RPMS[0]}"
-          NSIS="$BUNDLE/nsis/MonoCode_${VERSION}_x64-setup.exe"
-          NSIS_SIG="${NSIS}.sig"
-          for artifact in "$ARM_DMG" "$ARM_TAR" "$ARM_SIG" "$INTEL_DMG" "$INTEL_TAR" "$INTEL_SIG" "$DEB" "$APPIMAGE" "$APPIMAGE_SIG" "$RPM" "$NSIS" "$NSIS_SIG"; do
+          for artifact in "$ARM_DMG" "$ARM_TAR" "$ARM_SIG" "$INTEL_DMG" "$INTEL_TAR" "$INTEL_SIG" "$DEB" "$APPIMAGE" "$APPIMAGE_SIG" "$RPM"; do
             if [[ ! -f "$artifact" ]]; then
               echo "Missing release artifact: $artifact" >&2
               exit 1
@@ -441,7 +413,7 @@ jobs:
           RELEASE_FILES=(
             "$ARM_DMG" "$RELEASE_ASSETS/MonoCode.app.tar.gz" "$RELEASE_ASSETS/MonoCode.app.tar.gz.sig"
             "$INTEL_DMG" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz.sig"
-            "$DEB" "$APPIMAGE" "$APPIMAGE_SIG" "$RPM" "$NSIS" "$NSIS_SIG" "${HOST_FILES[@]}"
+            "$DEB" "$APPIMAGE" "$APPIMAGE_SIG" "$RPM" "${HOST_FILES[@]}"
           )
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" \
@@ -508,7 +480,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -717,88 +689,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-rpm-package
-          path: release-artifacts/
-          if-no-files-found: error
-          compression-level: 0
-
-  windows:
-    name: Windows packages
-    needs: bundle
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Select release channel
-        run: node scripts/release-channel.cjs
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - run: npm ci
-
-      # bundle built the JS once; the build config below drops beforeBuildCommand.
-      - name: Download JS bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: js-bundle
-          path: dist
-
-      - name: Write updater release config
-        env:
-          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
-          TAURI_UPDATER_ENDPOINT: ${{ secrets.TAURI_UPDATER_ENDPOINT }}
-          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
-        run: |
-          $endpoint = node -p "require('./scripts/release-channel.cjs').updaterEndpoint(process.env)"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not select the updater endpoint"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY)) {
-            throw "TAURI_UPDATER_PUBKEY is required"
-          }
-          $config = @{
-            build = @{
-              beforeBuildCommand = $null
-            }
-            bundle = @{
-              createUpdaterArtifacts = $true
-            }
-            plugins = @{
-              updater = @{
-                pubkey = $env:TAURI_UPDATER_PUBKEY
-                endpoints = @($endpoint)
-              }
-            }
-          }
-          $config | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\tauri.release.conf.json"
-
-      - name: Build Windows packages
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
-          npx tauri build --bundles nsis --config "$env:RUNNER_TEMP\tauri.release.conf.json"
-
-      - name: Stage Windows packages
-        run: |
-          $installers = @(Get-ChildItem "target/release/bundle/nsis" -Filter "*.exe")
-          $signatures = @(Get-ChildItem "target/release/bundle/nsis" -Filter "*.exe.sig")
-          if ($installers.Count -ne 1 -or $signatures.Count -ne 1) {
-            throw "Expected exactly one NSIS installer and one updater signature"
-          }
-          New-Item -ItemType Directory -Force "release-artifacts" | Out-Null
-          $artifacts = @($installers[0].FullName, $signatures[0].FullName)
-          Copy-Item -Path $artifacts -Destination "release-artifacts/"
-
-      - name: Upload Windows packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-packages
           path: release-artifacts/
           if-no-files-found: error
           compression-level: 0

@@ -239,7 +239,7 @@ class Workflows(unittest.TestCase):
         self.assertIn("needs.changes.outputs.level == 'fast' && fromJSON('[\"ubuntu-latest\"]') || "
                       "fromJSON('[\"macos-latest\", \"ubuntu-latest\"]')", self.job("ci.yml", "check"))
         self.assert_lines("native.yml", "core", "os: ${{ needs.changes.outputs.level == 'fast' && fromJSON('[\"ubuntu-latest\"]') || "
-                          "fromJSON('[\"ubuntu-latest\", \"macos-latest\", \"windows-latest\"]') }}")
+                          "fromJSON('[\"ubuntu-latest\", \"macos-latest\"]') }}")
 
     def test_the_level_is_not_a_path_decision(self):
         # merge-when-green.sh accepts a skipped e2e job on the `<job>=false` log line of
