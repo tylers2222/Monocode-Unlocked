@@ -32,12 +32,21 @@ export async function projectSessionCount(path: string): Promise<number> {
 /** Everything we persist for a project: saved chats plus its rail appearance. */
 export async function removeProjectData(path: string): Promise<void> {
   const normalized = normalizeProjectPath(path);
-  const key = projectKey(normalized);
   const sessions = await listSessionsByProject(normalized).catch(() => []);
   for (const session of sessions) {
     await deleteSession(session.id).catch(() => undefined);
   }
   await removeProjectMilestones(normalized).catch(() => undefined);
+  await clearProjectSettings(normalized);
+}
+
+/**
+ * What this window stores for a project once its last Space deleted it (T11):
+ * its rail appearance and settings.
+ */
+export async function clearProjectSettings(path: string): Promise<void> {
+  const normalized = normalizeProjectPath(path);
+  const key = projectKey(normalized);
   // Drops the copied image from app data; the localStorage entry goes with it.
   await clearProjectLogo(key).catch(() => undefined);
   await clearProjectChatBackground(key).catch(() => undefined);
