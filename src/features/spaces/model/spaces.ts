@@ -80,7 +80,7 @@ export type SpaceProjectList = {
 /** T1 and T2: lists a project in the calling window's Space. */
 export function addProjectToSpace(
   projectPath: string,
-  knownToWindow: boolean,
+  { knownToWindow }: { knownToWindow: boolean },
 ): Promise<"assigned" | "linked"> {
   return invoke("spaces_project_add", { projectPath, knownToWindow });
 }

@@ -84,8 +84,9 @@ export function projectAfterLeaving(
   path: string,
   list: SpaceProjectState,
 ): RecentProject | undefined {
+  const left = spaceProjectKey(path);
   return shownProjects(recents, "", list).find(
-    (item) => looksLikeProject(item.path) && !sameProjectPath(item.path, path),
+    (item) => looksLikeProject(item.path) && spaceProjectKey(item.path) !== left,
   );
 }
 
@@ -100,7 +101,7 @@ export async function listProjectInSpace(path: string): Promise<boolean> {
     sameProjectPath(item.path, path),
   );
   try {
-    await addProjectToSpace(path, known);
+    await addProjectToSpace(path, { knownToWindow: known });
     return true;
   } catch (error) {
     console.warn(`monocode: ${path} was not listed:`, error);

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setHomeDir } from "../../../shared/lib/paths";
 import {
   archiveProject,
   projectRailItems,
@@ -131,7 +132,7 @@ describe("shown(S), one row per rule", () => {
       [],
     ],
     [
-      "P7: the open project keeps its row when out of Space, and only once",
+      "P7: the open project already in Space shows only once",
       () => paths(recents("/in"), "/in/", reply({ projects: listed("/in") })),
       ["/in"],
     ],
@@ -158,7 +159,22 @@ describe("shown(S), one row per rule", () => {
           "~/a",
           reply({ projects: listed(`${HOME}/a`) }),
         ),
-      [`${HOME}/a/`.replace(/\/$/, "/")],
+      [`${HOME}/a/`],
+    ],
+    [
+      "I10: a Windows drive path in another case is the same Space member",
+      () => paths(recents("C:/Work/App"), "", reply({ projects: listed("c:/work/app/") })),
+      ["C:/Work/App"],
+    ],
+    [
+      "I10: a UNC path in another case is the same Space member",
+      () =>
+        paths(
+          recents("//Server/Share/App"),
+          "",
+          reply({ projects: listed("//server/share/app") }),
+        ),
+      ["//Server/Share/App"],
     ],
     [
       "F6: an archived project with a stored fact stays hidden",
@@ -283,10 +299,17 @@ describe("the window's invariants", () => {
     expect(spaceProjectKey("~/a", HOME)).toBe(`${HOME}/a`);
     expect(spaceProjectKey("/a/", HOME)).toBe("/a");
   });
+
+  it("I10: keys a Windows drive or UNC path without its case", () => {
+    expect(spaceProjectKey("C:/A/", HOME)).toBe("c:/a");
+    expect(spaceProjectKey("//Server/Share", HOME)).toBe("//server/share");
+  });
 });
 
 describe("the move off a project (H1)", () => {
   const list = reply({ projects: listed("/gone", "/here") });
+
+  afterEach(() => setHomeDir(undefined));
 
   it("walks shown(S), never a recent out of Space", () => {
     expect(projectAfterLeaving(recents("/out", "/gone", "/here"), "/gone", list)?.path).toBe("/here");
@@ -302,6 +325,17 @@ describe("the move off a project (H1)", () => {
 
   it("is the same project however the path is written", () => {
     expect(projectAfterLeaving(recents(), "/gone/", reply({ projects: listed("/gone") }))).toBeUndefined();
+  });
+
+  it("is the same project when the path left is written ~/a", () => {
+    setHomeDir(HOME);
+    expect(
+      projectAfterLeaving(recents(`${HOME}/a`), "~/a", reply({ projects: listed(`${HOME}/a`) })),
+    ).toBeUndefined();
+  });
+
+  it("skips a row that is not a project folder, as the home folder", () => {
+    expect(projectAfterLeaving(recents(), "/gone", reply({ projects: listed(HOME, "/here") }))?.path).toBe("/here");
   });
 });
 
