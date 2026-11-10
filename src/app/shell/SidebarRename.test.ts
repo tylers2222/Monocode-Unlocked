@@ -556,27 +556,49 @@ describe("Spaces: the sidebar shows only the active Space", () => {
     expect(props.onSelectSession).not.toHaveBeenCalled();
   });
 
+  it("the rail saves a shared project of the Space into the rail order once the list answers", async () => {
+    // Space 2 lists /code/shared, which this window never opened.
+    spacesDb.active = "space-2";
+    spacesDb.projects.set("/code/shared", "space-2");
+    saveProjectRailOrder(["/workspace/project"]);
+    props = {
+      ...props,
+      recents: [{ path: "/workspace/project", openedAt: 1 }],
+      projectRailOpen: true,
+      compactProjectRail: false,
+      onSelectProject: vi.fn(),
+      // The rail mounts only with both handlers.
+      onOpenProject: vi.fn(),
+    };
+    await act(async () => render());
+    await settle();
+    expect(loadProjectRailOrder()).toContain("/code/shared");
+  });
+
   it.each([true, false])(
-    "saves a shared project of the Space into the rail order once the list answers (inset=%s)",
+    "saving the rail order in Space 2 keeps a Space 1 project's place (inset=%s)",
     async (inset) => {
-      // Space 2 lists /code/shared, which this window never opened.
       spacesDb.active = "space-2";
       spacesDb.projects.set("/code/shared", "space-2");
-      saveProjectRailOrder(["/workspace/project"]);
+      spacesDb.projects.set("/workspace/project", "space-2");
+      spacesDb.projects.set("/code/one", "space-1");
+      saveProjectRailOrder(["/code/one", "/workspace/project"]);
       props = {
         ...props,
         inset,
-        recents: [{ path: "/workspace/project", openedAt: 1 }],
+        recents: [
+          { path: "/code/one", openedAt: 2 },
+          { path: "/workspace/project", openedAt: 1 },
+        ],
         projectRailOpen: true,
         compactProjectRail: false,
         onSelectProject: vi.fn(),
-        // The rail mounts only with both handlers: without it the inset
-        // sidebar is the one that saves the order.
+        // Without the rail (no onOpenProject) the inset sidebar saves the order.
         onOpenProject: inset ? undefined : vi.fn(),
       };
       await act(async () => render());
       await settle();
-      expect(loadProjectRailOrder()).toContain("/code/shared");
+      expect(loadProjectRailOrder()).toContain("/code/one");
     },
   );
 

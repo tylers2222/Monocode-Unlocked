@@ -168,6 +168,7 @@ import { useSortable } from "../../shared/hooks/useSortable";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { normalizeHex } from "../../shared/lib/colorUtils";
 import {
+  archivedProjectsSnapshot,
   collectRailProjects,
   loadProjectRailOrder,
   looksLikeProject,
@@ -175,6 +176,7 @@ import {
   saveProjectRailOrder,
   isRemoteProjectPath,
   sameProjectPath,
+  subscribeArchivedProjects,
   type RecentProject,
 } from "../../features/projects/model/recents";
 import {
@@ -813,9 +815,13 @@ function SidebarComponent({
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const archivedProjects = useSyncExternalStore(
+    subscribeArchivedProjects,
+    archivedProjectsSnapshot,
+  );
   const spaceRecents = useMemo(
-    () => shownProjects(recents, cwd, spaces.projectList),
-    [recents, cwd, spaces.projectList],
+    () => shownProjects(recents, cwd, spaces.projectList, archivedProjects),
+    [recents, cwd, spaces.projectList, archivedProjects],
   );
   const listableSessions = mergeFolderSessionSummaries(
     projectSessions,
@@ -2217,7 +2223,7 @@ function SidebarComponent({
               <ProjectPickerPopover
                 anchor={anchor}
                 flyout={{ layer, attributes }}
-                projects={pickerProjects(spaceRecents, cwd)}
+                projects={pickerProjects(recents, cwd)}
                 currentProject={cwd}
                 onDismiss={onClose}
                 onSelectProject={onSelectProject}
@@ -2230,10 +2236,11 @@ function SidebarComponent({
       }
     : undefined;
   // The inset sidebar's spaces: the projects in the rail's order, the same
-  // one Project: Previous / Next steps through. Only the inset layout reads it.
+  // one Project: Previous / Next steps through.
   const spaceProjects = useMemo(
-    () => projectRailItems(spaceRecents, cwd).map((item) => item.path),
-    [spaceRecents, cwd],
+    () =>
+      inset ? projectRailItems(recents, cwd).map((item) => item.path) : [],
+    [inset, recents, cwd],
   );
   const swipeDestination = useRef<{ from: string; to: string } | null>(null);
   const onSwipeProject = useCallback(

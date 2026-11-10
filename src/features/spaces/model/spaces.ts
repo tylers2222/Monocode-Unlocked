@@ -93,7 +93,8 @@ export function addProjectToSpace(
 
 /** Archive and unarchive write only localStorage; this tells other windows. */
 export function notifySpaceProjectsChanged(): void {
-  // Only a courtesy to other windows: the write it reports has already landed.
+  // Only a courtesy to other windows. Open folder sends it before its adds
+  // answer; each add sends its own event, so other windows read again anyway.
   void invoke("spaces_project_notify_changed").catch(() => undefined);
 }
 

@@ -44,6 +44,7 @@ import { useTrafficLightsVisible } from "../../platform/tauri/useTrafficLightsVi
 import { formatInteger } from "../../shared/lib/numbers";
 import { pathKey, projectKey, projectName } from "../../shared/lib/paths";
 import {
+  archivedProjectsSnapshot,
   collectRailProjects,
   loadPinnedProjects,
   loadProjectRailOrder,
@@ -51,6 +52,7 @@ import {
   sameProjectPath,
   savePinnedProjects,
   saveProjectRailOrder,
+  subscribeArchivedProjects,
   subscribeProjectPathsChanged,
   syncProjectRailOrder,
   toggleProjectPin,
@@ -271,9 +273,13 @@ export function ProjectRail({
   // pins keep every Space's projects, and the open project always has its
   // row.
   const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const archivedProjects = useSyncExternalStore(
+    subscribeArchivedProjects,
+    archivedProjectsSnapshot,
+  );
   const shownRecents = useMemo(
-    () => shownProjects(recents, cwd, spaces.projectList),
-    [cwd, recents, spaces.projectList],
+    () => shownProjects(recents, cwd, spaces.projectList, archivedProjects),
+    [cwd, recents, spaces.projectList, archivedProjects],
   );
   const allProjects = useMemo(
     () => collectRailProjects([...recents, ...shownRecents], cwd),

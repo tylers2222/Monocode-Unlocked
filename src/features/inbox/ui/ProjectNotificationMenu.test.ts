@@ -22,7 +22,6 @@ vi.mock("@tauri-apps/api/core", () => ({
     // No Spaces yet: the rail shows no Space switcher.
     if (command === "spaces_list" || command === "spaces_logins_list") return [];
     if (command === "spaces_settings_get") return { activeSpaceId: "space-1" };
-    if (command === "spaces_project_get") return "space-1";
     return {
       root: "/work/private",
       commonDir: null,
