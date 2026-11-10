@@ -57,6 +57,8 @@ mod space_shared;
 mod spaces;
 #[cfg(not(windows))]
 mod spaces_commands;
+#[cfg(unix)]
+mod spawn_priority;
 #[cfg(not(windows))]
 mod wake_turn;
 mod world;

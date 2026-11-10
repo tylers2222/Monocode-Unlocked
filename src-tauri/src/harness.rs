@@ -1103,6 +1103,10 @@ pub fn harness_spawn<R: Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
+    // The session and everything it starts work below the interactive UI.
+    // Only here: a probe we wait on under a deadline must not be the process
+    // the disk throttles (ADE-259).
+    crate::background_work::configure_child(&mut cmd);
     apply_provider_account(&mut cmd, login.as_ref());
     if let Some(store) = &codex_store {
         let private_path = serde_json::to_string(&store.home).map_err(|e| e.to_string())?;
@@ -1826,8 +1830,12 @@ const SPAWN_CANCELLED: &str = "Harness start was cancelled";
 /// marker a later launch reads to recognise what this run left behind. Every
 /// harness spawn goes through here, probes included: a `--help` probe that
 /// hangs is a `node` process too, and an unmarked one is unreapable.
+///
+/// It keeps the caller's priority. On macOS the agents' disk throttle lets any
+/// normal-priority disk work starve a throttled process. A `node` probe that
+/// reads its modules from disk then missed its 15 s cap, and the spawn behind
+/// it failed (ADE-259). `harness_spawn` demotes the session itself.
 fn isolate_child(cmd: &mut Command) {
-    crate::background_work::configure_child(cmd);
     cmd.env(HARNESS_PARENT_ENV, std::process::id().to_string());
     #[cfg(unix)]
     {
