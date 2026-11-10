@@ -1,11 +1,19 @@
 //! ADE-277: the alarm text on rows that try to make it lie or fail: what an
-//! adversary pass on the change found, each shown red first.
+//! adversary pass and the mutation shards on the change found, each shown red
+//! first.
 
 use serde_json::json;
 
-use super::alarms_stall::{align, ran_a_turn, turn, MINUTE, N, PASS};
-use super::alarms_text::{insert_episode, lead, reminder, replied, Lead, HOSTILE, WAKE};
+use super::alarms_stall::{
+    align, claude_tap, episodes, ran_a_turn, turn, MINUTE, N, P, PASS, PERMISSION,
+};
+use super::alarms_text::{
+    finished, insert_episode, lead, line, reminder, replied, Lead, HOSTILE, WAKE, WINDOW,
+};
+use crate::alarms::taps::Pipe;
 use crate::alarms::test_taps;
+use crate::mono_completions;
+use crate::mono_messages;
 
 /// Row `id` names `to` as what it replies to, as the tests above write it.
 fn link_reply(scene: &Lead, id: &str, to: &str) {
@@ -260,5 +268,135 @@ fn an_unread_list_does_not_say_no_row_holds_the_work() {
             "{json}: {}",
             stuck.item
         );
+    }
+}
+
+// Defect (ADE-277): a dialog alarm does not tie the ask its running turn took.
+#[test]
+fn a_dialog_ties_the_ask_its_turn_took() {
+    let mut scene = lead("att-dialog-ask");
+    let taken = scene.ask("taken", "Taken by this turn");
+    let lead = scene.lead.clone();
+    let claude = claude_tap(&scene.world, &lead);
+    align(&mut scene.world);
+    scene.world.start_turn(&lead, "t1");
+    turn(&mut scene.world, &lead, "t1", true);
+    mono_messages::confirm_openers(&scene.world.conn(), &lead, "t1", scene.world.now()).unwrap();
+    claude.line(Pipe::Stdout, PERMISSION);
+    scene.world.advance(3 * MINUTE);
+    let text = scene.alarm();
+    assert_eq!(
+        line(&text, "Stuck item: "),
+        "Stuck item: permission dialog, 3 min old, on the Dialog line."
+    );
+    assert!(
+        line(&text, "Open work tied to it: ").contains(&taken),
+        "{text}"
+    );
+    assert_eq!(
+        line(&text, "Other open work: "),
+        "Other open work: 1 not tied to it (1 ask)."
+    );
+}
+
+// Defect (ADE-277): a notice's age is lost, so a newer notice listed first
+// beats the older one as the stuck item. The list order is set by hand, so
+// only the ages can pick the older one.
+#[test]
+fn the_older_notice_is_the_stuck_item_though_listed_second() {
+    let mut scene = lead("att-notices");
+    align(&mut scene.world);
+    let chat = scene.mono.chat.clone();
+    let child = scene.lead.clone();
+    scene
+        .world
+        .conn()
+        .execute("UPDATE mono_asks SET state = 'acked'", [])
+        .unwrap();
+    turn(&mut scene.world, &child, "c1", true);
+    ran_a_turn(&mut scene.world, &chat);
+    scene.world.advance(MINUTE);
+    turn(&mut scene.world, &child, "c1", false);
+    let newer = scene
+        .world
+        .add_session("att-notices-w", P, Some(child.as_str()));
+    ran_a_turn(&mut scene.world, &newer);
+    let rows = [
+        finished(&scene.mono, "req-1", &child, Some("notice-old")),
+        finished(&scene.mono, "req-2", &newer, Some("notice-new")),
+    ];
+    mono_completions::hold(&scene.world.conn(), WINDOW, &rows).unwrap();
+    scene.world.advance(WAKE + PASS);
+
+    let episode = episodes(&scene.world)
+        .into_iter()
+        .find(|episode| episode.cause == "wake_missed")
+        .unwrap();
+    let listed = json!([
+        {"kind": "notice", "id": "notice-new"},
+        {"kind": "notice", "id": "notice-old"},
+    ]);
+    scene
+        .world
+        .conn()
+        .execute(
+            "UPDATE alarm_episodes SET open_work_json = ?1 WHERE id = ?2",
+            rusqlite::params![listed.to_string(), episode.id],
+        )
+        .unwrap();
+    let stuck = test_taps::stuck(&scene.world.conn(), &episode.id, scene.world.active_ms());
+    assert!(
+        stuck.item.starts_with("notice notice-old: "),
+        "{}",
+        stuck.item
+    );
+    assert!(
+        stuck
+            .item
+            .ends_with("its session's last turn ended 3 min ago"),
+        "{}",
+        stuck.item
+    );
+}
+
+// Defect: the result that set the clock is not the item, or it is an older
+// one; the other result is not counted.
+#[test]
+fn the_child_result_that_ended_last_is_the_stuck_item() {
+    // Both id orders: the list order must not pick the result.
+    for (name, older, newer) in [
+        ("att-results-a", "atr-a-worker", "atr-z-worker"),
+        ("att-results-z", "atr-z-worker", "atr-a-worker"),
+    ] {
+        let mut scene = lead(name);
+        let lead_id = scene.lead.clone();
+        let older = scene.world.add_session(older, P, Some(lead_id.as_str()));
+        let newer = scene.world.add_session(newer, P, Some(lead_id.as_str()));
+        align(&mut scene.world);
+        ran_a_turn(&mut scene.world, &lead_id);
+        ran_a_turn(&mut scene.world, &older);
+        scene.world.advance(4 * MINUTE);
+        ran_a_turn(&mut scene.world, &newer);
+        scene.world.advance(N);
+
+        let episode = scene.episode();
+        let stuck = test_taps::stuck(&scene.world.conn(), &episode, scene.world.active_ms());
+        assert!(stuck.item.starts_with("the result of "), "{}", stuck.item);
+        assert!(
+            stuck.item.ends_with("its last turn ended 15 min ago"),
+            "{name}: {}",
+            stuck.item
+        );
+        assert_eq!(
+            stuck.work.unwrap().other,
+            vec![("ask", 1), ("child result", 1)]
+        );
+        // Every level's open work names both results, not only the ask.
+        let open = test_taps::open_work(&scene.world.conn(), &episode, scene.world.active_ms());
+        let results = open
+            .iter()
+            .filter(|line| line.starts_with("the result of ") && line.ends_with(" not read"))
+            .count();
+        assert_eq!(results, 2, "{name}: {open:?}");
     }
 }
