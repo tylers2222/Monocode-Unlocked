@@ -342,6 +342,18 @@ class WorkflowWiring(unittest.TestCase):
                               "        run: |\n" + textwrap.indent(CHANGES_STEP, " " * 10), body)
                 self.assertNotIn("pull_request.base.sha", body)
 
+    def test_every_changes_job_fetches_the_merge_and_its_parents_and_only_the_map(self):
+        """Depth 1 hides the merge's parents, so every PR would run every job; depth 2 is
+        the smallest that reads the diff (test_a_shallow_clone_that_holds_the_first_parent...)."""
+        callers = {path.name: path.read_text() for path in WORKFLOWS.glob("*.yml") if "ci_changes.py github" in path.read_text()}
+        for name, body in callers.items():
+            with self.subTest(workflow=name):
+                checkout = re.search(r"(?ms)^  changes:\n.*?- uses: actions/checkout@[^\n]*\n        with:\n((?:          [^\n]*\n)+)", body)
+                self.assertIsNotNone(checkout, "the changes job checks out the repo")
+                settings = re.findall(r"(?m)^          ([\w-]+): (\S+)$", checkout.group(1))
+                self.assertEqual(settings, [("fetch-depth", "2"), ("sparse-checkout", "scripts/process"),
+                                            ("persist-credentials", "false")])
+
 
 if __name__ == "__main__":
     unittest.main()
