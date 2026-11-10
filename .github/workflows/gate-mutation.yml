@@ -34,7 +34,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       base: ${{ steps.targets.outputs.base }}
-      baseline: ${{ steps.baseline.outputs.baseline }}
       rust: ${{ steps.targets.outputs.rust }}
       stryker: ${{ steps.targets.outputs.stryker }}
     steps:
@@ -57,20 +56,6 @@ jobs:
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           echo "base=$base" >> "$GITHUB_OUTPUT"
           git diff --unified=0 "$base" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
-
-      # mutation.sh's full pass skips its cargo test baseline only when this exact head
-      # already passed ci.yml's Linux cargo test (the check (ubuntu-latest) job). Most
-      # first pushes run before CI ends, so they run the baseline.
-      - name: Did this head already pass the test job
-        id: baseline
-        if: ${{ steps.targets.outputs.rust == 'yes' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ok=$(gh api "repos/$GATE_REPO/commits/$HEAD_SHA/check-runs?check_name=check%20(ubuntu-latest)" \
-                 --jq '[.check_runs[] | select(.conclusion == "success")] | length' 2>/dev/null) || ok=0
-          # An API error prints its body: only a plain count above 0 skips.
-          if [[ $ok =~ ^[0-9]+$ ]] && [ "$ok" -gt 0 ]; then echo baseline=skip; else echo baseline=run; fi | tee -a "$GITHUB_OUTPUT"
 
   rust:
     # No matrix value in the name: GitHub appends it per leg ("gate/mutation rust (0)"), and a
@@ -124,7 +109,9 @@ jobs:
           CARGO_MUTANTS: ${{ runner.temp }}/tools/bin/cargo-mutants
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           MERGE_BASE: ${{ needs.plan.outputs.base }}
-          MUTATION_BASELINE: ${{ needs.plan.outputs.baseline }}
+          # No MUTATION_BASELINE: pass 2 always runs its own baseline here. ci.yml's check job
+          # tests the merge ref in place after npm ci, not this head in cargo-mutants' copy,
+          # so its green does not prove this tree's baseline (#618 review r1 M1).
         run: |
           git diff "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
           bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources

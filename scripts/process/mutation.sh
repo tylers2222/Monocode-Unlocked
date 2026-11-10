@@ -10,7 +10,8 @@
 #                                  that reach the mutated modules, then cargo test on the
 #                                  whole package for every mutant pass 1 did not prove
 #                                  caught. MUTATION_BASELINE=skip skips pass 2's baseline
-#                                  (only when this head already passed the test job).
+#                                  (box-ci only, for a clean pushed head that passed
+#                                  the test job; gate-mutation.yml never sets it).
 #   mutation.sh ts <specs>         Stryker on the changed TypeScript lines; specs are
 #                                  mutation_targets.py's comma-separated path:start-end;
 #                                  stryker_scope.py decides (one run per file)
@@ -40,6 +41,14 @@ case ${1-} in
     shard=(--shard "${3:?k/n}" --sharding round-robin)
     # Half the CPUs: each job's build uses the rest (2 on a 4-vCPU runner, as before).
     jobs=$(( $(nproc) / 2 )); [ "$jobs" -ge 1 ] || jobs=1
+    # A shard with no mutants: cargo-mutants exits 0 and writes no outcomes.json, so pass 1
+    # has nothing to hand on. Green, as the single cargo-mutants run was. A failing --list
+    # stops the job (set -e), so a real error stays red.
+    shard_list=$("${mutants[@]}" "${shard[@]}" --list)
+    if [ -z "$shard_list" ]; then
+      echo "mutation: no mutants on shard $3 ($count in the whole diff), nothing to test"
+      exit 0
+    fi
     # cargo-nextest, pinned, into the job's own tools directory.
     tools=${RUNNER_TEMP:?}/tools/bin
     mkdir -p "$tools"
@@ -89,14 +98,17 @@ case ${1-} in
     fi
     # Pass 2, the verdict: cargo test on the whole package (the old run) for each mutant
     # pass 1 did not prove caught: exactly those names, or the whole shard when the names
-    # do not select them. Its baseline is skipped only when the caller proved this head
-    # already passed the test job (MUTATION_BASELINE=skip).
+    # do not select them. Its baseline is skipped only when the caller asks
+    # (MUTATION_BASELINE=skip, box-ci) and pass 1's baseline did not fail.
     pick=(); for r in "${again[@]}"; do pick+=(--re "$r"); done
     if [ "$rc" = 4 ] || [ "$("${mutants[@]}" "${pick[@]}" --list | grep -c .)" != "${#again[@]}" ]; then
       pick=("${shard[@]}")
     fi
-    if [ "${MUTATION_BASELINE:-run}" = skip ]; then base=(--baseline skip --timeout 600); else base=(--timeout-multiplier 3); fi
-    echo "mutation: pass 2, cargo test on the whole package for ${#again[@]} mutants (or the shard), baseline ${MUTATION_BASELINE:-run}"
+    # Exit 4 proved the unmutated tree fails here, so pass 2 runs its baseline (and fails
+    # red on it) even when the caller asked for skip: a skipped red baseline catches every mutant.
+    baseline=${MUTATION_BASELINE:-run}; [ "$rc" != 4 ] || baseline=run
+    if [ "$baseline" = skip ]; then base=(--baseline skip --timeout 600); else base=(--timeout-multiplier 3); fi
+    echo "mutation: pass 2, cargo test on the whole package for ${#again[@]} mutants (or the shard), baseline $baseline"
     rc=0
     "${mutants[@]}" "${pick[@]}" --jobs "$jobs" "${base[@]}" --output mutants.full || rc=$?
     if [ -f mutants.full/mutants.out/outcomes.json ] && [ -f mutants.out/outcomes.json ]; then
