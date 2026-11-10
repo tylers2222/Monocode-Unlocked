@@ -48,7 +48,8 @@ MASS_FAILURE = 10
 WATCH_ROWS = 20
 
 ROLLUP_STEP = re.compile(r"^Every (job|needed job) ")
-TEST_STEP = re.compile(r"^Run (the scenarios|the suites|npm (run )?test|cargo test|npx vitest|node --test|python3 -m unittest)")
+TEST_STEP = re.compile(r"^Run (the scenarios|the suites|npm (run )?test|cargo test|npx vitest|node --test|python3 -m unittest)"
+                       r"|\btests?\b", re.I)
 SETUP_STEP = re.compile(r"install|set up|setup|download|checkout|cache|\bapt\b|docker|image|toolchain|^Run actions/", re.I)
 
 
@@ -95,7 +96,8 @@ class Source:
             with open(path) as f:
                 doc = json.load(f)
             body = doc.get("body", doc)
-            self.keys.add(doc.get("key"))
+            if doc.get("key"):
+                self.keys.add(doc["key"])
             if not isinstance(body, dict):
                 continue
             for run in body.get("workflow_runs", []):

@@ -32,6 +32,12 @@ def clean_scenario_text(text):
     return (match.group(1) if match else text).strip()[:120]
 
 
+def unittest_name(match):
+    """Python 3.11+ prints the full id in the brackets; older ones print only the class."""
+    method, where = match.group(1), match.group(2)
+    return "unittest: " + (where if where.endswith("." + method) else "%s.%s" % (where, method))
+
+
 def parse_log(text):
     """Failed test names, repeats and the merge ref in one job's log."""
     out = {"ref": None, "tests": set(), "network": None, "repeats": {}}
@@ -72,7 +78,7 @@ def parse_log(text):
             in_summary = False
         for rule, make in ((CARGO, lambda m: "cargo: " + m.group(1)),
                            (VITEST, lambda m: "vitest: " + m.group(1)),
-                           (UNITTEST, lambda m: "unittest: %s.%s" % (m.group(2), m.group(1))),
+                           (UNITTEST, unittest_name),
                            (NODE, lambda m: "node: " + m.group(1))):
             hit = rule.match(line)
             if hit:

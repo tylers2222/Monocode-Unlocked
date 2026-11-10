@@ -66,6 +66,7 @@ class ParseLog(unittest.TestCase):
             STAMP + " FAIL  src/a.test.ts > group > does a thing",
             STAMP + " FAIL  src/live.test.ts [ src/live.test.ts ]",
             STAMP + "FAIL: test_it (test_mod.Case.test_it)",
+            STAMP + "ERROR: test_old (test_mod.Old)",
             STAMP + "✖ failing tests:",
             STAMP + "✖ node test name (1.2ms)",
         ])
@@ -74,9 +75,14 @@ class ParseLog(unittest.TestCase):
             "cargo: scenario::logins::a_real_srt_login",
             "vitest: src/a.test.ts > group > does a thing",
             "vitest: src/live.test.ts",
-            "unittest: test_mod.Case.test_it.test_it",
+            "unittest: test_mod.Case.test_it",
+            "unittest: test_mod.Old.test_old",
             "node: node test name",
         })
+
+    def test_a_test_playwright_passed_on_retry_is_named(self):
+        text = "  1 flaky\n    [webkit] › tests/browser/a.spec.ts:10:3 › opens a tab \n  3 passed (1.0m)\n"
+        self.assertEqual(flaky.parse_log(text)["tests"], {"browser: a.spec.ts › opens a tab"})
 
     def test_merge_ref_is_the_first_checkout_with_ansi_stripped(self):
         text = checkout(HEAD_A, BASE_1) + checkout(HEAD_B, BASE_2)
@@ -118,7 +124,11 @@ class ClassifyStep(unittest.TestCase):
         for step, want in (("Install omp 18.2.11 (sha256-checked release binary)", "setup"), ("Set up job", "setup"),
                            ("Run the scenarios", "test"), ("Run npm test", "test"), ("Run cargo test", "test"),
                            ("Every job passed or was skipped", "rollup"), ("Every needed job succeeded", "rollup"),
-                           ("ESLint", "check"), ("cargo mutants on the changed Rust lines", "check")):
+                           ("Run npm test -- --cache-dir x", "test"), ("Run npm run native:test:dev", "test"),
+                           ("scripts/process rule tests", "test"), ("Integrity probe test", "test"),
+                           ("Test native update backend", "test"), ("Run bash scripts/process/heavy-lock.test.sh", "test"),
+                           ("ESLint", "check"), ("cargo mutants on the changed Rust lines", "check"),
+                           ("Baselines only shrink", "check")):
             self.assertEqual(flaky.classify_step([step]), want, step)
         self.assertEqual(flaky.classify_step([]), "check")
 
@@ -144,6 +154,14 @@ class RefVerdict(unittest.TestCase):
     def test_new_run_on_the_same_base_is_the_same_ref(self):
         jobs = [job(1, 10), job(2, 11, "browser (1/6)", "success", **LATER)]
         self.assertEqual(self.verdict(jobs, {1: checkout(HEAD_A, BASE_1), 2: checkout(HEAD_A, BASE_1)}), "same_ref")
+
+    def test_new_run_with_only_the_failed_log_is_unread_not_same_ref(self):
+        jobs = [job(1, 10), job(2, 11, "browser (1/6)", "success", **LATER)]
+        self.assertEqual(self.verdict(jobs, {1: checkout(HEAD_A, BASE_1)}), "new_ref_unread")
+
+    def test_new_run_with_only_the_passing_log_is_unread_not_same_ref(self):
+        jobs = [job(1, 10), job(2, 11, "browser (1/6)", "success", **LATER)]
+        self.assertEqual(self.verdict(jobs, {2: checkout(HEAD_A, BASE_1)}), "new_ref_unread")
 
     def test_new_run_with_no_log_is_unread_and_never_the_same_ref(self):
         jobs = [job(1, 10), job(2, 11, "browser (1/6)", "success", **LATER)]
@@ -222,6 +240,18 @@ class Rank(unittest.TestCase):
         self.assertEqual(dict(ranked["tests"]), {})
         self.assertEqual(ranked["mass"][0][1], flaky.MASS_FAILURE + 1)
 
+    def test_exactly_mass_failure_tests_stay_per_test(self):
+        names = "".join("    [webkit] › tests/browser/a.spec.ts:%d:1 › t%d\n" % (i, i) for i in range(flaky.MASS_FAILURE))
+        ranked = Harness({1: "  10 failed\n" + names}).rank([job(1, 10)])
+        self.assertEqual((len(ranked["tests"]), ranked["mass"]), (flaky.MASS_FAILURE, []))
+
+    def test_failures_outside_the_window_and_in_skipped_workflows_are_left_out(self):
+        jobs = {1: job(1, 10), 2: job(2, 11, **LATER), 3: dict(job(3, 12, **LATER), workflow_name="gate-integrity")}
+        found = flaky.find_failures(jobs, since="2026-11-09T01:30:00Z", until="2026-11-09T03:00:00Z")
+        self.assertEqual([f["job"]["id"] for f in found], [2])
+        found = flaky.find_failures(jobs, until="2026-11-09T01:30:00Z")
+        self.assertEqual([f["job"]["id"] for f in found], [1])
+
     def test_same_ref_ranks_above_new_ref_whatever_the_minutes(self):
         same = {"same_ref": 1, "by_rule": 0, "repeat": 0, "est_minutes": 1.0}
         new = {"same_ref": 0, "by_rule": 0, "repeat": 0, "est_minutes": 99.0}
@@ -240,6 +270,23 @@ class Report(unittest.TestCase):
         self.assertIn("10#1", ranked)
         self.assertNotIn("a::b", text)
         self.assertIn("Left out of the lists: 1 tests", text)
+
+    def section(self, text, title):
+        return text.split(title)[1].split("\n## ")[0]
+
+    def test_a_repeat_only_row_is_in_the_ranked_list(self):
+        log = "== scenarios: r9 #1\nok\n== scenarios: r9 #2\n[giga-eval 07:24:28] ERROR: the Mono starts three leads\n"
+        text = self.build(Harness({1: log}), [job(1, 10, step="Run the scenarios")])
+        self.assertIn("scenario r9: the Mono starts three leads", self.section(text, "## Ranked"))
+
+    def test_a_by_rule_row_is_in_the_ranked_list(self):
+        text = self.build(Harness({1: PW_FAIL}), [job(1, 10), job(2, 10, "browser (1/6)", "success", 2, **LATER)])
+        self.assertIn("opens a tab", self.section(text, "## Ranked"))
+
+    def test_an_unread_new_ref_row_is_in_the_new_ref_list(self):
+        text = self.build(Harness({1: PW_FAIL}), [job(1, 10), job(2, 11, "browser (1/6)", "success", **LATER)])
+        self.assertIn("opens a tab", self.section(text, "## Passed only on a new ref"))
+        self.assertNotIn("opens a tab", self.section(text, "## Ranked"))
 
     def test_a_candidate_with_no_failure_says_so(self):
         text = self.build(Harness({}), [job(1, 10)], ["no such test"])
@@ -286,6 +333,41 @@ class Source(unittest.TestCase):
         h.source.fetch_run_jobs({"id": 1, "run_attempt": 1})
         h.source.log(2, fetch=True)
         self.assertTrue(all(c[:2] == ["gh", "api"] and len(c) == 3 for c in calls))
+
+    def test_logs_are_fetched_only_for_jobs_with_a_passing_pair(self):
+        calls = []
+
+        def runner(args, **_k):
+            calls.append(int(args[2].split("/")[-2]))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        h = Harness(runner=runner, budget=99, offline=False)
+        jobs = [job(1, 10),                                                      # test, paired: both logs
+                job(2, 10, "browser (1/6)", "success", 2, **LATER),
+                job(3, 20, "e2e", branch="y", step="Install omp"),               # setup, paired: its own log only
+                job(4, 20, "e2e", "success", 2, branch="y", **LATER),
+                job(5, 30, "ci", branch="z", step="Every job passed or was skipped"),  # rollup, paired: none
+                job(6, 30, "ci", "success", 2, branch="z", **LATER),
+                job(7, 40, "browser (2/6)", branch="w")]                         # test, unpaired: none
+        flaky.rank(flaky.find_failures({j["id"]: j for j in jobs}), h.source, fetch=True)
+        self.assertEqual(sorted(calls), [1, 2, 3])
+
+    def test_run_jobs_are_read_once_per_attempt(self):
+        calls = []
+
+        def runner(args, **_k):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"jobs": [job(1, 10)]}), stderr="")
+        h = Harness(runner=runner, budget=9, offline=False)
+        for _ in range(2):
+            h.source.fetch_run_jobs({"id": 10, "run_attempt": 1})
+        self.assertEqual(len(calls), 1)
+
+    def test_all_attempts_means_attempt_one_and_the_latest(self):
+        h = Harness()
+        h.source.jobs = {2: job(2, 10, attempt=2)}
+        self.assertFalse(h.source.has_all_attempts({"id": 10, "run_attempt": 2}))
+        h.source.jobs[1] = job(1, 10)
+        self.assertTrue(h.source.has_all_attempts({"id": 10, "run_attempt": 2}))
 
     def test_cache_and_raw_job_files_load_and_the_cache_is_not_written(self):
         with tempfile.TemporaryDirectory() as cache, tempfile.TemporaryDirectory() as store:
