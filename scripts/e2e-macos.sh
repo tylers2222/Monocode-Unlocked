@@ -83,8 +83,14 @@ run() {
   # The fx puppet's log and a copy of the instance database, to read the
   # failure from the artifact (ADE-124). Both hold only the run's own data.
   cp "$EVAL_HOME/.puppet/log.jsonl" "${log%.log}-puppet.jsonl" 2>/dev/null || true
-  sqlite3 "file:$EVAL_HOME/Library/Application Support/com.monocode.desktop.gigaeval/monocode.db?mode=ro" \
+  local data="$EVAL_HOME/Library/Application Support/com.monocode.desktop.gigaeval" habits
+  sqlite3 "file:$data/monocode.db?mode=ro" \
     ".backup '${log%.log}-failed.db'" 2>/dev/null || true
+  # A habit's run that ends before its first turn saves no session row; its
+  # error is only in the Mono's habits.json (ADE-273).
+  for habits in "$data"/monos/*/habits.json; do
+    cp "$habits" "${log%.log}-$(basename "$(dirname "$habits")")-habits.json" 2>/dev/null || true
+  done
   row "$suite" "$name" failed $((SECONDS - started)) \
     "exit $status: $(grep -m1 -E 'FAIL|ERROR' "$log" | tr '\t' ' ')"
   return 1
