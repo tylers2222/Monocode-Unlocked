@@ -401,10 +401,10 @@ describe("SpaceSwitcher", () => {
     await settle();
 
     expect(menu()).toBeNull();
-    // Nothing but the saved Space goes out: no stop, no kill, no other write.
+    // The saved Space and a read of its projects: no stop, no kill, no other write.
     expect(
       commands().filter((command) => command !== "provider_account_identity"),
-    ).toEqual(["spaces_settings_set"]);
+    ).toEqual(["spaces_settings_set", "spaces_project_list"]);
     expect(trigger().getAttribute("aria-label")).toBe("Space: Space 2");
     expect(line(trigger(), "claude").textContent).toBe("studio@example.com");
     expect(line(trigger(), "codex").textContent).toBe("No Codex login");

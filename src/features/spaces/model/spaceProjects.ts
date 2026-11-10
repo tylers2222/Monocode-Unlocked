@@ -1,9 +1,11 @@
 import { knownHomeDir, pathKey } from "../../../shared/lib/paths";
 import {
+  archiveProject,
   loadArchivedProjects,
   loadRecents,
   looksLikeProject,
   normalizeProjectPath,
+  rememberProject,
   sameProjectPath,
   type ArchivedProject,
   type RecentProject,
@@ -12,7 +14,11 @@ import {
   isGigaWorkspaceProject,
   isInGigaWorkspace,
 } from "../../projects/model/reservedProjectName";
-import { addProjectToSpace, type SpaceProjectList } from "./spaces";
+import {
+  addProjectToSpace,
+  notifySpaceProjectsChanged,
+  type SpaceProjectList,
+} from "./spaces";
 
 /** The window's list: not answered yet, unreadable (T14), or the reply. */
 export type SpaceProjectState = SpaceProjectList | "loading" | "failed";
@@ -107,4 +113,37 @@ export async function listProjectInSpace(path: string): Promise<boolean> {
     console.warn(`monocode: ${path} was not listed:`, error);
     return false;
   }
+}
+
+/**
+ * Open folder: lists each picked path in the Space, then opens them. Opening
+ * clears an archive entry, so other windows read the archive again.
+ */
+export function openListedProjects(
+  open: (paths: string[]) => void,
+): (paths: string[]) => void {
+  return (paths) => {
+    for (const path of paths) void listProjectInSpace(path);
+    open(paths);
+    notifySpaceProjectsChanged();
+  };
+}
+
+/** Archive writes only localStorage; other windows read the archive again. */
+export function archiveProjectInSpace(path: string): RecentProject[] {
+  const remaining = archiveProject(path);
+  notifySpaceProjectsChanged();
+  return remaining;
+}
+
+/** Restore (T2): the archive entry clears only once the Space has the project. */
+export async function restoreProjectInSpace(
+  path: string,
+  remembered: (recents: RecentProject[]) => void,
+  select: (path: string) => void,
+): Promise<void> {
+  if (!(await listProjectInSpace(path))) return;
+  remembered(rememberProject(path));
+  notifySpaceProjectsChanged();
+  select(path);
 }

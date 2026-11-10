@@ -798,8 +798,39 @@ const HANDLERS: Record<string, Handler> = {
     return { activeSpaceId: store.activeSpaceId, routeGrantTtlMs: 21_600_000 };
   },
   spaces_logins_list: (store) => store.spaceLogins,
-  spaces_project_get: (store, { projectPath }) =>
-    store.projectSpaces[projectPath as string] ?? "space-1",
+  // spaces/projects.rs list: the window's Space, from assigned rows and Monos.
+  spaces_project_list: (store) => {
+    const rows = Object.entries(store.projectSpaces);
+    const active = store.activeSpaceId;
+    const holders = new Map<string, string[]>();
+    for (const mono of store.monos) {
+      if (mono.spaceId !== active) continue;
+      const data = mono.data as { name?: string; projects?: string[] };
+      for (const path of data.projects ?? []) {
+        holders.set(path, [...(holders.get(path) ?? []), data.name ?? mono.id]);
+      }
+    }
+    const assigned = rows
+      .filter(([, space]) => space === active)
+      .map(([path]) => path);
+    const paths = [...new Set([...assigned, ...holders.keys()])];
+    return {
+      spaceId: active,
+      projects: paths.map((path) => ({
+        path,
+        assigned: assigned.includes(path),
+        linked: false,
+        monos: holders.get(path) ?? [],
+      })),
+      monoHeld: [...holders.keys()],
+      noRowIsHere: active === "space-1",
+      assignedElsewhere: rows
+        .filter(([path, space]) => space !== active && !holders.has(path))
+        .map(([path]) => path),
+    };
+  },
+  spaces_project_add: () => "linked",
+  spaces_project_notify_changed: none,
   spaces_project_logins_list: empty,
   spaces_project_login_set: none,
   // spaces/: each CLI's own login, and the writes the import and Settings send.

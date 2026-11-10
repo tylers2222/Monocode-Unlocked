@@ -211,6 +211,13 @@ export function loadArchivedProjects(): ArchivedProject[] {
   }
 }
 
+/** Another window may have changed the archive (T13). */
+export function notifyArchivedProjectsChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(ARCHIVED_CHANGED));
+  }
+}
+
 export function subscribeArchivedProjects(onChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
   window.addEventListener(ARCHIVED_CHANGED, onChange);

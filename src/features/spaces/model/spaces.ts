@@ -77,6 +77,12 @@ export type SpaceProjectList = {
   assignedElsewhere: string[];
 };
 
+export const SPACE_PROJECTS_CHANGED = "spaces:projects-changed";
+
+export function listSpaceProjects(): Promise<SpaceProjectList> {
+  return invoke<SpaceProjectList>("spaces_project_list");
+}
+
 /** T1 and T2: lists a project in the calling window's Space. */
 export function addProjectToSpace(
   projectPath: string,
@@ -119,9 +125,4 @@ export function refusalMessage(error: unknown): string {
     return String(error.message);
   }
   return String(error);
-}
-
-/** The Space `projectPath` belongs to, by the backend's one rule. */
-export function projectSpace(projectPath: string): Promise<string> {
-  return invoke<string>("spaces_project_get", { projectPath });
 }

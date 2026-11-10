@@ -3,14 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHomeDir } from "../../../shared/lib/paths";
 import {
   archiveProject,
+  loadArchivedProjects,
+  loadRecents,
   projectRailItems,
   rememberProject,
   type RecentProject,
 } from "../../projects/model/recents";
 import { pickerProjects } from "../../projects/ui/SearchableProjectPicker";
 import {
+  archiveProjectInSpace,
   listProjectInSpace,
+  openListedProjects,
   projectAfterLeaving,
+  restoreProjectInSpace,
   shownProjects,
   spaceProjectKey,
   type SpaceProjectState,
@@ -368,5 +373,63 @@ describe("listing a path the user added (T1, T2, H1)", () => {
       message: "stays",
     });
     warn.mockRestore();
+  });
+});
+
+describe("the window's project actions, with the Space (T1, T2)", () => {
+  const ALPHA = "/code/alpha";
+  const BETA = "/code/beta";
+  const NOTIFY = ["spaces_project_notify_changed"];
+
+  beforeEach(() => {
+    vi.stubGlobal("window", new EventTarget());
+    vi.mocked(invoke).mockClear();
+  });
+
+  it("Open folder lists each picked path, opens them all, then tells other windows", () => {
+    const open = vi.fn();
+    openListedProjects(open)([ALPHA, BETA]);
+    expect(open).toHaveBeenCalledExactlyOnceWith([ALPHA, BETA]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["spaces_project_add", { projectPath: ALPHA, knownToWindow: false }],
+      ["spaces_project_add", { projectPath: BETA, knownToWindow: false }],
+      NOTIFY,
+    ]);
+  });
+
+  it("Archive moves the project to the archive and tells other windows", () => {
+    rememberProject(BETA);
+    rememberProject(ALPHA);
+    vi.mocked(invoke).mockClear();
+    expect(archiveProjectInSpace(ALPHA).map((item) => item.path)).toEqual([BETA]);
+    expect(loadArchivedProjects().map((item) => item.path)).toEqual([ALPHA]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([NOTIFY]);
+  });
+
+  it("Restore remembers, tells other windows and selects once the Space lists it", async () => {
+    const remembered = vi.fn();
+    const select = vi.fn();
+    await restoreProjectInSpace(ALPHA, remembered, select);
+    expect(remembered).toHaveBeenCalledExactlyOnceWith(loadRecents());
+    expect(loadRecents().map((item) => item.path)).toEqual([ALPHA]);
+    expect(select).toHaveBeenCalledExactlyOnceWith(ALPHA);
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["spaces_project_add", { projectPath: ALPHA, knownToWindow: false }],
+      NOTIFY,
+    ]);
+  });
+
+  it("Restore changes nothing when the Space refuses the project", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(invoke).mockRejectedValueOnce({ code: "workspace", message: "stays" });
+    const remembered = vi.fn();
+    const select = vi.fn();
+    await restoreProjectInSpace(ALPHA, remembered, select);
+    expect(remembered).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+    expect(loadRecents()).toEqual([]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["spaces_project_add", { projectPath: ALPHA, knownToWindow: false }],
+    ]);
   });
 });

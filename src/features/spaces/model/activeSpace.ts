@@ -1,20 +1,27 @@
+import { listen } from "@tauri-apps/api/event";
 import type { Mono, MonoState } from "../../monos/model/mono";
+import {
+  notifyArchivedProjectsChanged,
+  notifyProjectPathsChanged,
+} from "../../projects/model/recents";
 import { DEFAULT_PROVIDER_ACCOUNT_ID } from "../../providers/model/providerAccounts";
 import {
   FIRST_SPACE,
   getSpaceSettings,
   listSpaceLogins,
+  listSpaceProjects,
   listSpaces,
-  projectSpace,
   setSpaceSettings,
+  SPACE_PROJECTS_CHANGED,
   type Space,
   type SpaceLogin,
   type SpaceLoginProvider,
 } from "./spaces";
+import type { SpaceProjectState } from "./spaceProjects";
 
 /**
  * The one model of the active Space: the Spaces, which one the window shows,
- * each Space's logins, and the Space of each project the rail asked about.
+ * each Space's logins, and the projects of the Space it shows.
  * `space_settings.active_space_id` in monocode.db is where the choice is
  * saved; the window reads it back at launch.
  */
@@ -24,8 +31,8 @@ export type SpacesView = {
   spaces: readonly Space[];
   activeSpaceId: string;
   logins: readonly SpaceLogin[];
-  /** Project path -> its Space, by the backend's rule. */
-  projectSpaces: ReadonlyMap<string, string>;
+  /** The shown Space's projects; it changes together with `activeSpaceId`. */
+  projectList: SpaceProjectState;
 };
 
 const UNREAD: SpacesView = {
@@ -33,13 +40,18 @@ const UNREAD: SpacesView = {
   spaces: [],
   activeSpaceId: FIRST_SPACE,
   logins: [],
-  projectSpaces: new Map(),
+  projectList: "loading",
 };
 let view = UNREAD;
 let loading: Promise<void> | undefined;
 /** Replaced on each saved switch; a read that began before it keeps it. */
 let lastSwitch: object = {};
-const asked = new Set<string>();
+/** Replaced on each list read; only the latest may answer (T13). */
+let listRequest: object = {};
+/** The Space the latest list read is for, until it answers. */
+let wantedSpace: string | undefined;
+/** Set while the window listens for project changes; cleared when it cannot. */
+let listening: Promise<unknown> | undefined;
 const listeners = new Set<() => void>();
 
 function publish(next: SpacesView): void {
@@ -55,21 +67,25 @@ export function spacesView(): SpacesView {
 export function __spacesTestReset(): void {
   view = UNREAD;
   loading = undefined;
-  asked.clear();
+  listRequest = {};
+  wantedSpace = undefined;
+  listening = undefined;
 }
 
 /** Subscribes; while no read has succeeded, each subscriber starts one. */
 export function subscribeSpaces(listener: () => void): () => void {
   listeners.add(listener);
+  listenForProjectChanges();
   if (!view.loaded) void loadSpaces();
+  else if (view.projectList === "failed") void refreshProjectList();
   return () => {
     listeners.delete(listener);
   };
 }
 
 /**
- * Reads the Spaces, the active one and every Space's logins, and asks each
- * project's Space again. A switch saved while it reads stays.
+ * Reads the Spaces, the active one, every Space's logins and the shown Space's
+ * projects. A switch saved while it reads stays.
  */
 export function loadSpaces(): Promise<void> {
   loading ??= readSpaces(lastSwitch);
@@ -79,18 +95,16 @@ export function loadSpaces(): Promise<void> {
 function readSpaces(seen: object): Promise<void> {
   return Promise.all([listSpaces(), getSpaceSettings(), listSpaceLogins()])
     .then(([spaces, settings, logins]) => {
-      asked.clear();
-      publish({
-        ...view,
-        loaded: true,
-        spaces,
-        activeSpaceId:
-          lastSwitch === seen ? settings.activeSpaceId : view.activeSpaceId,
-        logins,
-      });
+      const activeSpaceId =
+        lastSwitch === seen
+          ? settings.activeSpaceId
+          : (wantedSpace ?? view.activeSpaceId);
+      view = { ...view, loaded: true, spaces, logins };
+      return readProjectList(activeSpaceId);
     })
     .catch((error) => {
       console.error("monocode: could not read Spaces", error);
+      publish({ ...view, projectList: "failed" });
     })
     .finally(() => {
       loading = undefined;
@@ -98,14 +112,61 @@ function readSpaces(seen: object): Promise<void> {
 }
 
 /**
+ * Reads the list and shows it together with its Space, so a window never draws
+ * one Space's projects under another. A reply older than the latest request, or
+ * for a Space the window no longer wants, is dropped. A failed read shows every
+ * project (T14).
+ */
+function readProjectList(spaceId: string): Promise<void> {
+  const request = (listRequest = {});
+  wantedSpace = spaceId;
+  const show = (projectList: SpaceProjectState) => {
+    if (request !== listRequest) return;
+    wantedSpace = undefined;
+    publish({ ...view, activeSpaceId: spaceId, projectList });
+  };
+  return listSpaceProjects()
+    .then((list) => {
+      if (list.spaceId === spaceId) show(list);
+    })
+    .catch((error: unknown) => {
+      console.error("monocode: could not read the Space's projects", error);
+      show("failed");
+    });
+}
+
+/** Reads the list again for the Space the window shows or is switching to. */
+export function refreshProjectList(): Promise<void> {
+  return readProjectList(wantedSpace ?? view.activeSpaceId);
+}
+
+/** T13: recents and archive are the other half of what the window shows. */
+function reloadProjectStores(): void {
+  notifyProjectPathsChanged();
+  notifyArchivedProjectsChanged();
+}
+
+function listenForProjectChanges(): void {
+  listening ??= listen(SPACE_PROJECTS_CHANGED, () => {
+    reloadProjectStores();
+    if (view.loaded) void refreshProjectList();
+  }).catch((error: unknown) => {
+    listening = undefined;
+    console.warn("monocode: no project change events", error);
+  });
+}
+
+/**
  * Shows Space `id`. It only saves which Space the window shows (and where
- * new rows go): nothing running in any Space is stopped or changed.
+ * new rows go): nothing running in any Space is stopped or changed. The Space
+ * and its projects appear together once the list answers.
  */
 export async function switchSpace(id: string): Promise<void> {
-  if (id === view.activeSpaceId) return;
+  if (id === (wantedSpace ?? view.activeSpaceId)) return;
   const settings = await setSpaceSettings({ activeSpaceId: id });
   lastSwitch = {};
-  publish({ ...view, activeSpaceId: settings.activeSpaceId });
+  reloadProjectStores();
+  await readProjectList(settings.activeSpaceId);
 }
 
 /**
@@ -121,26 +182,6 @@ export function inActiveSpace(
   return (
     !spaces.loaded || spaceId === undefined || spaceId === spaces.activeSpaceId
   );
-}
-
-/**
- * Whether project `path` shows; asks the backend for its Space once per read
- * of the Spaces. Until the answer, the project shows.
- */
-export function projectInActiveSpace(
-  path: string,
-  spaces: SpacesView = view,
-): boolean {
-  if (!asked.has(path)) {
-    asked.add(path);
-    void projectSpace(path)
-      .then((space) => {
-        const projectSpaces = new Map(view.projectSpaces).set(path, space);
-        publish({ ...view, projectSpaces });
-      })
-      .catch(() => asked.delete(path));
-  }
-  return inActiveSpace(spaces.projectSpaces.get(path), spaces);
 }
 
 /**

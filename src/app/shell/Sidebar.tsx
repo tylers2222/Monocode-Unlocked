@@ -242,10 +242,10 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { useRailMonosPinned } from "../../features/settings/model/displayPrefs";
 import {
   inActiveSpace,
-  projectInActiveSpace,
   spacesView,
   subscribeSpaces,
 } from "../../features/spaces/model/activeSpace";
+import { shownProjects } from "../../features/spaces/model/spaceProjects";
 import type { PickerMonos } from "../../features/projects/ui/SearchableProjectPicker";
 import {
   MonoRailSection,
@@ -813,8 +813,9 @@ function SidebarComponent({
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
-  const spaceRecents = recents.filter((project) =>
-    projectInActiveSpace(project.path, spaces),
+  const spaceRecents = useMemo(
+    () => shownProjects(recents, cwd, spaces.projectList),
+    [recents, cwd, spaces.projectList],
   );
   const listableSessions = mergeFolderSessionSummaries(
     projectSessions,
@@ -2216,7 +2217,7 @@ function SidebarComponent({
               <ProjectPickerPopover
                 anchor={anchor}
                 flyout={{ layer, attributes }}
-                projects={pickerProjects(recents, cwd)}
+                projects={pickerProjects(spaceRecents, cwd)}
                 currentProject={cwd}
                 onDismiss={onClose}
                 onSelectProject={onSelectProject}
@@ -2229,11 +2230,10 @@ function SidebarComponent({
       }
     : undefined;
   // The inset sidebar's spaces: the projects in the rail's order, the same
-  // one Project: Previous / Next steps through.
+  // one Project: Previous / Next steps through. Only the inset layout reads it.
   const spaceProjects = useMemo(
-    () =>
-      inset ? projectRailItems(recents, cwd).map((item) => item.path) : [],
-    [inset, recents, cwd],
+    () => projectRailItems(spaceRecents, cwd).map((item) => item.path),
+    [spaceRecents, cwd],
   );
   const swipeDestination = useRef<{ from: string; to: string } | null>(null);
   const onSwipeProject = useCallback(

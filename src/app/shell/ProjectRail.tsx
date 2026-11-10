@@ -102,10 +102,10 @@ import { useProjectMenu } from "./useProjectMenu";
 import { MonoRailSection, type MonoRailProps } from "./MonoRailSection";
 import { SpaceSwitcher } from "../../features/spaces/ui/SpaceSwitcher";
 import {
-  projectInActiveSpace,
   spacesView,
   subscribeSpaces,
 } from "../../features/spaces/model/activeSpace";
+import { shownProjects } from "../../features/spaces/model/spaceProjects";
 import type { MonoState } from "../../features/monos/model/mono";
 
 const NO_MONO_STATES: ReadonlyMap<string, MonoState> = new Map();
@@ -267,9 +267,17 @@ export function ProjectRail({
     setInboxMenu(null);
   }, [visible]);
   const notificationPreferences = useProjectNotificationPreferences();
+  // Only what the rail shows follows the active Space: the saved order and
+  // pins keep every Space's projects, and the open project always has its
+  // row.
+  const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const shownRecents = useMemo(
+    () => shownProjects(recents, cwd, spaces.projectList),
+    [cwd, recents, spaces.projectList],
+  );
   const allProjects = useMemo(
-    () => collectRailProjects(recents, cwd),
-    [cwd, recents],
+    () => collectRailProjects([...recents, ...shownRecents], cwd),
+    [cwd, recents, shownRecents],
   );
   const notificationProjects = useNotificationProjects([...allProjects.keys()]);
   const menuTrigger = useRef<HTMLElement | null>(null);
@@ -282,20 +290,10 @@ export function ProjectRail({
     const status = notificationMuteStatus(notificationPreferences[project.id]);
     for (const path of project.paths) muteStatuses.set(pathKey(path), status);
   }
-  // Only what the rail shows follows the active Space: the saved order and
-  // pins keep every Space's projects, and the open project always has its
-  // row.
-  const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
-  const sections = useMemo(() => {
-    const all = projectRailSections(recents, cwd, railOrder, pinnedPaths);
-    const open = pathKey(cwd);
-    const shown = (item: RecentProject) =>
-      pathKey(item.path) === open || projectInActiveSpace(item.path, spaces);
-    return {
-      pinned: all.pinned.filter(shown),
-      projects: all.projects.filter(shown),
-    };
-  }, [cwd, pinnedPaths, railOrder, recents, spaces]);
+  const sections = useMemo(
+    () => projectRailSections(shownRecents, cwd, railOrder, pinnedPaths),
+    [cwd, pinnedPaths, railOrder, shownRecents],
+  );
   const groupedProjectSections = useMemo(() => {
     const byGroup = new Map<string, RecentProject[]>(
       projectGroups.map((group) => [group.id, []]),

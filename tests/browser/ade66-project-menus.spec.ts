@@ -31,6 +31,14 @@ test("project and project group menus offer no tab group actions", async ({
   });
   await app.mount(REAL_RAIL, {
     handlers: {
+      // The Giga root is listed only when a Mono in the Space has it.
+      spaces_project_list: (store) => ({
+        spaceId: store.activeSpaceId,
+        projects: [],
+        monoHeld: store.projects.filter((path) => path.endsWith("/MonoCode")),
+        noRowIsHere: true,
+        assignedElsewhere: [],
+      }),
       "plugin:dialog|message": (_store, { message }) => {
         if (!String(message).startsWith("MonoCode is reserved for the Giga"))
           throw new Error(`unexpected dialog: ${String(message)}`);
