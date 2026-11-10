@@ -23,7 +23,7 @@ const WINDOW: i64 = 15 * MINUTE;
 const ESCALATE: i64 = 15 * MINUTE;
 const HOUR: i64 = 60 * MINUTE;
 /// A queued item waits two minutes from the pass that first sees it.
-const WAKE_STALL: i64 = 2 * MINUTE + 2 * PASS;
+const WAKE_STALL: i64 = 4 * MINUTE + 2 * PASS;
 
 /// A Giga, its Mono, the Mono's lead and two workers of the lead, each with
 /// the longest deadline on its ask.
