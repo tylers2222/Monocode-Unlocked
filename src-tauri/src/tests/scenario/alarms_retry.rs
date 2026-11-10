@@ -23,6 +23,8 @@ use crate::mono_roster::MonoRole;
 const WAKE: i64 = 2 * MINUTE;
 /// The default escalation clock of a level.
 const ESCALATE: i64 = 15 * MINUTE;
+/// How long an idle-type stall waits while turns leave its item (ADE-276).
+const CEILING: i64 = 30 * MINUTE;
 const GIGA: &str = "mono:art-general";
 const ASSISTANT: &str = r#"{"type":"assistant"}"#;
 const ANSWER: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{"behavior":"allow"}}}"#;
@@ -410,10 +412,10 @@ fn repeated_drops_on_a_stall_that_never_moves_still_open_from_its_start() {
     assert_eq!(sends(&world), [GIGA, "tyler"]);
 }
 
-// Limit, stated in the PR body: real turns move the stall by the detector's own
-// rule (`wake_missed` counts from the turn end), so an agent whose turns keep
-// running while one item stays stuck alarms only once the turns stop, from the
-// last turn's end, and then escalates.
+// Real turns move the stall by the detector's own rule (`wake_missed` counts
+// from the turn end), so under the ceiling an agent whose turns keep running
+// while one item stays stuck alarms once the turns stop, from the last turn's
+// end, and then escalates.
 #[test]
 fn an_agent_that_flips_busy_and_idle_alarms_from_its_last_turn_end() {
     let mut world = World::new("alarm-retry-flips");
@@ -436,6 +438,64 @@ fn ran_a_turn_named(world: &mut World, session: &SessionId, name: &str) {
     turn(world, session, name, true);
     world.advance(MINUTE);
     turn(world, session, name, false);
+}
+
+// Defect: turns that come before the retry's wait ends, none taking the stuck
+// item, hide it for ever: each turn end restarts wake_missed, and the retry
+// and re-check read each turn as progress. Past the ceiling the alarm opens
+// from the wake's first sight, says the agent is alive, stays open through
+// more turns and reaches Tyler.
+#[test]
+fn turns_that_never_take_a_stuck_item_alarm_at_the_ceiling_from_its_start() {
+    let mut world = World::new("alarm-retry-ceiling");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
+    world.advance(PASS);
+    let seen: i64 = world
+        .conn()
+        .query_row(
+            "SELECT wake_pending_since_active_ms FROM agent_activity WHERE session_id = ?1",
+            [mono.chat.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut flip = 0;
+    while episodes(&world).is_empty() {
+        assert!(
+            world.active_ms() - seen < CEILING + 2 * WAKE,
+            "no alarm by the ceiling"
+        );
+        world.advance(2 * WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("flip-{flip}"));
+        flip += 1;
+    }
+    let (since, opened, text): (i64, i64, String) = world
+        .conn()
+        .query_row(
+            "SELECT e.stalled_since_active_ms, e.opened_active_ms, p.text
+               FROM alarm_episodes e JOIN alarm_prompts p ON p.episode_id = e.id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(since, seen, "the alarm keeps the stall's original start");
+    let gap = opened - since;
+    assert!((CEILING..CEILING + WAKE).contains(&gap), "{gap}");
+    assert!(
+        text.contains("taking turns, but the item has not moved"),
+        "{text}"
+    );
+    assert_eq!(sends(&world), [GIGA]);
+
+    for more in 0..4 {
+        world.advance(2 * WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("more-{more}"));
+    }
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert!(episode.open, "a turn that leaves the item is no progress");
+    assert_eq!(sends(&world), [GIGA, "tyler"]);
 }
 
 // The climb after a drop reaches each provisioner on its own clock.

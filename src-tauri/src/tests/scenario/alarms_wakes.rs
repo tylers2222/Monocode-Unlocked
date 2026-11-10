@@ -263,6 +263,32 @@ fn a_finished_result_no_turn_took_is_wake_missed() {
     }
 }
 
+// Defect (review r1b M2): the user stopped the Mono's queue, and the paused
+// rule hid the result a finished session owes it with the rest of the queue,
+// so no turn and no alarm ever takes it (ADE-271).
+#[test]
+fn a_result_owed_to_a_mono_the_user_stopped_still_alarms() {
+    let mut world = World::new("alarm-finished-user-stop");
+    world.add_mono_in("als-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("als-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "als-lead");
+    align(&mut world);
+    turn(&mut world, &lead, "lead-turn", true);
+    hold(&world, &[watching(&mono, "req-1", &lead)]);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "left-1"}]), "paused");
+
+    turn(&mut world, &lead, "lead-turn", false);
+    hold(&world, &[finished(&mono, "req-1", &lead)]);
+    world.advance(4 * MINUTE + 3 * PASS);
+    let [episode] = <[_; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        (episode.actor.as_str(), episode.cause.as_str()),
+        ("mono:als-mono", "wake_missed")
+    );
+    assert_eq!(listed_notices(&world), ["req-1"], "the result only");
+}
+
 /// Mono `alb-mono` handed work to `alb-lead`, whose turn runs, and ended its
 /// own turn: the row is bare.
 fn monitoring_a_running_session(name: &str) -> (World, Mono, SessionId) {

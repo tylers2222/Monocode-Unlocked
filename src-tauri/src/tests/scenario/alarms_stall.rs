@@ -613,8 +613,9 @@ fn wake(world: &mut World, kind: &str, giga: &Mono, mono: &Mono) {
 }
 
 // Defect (S1 r2 F1): only a paused queue's own items are exempt, so a
-// paused chat's claimed reminder, untaken message or completion result
-// still alarms its Giga as wake_missed.
+// paused chat's claimed reminder or untaken message still alarms its Giga as
+// wake_missed. A completion result owed to the chat is the exception (review
+// r1b M2a, ADE-271): a user Stop holds the queue, not the result.
 #[test]
 fn a_paused_chat_misses_no_wake_on_any_path() {
     for kind in ["message", "reminder", "notice", "queued"] {
@@ -626,6 +627,11 @@ fn a_paused_chat_misses_no_wake_on_any_path() {
         wake(&mut world, kind, &giga, &mono);
         set_queue_status(&world, &mono.chat, "paused");
         world.advance(N);
+        if kind == "notice" {
+            let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+            assert_eq!(episode.cause, "wake_missed", "{kind}: a result is owed");
+            continue;
+        }
         assert_eq!(episodes(&world), Vec::new(), "{kind}: paused on purpose");
 
         set_queue_status(&world, &mono.chat, "active");
