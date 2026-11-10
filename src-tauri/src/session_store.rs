@@ -362,8 +362,8 @@ pub fn session_list_by_project(
 }
 
 #[tauri::command(async)]
-pub fn session_rebase_project(
-    app: AppHandle,
+pub fn session_rebase_project<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, SessionStore>,
     from_cwd: String,
     to_cwd: String,

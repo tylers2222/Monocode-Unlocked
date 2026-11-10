@@ -1,11 +1,15 @@
 //! ADE-263, T12: what follows a project when `rebase_project` moves it. On an
 //! in-memory store, with a temp folder for the lease. No test opens real data.
 
+use std::sync::{Arc, Mutex};
+
 use rusqlite::params;
 use serde_json::json;
+use tauri::{Listener, Manager};
 
-use crate::session_store::{rebase_project, SessionStore};
+use crate::session_store::{rebase_project, session_rebase_project, SessionStore};
 use crate::spaces::{self, FIRST_SPACE};
+use crate::{milestones, mono_roster};
 
 const TWO: &str = "space-2";
 const OLD: &str = "/work/old";
@@ -426,5 +430,83 @@ fn every_stored_form_of_the_old_path_is_moved_once() {
         rig.strings("SELECT cwd FROM sessions WHERE id = 'relative'"),
         [NEW],
         "no project key: the path as written moves"
+    );
+}
+
+/// Defect: the rename command stops calling the rename, takes an empty path, or
+/// tells no window: each path's milestones, the project list and every roster
+/// must hear of it.
+#[test]
+fn the_rename_command_moves_the_project_and_tells_every_window() {
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open_in_memory().unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let store = || app.state::<SessionStore>();
+    spaces::create(&store(), "Space 2", None, 1).unwrap();
+    let sql = |sql: &str| store().lock_conn().unwrap().execute(sql, []).unwrap();
+    sql(&format!(
+        "INSERT INTO space_projects (project_path, space_id) VALUES ('{OLD}', '{TWO}')"
+    ));
+    sql(&format!(
+        "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+         VALUES ('s', '{OLD}', 'codex', 'm', 'auto', 't', 1, 1)"
+    ));
+    let rows = |sql: &str| -> Vec<String> {
+        store()
+            .lock_conn()
+            .unwrap()
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+    for event in [
+        milestones::CHANGED,
+        spaces::projects::CHANGED,
+        mono_roster::CHANGED_EVENT,
+    ] {
+        let heard = heard.clone();
+        app.listen_any(event, move |message| {
+            let path = serde_json::from_str::<serde_json::Value>(message.payload())
+                .ok()
+                .and_then(|payload| payload["projectPath"].as_str().map(str::to_owned));
+            let line = match path {
+                Some(path) if event == milestones::CHANGED => format!("{event} {path}"),
+                _ => event.to_owned(),
+            };
+            heard.lock().unwrap().push(line);
+        });
+    }
+    let rename = |from: &str, to: &str| {
+        session_rebase_project(app.handle().clone(), store(), from.into(), to.into())
+    };
+
+    assert!(rename(" ", NEW).is_err(), "an empty old path");
+    assert!(rename(OLD, "").is_err(), "an empty new path");
+    assert!(
+        heard.lock().unwrap().is_empty(),
+        "a refused rename told a window"
+    );
+
+    rename(OLD, NEW).unwrap();
+    assert_eq!(
+        rows("SELECT project_path || ' ' || space_id FROM space_projects"),
+        [format!("{NEW} {TWO}")]
+    );
+    assert_eq!(rows("SELECT cwd FROM sessions"), [NEW]);
+    let mut heard = heard.lock().unwrap().clone();
+    heard.sort();
+    assert_eq!(
+        heard,
+        [
+            format!("{} {NEW}", milestones::CHANGED),
+            format!("{} {OLD}", milestones::CHANGED),
+            mono_roster::CHANGED_EVENT.to_owned(),
+            spaces::projects::CHANGED.to_owned(),
+        ]
     );
 }
