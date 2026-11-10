@@ -632,7 +632,10 @@ fn a_paused_chat_misses_no_wake_except_an_owed_completion_result() {
         world.advance(N);
         if kind == "notice" {
             let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
-            assert_eq!(episode.cause, "wake_missed", "{kind}: a result is owed");
+            assert_eq!(
+                episode.cause, "wake_missed",
+                "{kind}: a result is owed (ADE-271)"
+            );
             continue;
         }
         assert_eq!(episodes(&world), Vec::new(), "{kind}: paused on purpose");

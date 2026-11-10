@@ -184,6 +184,11 @@ fn a_retry_that_starts_no_turn_opens_one_alarm_and_does_not_retry_again() {
     assert_eq!(named(&mut world, PASS, &mono.chat), 0);
     assert_one_alarm_from_the_first_sight(&world, &mono.chat, WAKE);
     assert_eq!(sends(&world), [GIGA]);
+    // Review r2 M2 (turned_since): no turn since the stall began, so the alarm
+    // says its own cause, not that the agent is taking turns.
+    let text = first_prompt(&world);
+    assert!(text.contains("a wake not taken"), "{text}");
+    assert!(!text.contains("taking turns"), "{text}");
 
     assert_eq!(
         named(&mut world, ESCALATE, &mono.chat),
@@ -496,6 +501,201 @@ fn turns_that_never_take_a_stuck_item_alarm_at_the_ceiling_from_its_start() {
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
     assert!(episode.open, "a turn that leaves the item is no progress");
     assert_eq!(sends(&world), [GIGA, "tyler"]);
+
+    // Review r2 M2 (still_stuck): the turn that takes the item ends it.
+    save_queue(&world, &mono.chat, json!([]), "active");
+    ran_a_turn_named(&mut world, &mono.chat, "takes-it");
+    world.advance(PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert!(!episode.open, "the item moved, so the alarm closes");
+}
+
+/// The text of the first alarm prompt written.
+fn first_prompt(world: &World) -> String {
+    world
+        .conn()
+        .query_row(
+            "SELECT text FROM alarm_prompts ORDER BY rowid LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+// Defect (review r2 M2, still_stuck): a wake_missed alarm under the ceiling
+// stays open through a turn while its item waits, as only a ceiling alarm may.
+#[test]
+fn an_alarm_under_the_ceiling_closes_on_the_next_turn() {
+    let mut world = World::new("alarm-retry-under-ceiling");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
+    world.advance(2 * WAKE + 2 * PASS);
+    assert_eq!(sends(&world), [GIGA]);
+    ran_a_turn_named(&mut world, &mono.chat, "a-turn");
+    world.advance(PASS);
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert!(!episode.open, "a turn is progress under the ceiling");
+}
+
+// Defect (review r2 M2, run_start): a wake that cleared and came back goes on
+// the old run, so the ceiling fires early for the new one. A message has no
+// item id, so only the run's start bounds it.
+#[test]
+fn a_wake_that_clears_and_comes_back_starts_a_new_run() {
+    let (mut world, giga, mono) = message_waiting("alarm-retry-new-run");
+    for flip in 0..5 {
+        world.advance(2 * WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("old-{flip}"));
+    }
+    world.start_turn(&mono.chat, "takes-it");
+    turn(&mut world, &mono.chat, "takes-it", true);
+    world.advance(MINUTE);
+    turn(&mut world, &mono.chat, "takes-it", false);
+    world.end_turn(&mono.chat, "takes-it", true);
+    world.advance(5 * MINUTE);
+    assert_eq!(episodes(&world), Vec::new(), "the old run ended");
+
+    align(&mut world);
+    send(&world, &giga, &mono, "wake-2");
+    world.advance(PASS);
+    let seen = wake_seen(&world, &mono.chat);
+    let mut flip = 0;
+    while world.active_ms() - seen < CEILING - 2 * WAKE {
+        world.advance(2 * WAKE - MINUTE);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("new-{flip}"));
+        flip += 1;
+    }
+    assert_eq!(
+        episodes(&world),
+        Vec::new(),
+        "no ceiling before the new run's"
+    );
+}
+
+// Defect (review r2 M2, the turning line): a cause that is not idle-type says
+// it is taking turns once its agent ran a turn, though the turn says nothing
+// of it. A missing sleep hold stays open through turns, so its escalation is
+// the alarm that is read after one.
+#[test]
+fn an_alarm_that_is_not_idle_type_never_says_taking_turns() {
+    let mut world = World::new("alarm-retry-turning-words");
+    let (_, mono) = add_monos(&world);
+    let lead = start_lead(&world, &mono, "art-lead");
+    align(&mut world);
+    ran_a_turn(&mut world, &lead);
+    let since = world.active_ms();
+    world
+        .conn()
+        .execute(
+            "INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json,
+               stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms,
+               level, next_escalate_active_ms)
+             VALUES ('al_hold', 'session:art-lead', 'art-mono', 'mono:art-mono', 'hold_missing',
+               '[]', ?1, 1, ?1, 1, 1, ?2)",
+            rusqlite::params![since, since + 2 * MINUTE],
+        )
+        .unwrap();
+    ran_a_turn_named(&mut world, &lead, "after-it");
+    world.advance(2 * MINUTE);
+    let text: String = world
+        .conn()
+        .query_row(
+            "SELECT text FROM alarm_prompts WHERE episode_id = 'al_hold'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(text.contains("sleep hold missing"), "{text}");
+    assert!(!text.contains("taking turns"), "{text}");
+}
+
+// Review r2 probe P10: a stuck item with turns every 90 s alarms by the
+// ceiling, from the item's first sight.
+#[test]
+fn a_stuck_item_with_turns_every_90_s_alarms_by_the_ceiling() {
+    let mut world = World::new("alarm-retry-p10");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "stuck-1"}]), "active");
+    world.advance(PASS);
+    let seen = wake_seen(&world, &mono.chat);
+    let mut flip = 0;
+    while episodes(&world).is_empty() && world.active_ms() - seen < CEILING + N {
+        world.advance(30 * SECOND);
+        ran_a_turn_named(&mut world, &mono.chat, &format!("p10-{flip}"));
+        flip += 1;
+    }
+    let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(episode.cause, "idle_open_work");
+}
+
+// Review r2 probe P11 and m2: a queue whose head item each turn takes, the next
+// already queued, 3 idle minutes between turns, is waking, not stuck. No
+// ceiling alarm says its item has not moved.
+#[test]
+fn a_queue_that_moves_every_turn_gets_no_ceiling_alarm() {
+    let mut world = World::new("alarm-retry-p11");
+    let (_, mono) = add_monos(&world);
+    align(&mut world);
+    ran_a_turn(&mut world, &mono.chat);
+    let items: Vec<String> = (0..40).map(|k| format!("item-{k}")).collect();
+    save_queue(
+        &world,
+        &mono.chat,
+        json!([{"id": items[0]}, {"id": items[1]}]),
+        "active",
+    );
+    for k in 1..20 {
+        world.advance(2 * WAKE - MINUTE);
+        turn(&mut world, &mono.chat, &format!("take-{k}"), true);
+        save_queue(
+            &world,
+            &mono.chat,
+            json!([{"id": items[k]}, {"id": items[k + 1]}]),
+            "active",
+        );
+        world.advance(MINUTE);
+        turn(&mut world, &mono.chat, &format!("take-{k}"), false);
+    }
+    let texts: Vec<String> = world
+        .conn()
+        .prepare("SELECT text FROM alarm_prompts")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        !texts.iter().any(|text| text.contains("taking turns")),
+        "{texts:?}"
+    );
+}
+
+// Review r2 probes P8 and P9 (ruling B, open work): an agent with an open ask
+// and turns 10 min or 90 s apart never stalls. Ignored: open work has no item
+// first sight, and keeping one (the ask's) would alarm every ask a lead works
+// on for more than a ceiling. This needs the orchestrator's decision.
+#[test]
+#[ignore = "needs a ruling: open work has no first sight (review r2 M1)"]
+fn open_work_with_turns_10_min_or_90_s_apart_alarms_by_the_ceiling() {
+    for gap in [9 * MINUTE, 30 * SECOND] {
+        let mut world = World::new(&format!("alarm-retry-p8-{gap}"));
+        let (_, mono) = add_monos(&world);
+        let lead = start_lead(&world, &mono, "art-lead");
+        align(&mut world);
+        ran_a_turn(&mut world, &lead);
+        let start = world.active_ms();
+        let mut flip = 0;
+        while episodes(&world).is_empty() && world.active_ms() - start < CEILING + N {
+            world.advance(gap);
+            ran_a_turn_named(&mut world, &lead, &format!("p8-{flip}"));
+            flip += 1;
+        }
+        assert_eq!(episodes(&world).len(), 1, "{gap}");
+    }
 }
 
 /// When `session`'s wake was first seen waiting.

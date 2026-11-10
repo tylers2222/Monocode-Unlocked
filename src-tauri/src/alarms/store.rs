@@ -696,7 +696,8 @@ impl Pass<'_> {
                 let now = (self.active, self.wall);
                 let stall = (cause, stalled_since);
                 let seen = facts.wake_pending_since.unwrap_or(stalled_since);
-                let ceiling = wake_retry::past_ceiling(tx, actor, stall, (seen, self.active));
+                let ceiling =
+                    wake_retry::past_ceiling(tx, actor, stall, (seen, waiting, self.active));
                 // Under the ceiling, neither writes an episode: the next pass
                 // judges the agent again, so a stall that lasts still opens.
                 if ceiling.is_none()

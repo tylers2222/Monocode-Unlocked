@@ -42,16 +42,18 @@ pub(super) const CEILING_MS: i64 = 30 * MINUTE_MS;
 
 /// The original start of an idle-type stall that began a ceiling ago or more.
 /// A turn end restarts wake_missed, but while the same wake waits (first
-/// `seen` then), the stall began where its run of retries began.
+/// `seen` then), the stall began where its run of retries began. A wake that
+/// is an item counts from no earlier than that item's first sight (`items`):
+/// a queue whose items move on every turn is waking, not stuck (review r2 m2).
 pub(super) fn past_ceiling(
     tx: &Connection,
     actor: &Actor,
     (cause, stalled_since): (Cause, i64),
-    (seen, active): (i64, i64),
+    (seen, items, active): (i64, Option<i64>, i64),
 ) -> Option<i64> {
     let since = match cause {
         Cause::WakeMissed => match run_start(tx, actor, (stalled_since, seen)) {
-            Ok(start) => start,
+            Ok(start) => items.map_or(start, |first| start.max(first)),
             Err(error) => {
                 eprintln!("Could not read the retries of {actor}: {error}");
                 stalled_since
@@ -99,9 +101,12 @@ pub(super) fn still_stuck(
     facts: &Facts,
 ) -> bool {
     let waits = match episode.cause {
-        Ok(Cause::WakeMissed) => facts
-            .wake_pending_since
-            .is_some_and(|seen| seen <= episode.stalled_since),
+        Ok(Cause::WakeMissed) => {
+            facts
+                .wake_pending_since
+                .is_some_and(|seen| seen <= episode.stalled_since)
+                && !item_moved(tx, actor, episode.stalled_since)
+        }
         Ok(Cause::IdleOpenWork) => item_waits(tx, actor, episode.stalled_since),
         _ => false,
     };
@@ -120,6 +125,22 @@ pub(super) fn still_stuck(
             false
         }
     }
+}
+
+/// Whether `actor` has items waiting and none of them was first seen by
+/// `since`: the item its alarm was for moved. A failure here says no.
+fn item_moved(tx: &Connection, actor: &Actor, since: i64) -> bool {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM alarm_wake_items WHERE actor = ?1)
+            AND NOT EXISTS (SELECT 1 FROM alarm_wake_items
+                             WHERE actor = ?1 AND first_seen_active_ms <= ?2)",
+        params![actor.to_string(), since],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Could not read the waiting items of {actor}: {error}");
+        false
+    })
 }
 
 /// Whether an item `actor`'s ceiling counts from, first seen by `since`,
