@@ -580,18 +580,15 @@ fn serve<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, inner: &Arc<Mute
             action: request.action,
             input: request.input,
         };
-        if call.namespace == "app" && call.action.starts_with("alarms.") {
+        let store_action = call.action.starts_with("alarms.") || call.action.starts_with("ci.");
+        if call.namespace == "app" && store_action {
             let grant = {
                 let host = inner.lock().map_err(|_| "Control service unavailable")?;
                 request_grant(&host, "app", &request.token)?
             };
-            return alarm_call(app, inner, &grant, call, &mut emit, REPLY_WAIT);
-        }
-        if call.namespace == "app" && call.action.starts_with("ci.") {
-            let grant = {
-                let host = inner.lock().map_err(|_| "Control service unavailable")?;
-                request_grant(&host, "app", &request.token)?
-            };
+            if call.action.starts_with("alarms.") {
+                return alarm_call(app, inner, &grant, call, &mut emit, REPLY_WAIT);
+            }
             let store = app.state::<SessionStore>();
             let conn = store.lock_conn()?;
             return Ok(crate::ci_watch::call(
