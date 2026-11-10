@@ -81,7 +81,6 @@ function context(
     lastPersisted: { current: new Map(sessions.map((s) => [s.id, "saved"])) },
     loadedSessionCache: { current: new Map<string, Session>() },
     turnWatchers: { current: { cancel: vi.fn() } },
-    activeTabId,
     invalidateLoadedSession: vi.fn(),
     persistSession: vi.fn(),
     onSelectProject: vi.fn(),
@@ -341,7 +340,6 @@ describe("what the window shows after", () => {
     const tabs = [newTab(first.id), newTab(keep.id), newTab(gone.id)];
     const ctx = context([first, keep, gone], tabs, {
       activeTabIdRef: { current: tabs[1].id },
-      activeTabId: tabs[1].id,
     });
     removeProjectFromWindow(ctx, P, null);
     expect(ctx.activeTabIdRef.current).toBe(tabs[1].id);
@@ -454,7 +452,7 @@ describe("the route", () => {
 });
 
 describe("the hook", () => {
-  it("gives the guards the open sessions, and acts on the latest state", async () => {
+  it("gives the guards the open sessions, and acts on this render's state", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     let handler!: ReturnType<typeof useProjectWindowRemoval>;
     const Harness = ({ ctx }: { ctx: ProjectRemovalContext }) => {
@@ -464,14 +462,12 @@ describe("the hook", () => {
     const root = createRoot(document.createElement("div"));
     const first = context([session("a")], [newTab("a")]);
     await act(async () => root.render(createElement(Harness, { ctx: first })));
-    const source = vi.mocked(setOpenSessionsSource).mock.calls[0][0];
+    const source = () => vi.mocked(setOpenSessionsSource).mock.lastCall![0]();
     expect(ids([...source()])).toEqual(["a"]);
-    const stable = handler;
 
     const second = context([session("b", { cwd: OTHER })], [newTab("b")]);
     await act(async () => root.render(createElement(Harness, { ctx: second })));
     expect(ids([...source()])).toEqual(["b"]);
-    expect(handler).toBe(stable);
 
     handler(P, { purgeData: false });
     expect(second.setRecents).toHaveBeenCalled();

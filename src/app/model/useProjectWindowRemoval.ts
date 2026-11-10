@@ -1,7 +1,5 @@
 import {
   useEffect,
-  useRef,
-  useState,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -52,7 +50,6 @@ export type ProjectRemovalContext = {
   lastPersisted: Ref<Map<string, string>>;
   loadedSessionCache: Ref<Map<string, Session>>;
   turnWatchers: Ref<{ cancel: (id: string, reason?: string) => void }>;
-  activeTabId: string;
   invalidateLoadedSession: (sessionId: string) => void;
   persistSession: (session: Session | undefined) => void;
   onSelectProject: (path: string) => void;
@@ -122,7 +119,8 @@ function showRemainingWork(
 ): void {
   let nextTabs = remainingTabs;
   let nextSessions = remainingSessions;
-  let nextActiveTabId = ctx.activeTabIdRef.current;
+  const shownTabId = ctx.activeTabIdRef.current;
+  let nextActiveTabId = shownTabId;
   if (nextTabs.length === 0) {
     const session = newDefaultSession("~", nextSessions[0]?.runtimeMode);
     const tab = newTab(session.id);
@@ -137,7 +135,7 @@ function showRemainingWork(
   ctx.activeTabIdRef.current = nextActiveTabId;
   ctx.setSessions(nextSessions);
   ctx.setTabs(nextTabs);
-  if (nextActiveTabId !== ctx.activeTabId) ctx.setActiveTabId(nextActiveTabId);
+  if (nextActiveTabId !== shownTabId) ctx.setActiveTabId(nextActiveTabId);
 }
 
 function clearDirtyFiles(
@@ -258,18 +256,15 @@ export function removeProject(
 
 /**
  * The window's Remove handler. The guard checks read the open sessions from
- * here, so they see the same list the handler acts on. The callback is stable
- * and always acts on the latest state.
+ * the same ref the handler acts on. Each render gives a handler on that
+ * render's context; after a purge's wait, tabs, sessions and the active tab
+ * are read through their refs.
  */
 export function useProjectWindowRemoval(ctx: ProjectRemovalContext) {
-  const latest = useRef(ctx);
+  const { sessionsRef } = ctx;
   useEffect(() => {
-    latest.current = ctx;
-    setOpenSessionsSource(() => latest.current.sessionsRef.current);
+    setOpenSessionsSource(() => sessionsRef.current);
   });
-  const [handler] = useState(
-    () => (path: string, options: { purgeData: boolean }) =>
-      removeProject(latest.current, path, options),
-  );
-  return handler;
+  return (path: string, options: { purgeData: boolean }) =>
+    removeProject(ctx, path, options);
 }
