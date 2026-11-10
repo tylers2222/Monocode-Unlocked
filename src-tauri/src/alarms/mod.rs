@@ -130,6 +130,15 @@ pub(crate) mod test_taps {
         super::stuck::read(conn, &episode, active)
     }
 
+    /// The open work lines every level of episode `id` gives at `active`.
+    pub(crate) fn open_work(conn: &rusqlite::Connection, id: &str, active: i64) -> Vec<String> {
+        let episode = super::route::episode(conn, id).unwrap().unwrap();
+        let settings = super::store::Settings::load(conn).unwrap();
+        super::route::stall(conn, &episode, &settings, active)
+            .unwrap()
+            .open_work
+    }
+
     /// Episode `id`, a row the test wrote, opens as `Pass::open` opens one.
     pub(crate) fn opened(conn: &rusqlite::Connection, id: &str, active: i64) {
         let settings = super::store::Settings::load(conn).unwrap();
