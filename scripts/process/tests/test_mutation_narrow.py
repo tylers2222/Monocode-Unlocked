@@ -96,6 +96,14 @@ def write_out(out: Path, rows):
 FAILED = "        FAIL [   0.010s] app_lib bells::ring::tests::rings\n"
 
 
+class Packages(unittest.TestCase):
+    def test_each_mutated_package_once(self):
+        listing = json.dumps([{"package": "app", "file": "a.rs"}, {"package": "link", "file": "b.rs"},
+                              {"package": "app", "file": "c.rs"}])
+        self.assertEqual(N.packages(listing), ["app", "link"])
+        self.assertEqual(N.packages(""), [])
+
+
 class RetryAndMerge(unittest.TestCase):
     def test_retries_every_mutant_not_proven_caught_by_a_failing_test(self):
         with tempfile.TemporaryDirectory() as d:

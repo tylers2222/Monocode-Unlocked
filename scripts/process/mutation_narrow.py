@@ -5,6 +5,8 @@
       prints `narrow <nextest filterset>` or `full <reason>`.
   mutation_narrow.py retry <mutants.out>     prints one `^name$` regex per mutant the full
       pass must test again: missed, timed out, or caught with no failing test in its log.
+  mutation_narrow.py packages                cargo mutants --list --json on stdin; prints
+      each mutated package, one per line (cargo-mutants builds each with --package).
   mutation_narrow.py merge <mutants.out> <full mutants.out>
       writes the final caught/missed/timeout/unviable lists into the first directory.
 
@@ -145,9 +147,15 @@ def merge(out: Path, full: Path | None) -> None:
         (out / f"{k}.txt").write_text("".join(f"{n}\n" for n in sorted(v)))
 
 
+def packages(listing: str) -> list[str]:
+    return sorted({m["package"] for m in json.loads(listing or "[]")})
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 3 and argv[1] == "scope":
         print(scope(Path(argv[2]), sys.stdin.read().splitlines()))
+    elif len(argv) == 2 and argv[1] == "packages":
+        print("\n".join(packages(sys.stdin.read())))
     elif len(argv) == 3 and argv[1] == "retry":
         print("\n".join(retry(Path(argv[2]))))
     elif len(argv) in (3, 4) and argv[1] == "merge":

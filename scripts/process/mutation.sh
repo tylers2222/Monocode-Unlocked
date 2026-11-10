@@ -51,12 +51,15 @@ case ${1-} in
     # target/, so each dir builds every dependency cold. Build the tests once here and let
     # it copy target/ (dependencies stay fresh), when the build dirs' disk holds a copy
     # per job plus one: a 14 GB runner may not.
+    # Each package exactly as cargo-mutants builds it (--package, not --workspace, whose
+    # feature unification gives the dependencies other hashes, so the copy would rebuild).
     warm_start=$(date +%s)
-    cargo test --no-run --workspace --quiet
-    target_kb=$(du -sk target | cut -f1)
+    pkgs=$("${mutants[@]}" "${shard[@]}" --list --json | python3 "$here/mutation_narrow.py" packages)
+    for p in $pkgs; do cargo test --no-run --package="$p" --quiet; done
+    target_kb=$(du -sk target 2>/dev/null | cut -f1 || echo 0)
     free_kb=$(df -Pk "${TMPDIR:-/tmp}" | awk 'NR == 2 {print $4}')
     copy=(--copy-target=false)
-    [ "$free_kb" -gt $(( target_kb * (jobs + 2) )) ] && copy=(--copy-target=true)
+    [ "${target_kb:-0}" -gt 0 ] && [ "$free_kb" -gt $(( target_kb * (jobs + 2) )) ] && copy=(--copy-target=true)
     echo "mutation: warm build $(( $(date +%s) - warm_start ))s, target $(( target_kb / 1024 )) MB, free $(( free_kb / 1024 )) MB, jobs $jobs: ${copy[*]}"
     mutants+=("${copy[@]}")
     # Pass 1, a speed-up only: nextest (fail-fast) on the tests that can reach the mutated
