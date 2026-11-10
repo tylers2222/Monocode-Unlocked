@@ -98,7 +98,7 @@ pub(super) fn holders(conn: &Connection) -> rusqlite::Result<Vec<Holder>> {
 
 /// The Spaces with a link to `project` or a Mono that lists it, oldest Space
 /// first. `project` is a key.
-pub(super) fn held_by(conn: &Connection, project: &str) -> rusqlite::Result<Vec<String>> {
+pub(crate) fn held_by(conn: &Connection, project: &str) -> rusqlite::Result<Vec<String>> {
     let order = conn
         .prepare("SELECT id FROM spaces ORDER BY created_at, id")?
         .query_map([], |row| row.get::<_, String>(0))?

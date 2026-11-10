@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::control::ControlHost;
+use crate::spaces::project_rename::stored_forms;
 
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
@@ -361,8 +362,8 @@ pub fn session_list_by_project(
 }
 
 #[tauri::command(async)]
-pub fn session_rebase_project(
-    app: AppHandle,
+pub fn session_rebase_project<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, SessionStore>,
     from_cwd: String,
     to_cwd: String,
@@ -370,34 +371,47 @@ pub fn session_rebase_project(
     if from_cwd.trim().is_empty() || to_cwd.trim().is_empty() {
         return Err("project paths are required".into());
     }
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    rebase_project(&conn, &from_cwd, &to_cwd).map_err(|error| error.to_string())?;
-    drop(conn);
+    // Through the roster's writer: T12 rewrites Mono lists, so every window's
+    // roster must hear of it.
+    crate::mono_roster::write(&app, &store, |conn| {
+        rebase_project(conn, &from_cwd, &to_cwd).map_err(|error| error.to_string())?;
+        Ok(true)
+    })?;
     crate::milestones::emit_changed(&app, &from_cwd);
     crate::milestones::emit_changed(&app, &to_cwd);
+    crate::spaces::projects::emit_changed(&app);
     Ok(())
 }
 
 /// One transaction, so a failed move never leaves sessions and milestones apart.
+/// Moves everything stored under a project (T12), comparing by `project_key`.
 pub(crate) fn rebase_project(
     conn: &Connection,
     from_cwd: &str,
     to_cwd: &str,
 ) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "UPDATE sessions SET cwd = ?2 WHERE cwd = ?1",
-        params![from_cwd, to_cwd],
-    )?;
-    tx.execute(
-        "UPDATE milestones SET project_path = ?2 WHERE project_path = ?1",
-        params![from_cwd, to_cwd],
-    )?;
+    // First: it reads whether the sessions still under the old path know it.
+    crate::spaces::project_rename::rekey(&tx, from_cwd, to_cwd)?;
+    for from in stored_forms(&tx, "sessions", "cwd", from_cwd)? {
+        tx.execute(
+            "UPDATE sessions SET cwd = ?2 WHERE cwd = ?1",
+            params![from, to_cwd],
+        )?;
+    }
+    for from in stored_forms(&tx, "milestones", "project_path", from_cwd)? {
+        tx.execute(
+            "UPDATE milestones SET project_path = ?2 WHERE project_path = ?1",
+            params![from, to_cwd],
+        )?;
+    }
     // The renamed project's settings win over a stale row already at the new path.
-    tx.execute(
-        "UPDATE OR REPLACE milestone_settings SET project_path = ?2 WHERE project_path = ?1",
-        params![from_cwd, to_cwd],
-    )?;
+    for from in stored_forms(&tx, "milestone_settings", "project_path", from_cwd)? {
+        tx.execute(
+            "UPDATE OR REPLACE milestone_settings SET project_path = ?2 WHERE project_path = ?1",
+            params![from, to_cwd],
+        )?;
+    }
     tx.commit()
 }
 

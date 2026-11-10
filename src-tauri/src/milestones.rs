@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use uuid::Uuid;
 
 use crate::session_store::{now_millis, SessionStore};
@@ -423,7 +423,7 @@ pub(crate) fn remove_project(conn: &Connection, project: &str) -> Result<(), Str
     tx.commit().map_err(|e| e.to_string())
 }
 
-pub(crate) fn emit_changed(app: &AppHandle, project: &str) {
+pub(crate) fn emit_changed<R: Runtime>(app: &AppHandle<R>, project: &str) {
     let _ = app.emit(CHANGED, json!({ "projectPath": project }));
 }
 

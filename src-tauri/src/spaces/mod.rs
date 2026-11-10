@@ -10,6 +10,7 @@ pub(crate) mod account;
 pub(crate) mod grants;
 pub(crate) mod leases;
 pub(crate) mod membership;
+pub(crate) mod project_rename;
 pub(crate) mod projects;
 pub(crate) mod scope;
 
