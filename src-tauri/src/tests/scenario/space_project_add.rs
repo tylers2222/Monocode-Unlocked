@@ -67,9 +67,8 @@ const LINKS: &str = "SELECT space_id || ' ' || project_path FROM space_project_l
 /// Defect (T1, T2, P3, I9): a new folder added in Space 2 lands in Space 1, or
 /// shows in Space 1 too; `knownToWindow` is ignored, so a recent of Space 1 with
 /// no row moves out of Space 1; a known project moves a Space's assignment, or
-/// writes a link to the Space already assigned; a second add changes anything
-/// or says it wrote; a remote project is not a project; or a workspace path or
-/// `~` is added.
+/// writes a link to the Space already assigned; or a second add changes
+/// anything or says it wrote.
 #[test]
 fn adding_assigns_a_new_project_and_links_a_known_one() {
     let store = store();
@@ -152,9 +151,16 @@ fn adding_assigns_a_new_project_and_links_a_known_one() {
         "a Mono that lists another path does not make this one known"
     );
     assert_eq!(spaces_of(&store, "/work/fresh"), [TWO]);
+}
 
+/// Defect (T1, T17): a remote project is not a project; or a workspace path or
+/// `~` is added.
+#[test]
+fn a_remote_project_is_added_and_the_workspace_and_home_are_not() {
+    let store = store();
+    let add = |path: &str| project_add::add(&store, TWO, path, false);
     assert_eq!(
-        add(TWO, "remote://box/srv/app/", false),
+        add("remote://box/srv/app/"),
         Ok((Added::Assigned, true)),
         "a remote project takes the states of any project"
     );
@@ -162,15 +168,9 @@ fn adding_assigns_a_new_project_and_links_a_known_one() {
 
     let root = projects::workspace_roots().remove(0);
     for path in [root.clone(), format!("{root}/gigas/x")] {
-        assert!(matches!(
-            add(TWO, &path, false),
-            Err(ProjectRefusal::Workspace { .. })
-        ));
+        assert!(matches!(add(&path), Err(ProjectRefusal::Workspace { .. })));
     }
-    assert!(matches!(
-        add(TWO, "~", false),
-        Err(ProjectRefusal::Failed { .. })
-    ));
+    assert!(matches!(add("~"), Err(ProjectRefusal::Failed { .. })));
 }
 
 /// Defect (T3, T4, F10): a Mono's project gets no link in its Space, or one in
