@@ -880,11 +880,23 @@ fn a_window_with_no_space_is_refused_and_changes_nothing() {
         refused
     );
     assert_eq!(
-        removal::spaces_project_delete_preview(window, app.state(), app.state(), SHARED.into())
-            .err(),
+        removal::spaces_project_delete_preview(
+            window.clone(),
+            app.state(),
+            app.state(),
+            SHARED.into(),
+        )
+        .err(),
         refused
     );
     let store: tauri::State<'_, SessionStore> = app.state();
+    assert_eq!(
+        removal::delete_for_window(&store, window.label(), SHARED, no_turns, |session| {
+            panic!("a window with no Space ended {session}")
+        })
+        .err(),
+        refused
+    );
     let conn = store.lock_conn().unwrap();
     assert_eq!(
         read_strings(&conn, "SELECT space_id FROM space_project_links"),

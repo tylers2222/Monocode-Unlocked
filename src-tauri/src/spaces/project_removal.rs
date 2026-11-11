@@ -609,6 +609,19 @@ pub fn spaces_project_notify_changed<R: Runtime>(app: AppHandle<R>) {
     emit_changed(&app);
 }
 
+/// `delete` for the Space the window shows. A window with no Space is refused
+/// before anything is read or deleted (ADE-285).
+pub(crate) fn delete_for_window(
+    store: &SessionStore,
+    label: &str,
+    path: &str,
+    turns: impl Fn() -> Option<Turns>,
+    end: impl FnMut(&str) -> Result<(), String>,
+) -> Result<ProjectDeleted, ProjectRefusal> {
+    let space = shown_space(store, label)?;
+    delete(store, &space, path, turns, end)
+}
+
 #[tauri::command(async)]
 pub fn spaces_project_delete_preview<R: Runtime>(
     window: WebviewWindow<R>,
@@ -632,10 +645,9 @@ pub fn spaces_project_delete(
     control: State<'_, ControlHost>,
     project_path: String,
 ) -> Result<ProjectDeleted, ProjectRefusal> {
-    let space = shown_space(&store, window.label())?;
-    let deleted = delete(
+    let deleted = delete_for_window(
         &store,
-        &space,
+        window.label(),
         &project_path,
         host_turns(&control),
         |session| {
