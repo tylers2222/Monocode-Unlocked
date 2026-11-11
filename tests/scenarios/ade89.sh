@@ -241,15 +241,16 @@ part_release_then_kill() {
   "$INSTANCE" start
   wait_until 30 "the relaunch marks both notices" \
     holds "SELECT (SELECT count(*) FROM mono_completions) = 0 AND (SELECT count(*) FROM mono_completion_deliveries) = 2"
+  # Only the unread call kills again: on natural timing a kill can land after
+  # the agent read the notice and before it answered, and that notice comes
+  # twice by design (better twice than never).
   if [[ -n "$unread" ]]; then
     wait_until 60 "the batch notice opens a turn the agent does not read" opened "$1" "$group"
     expect "reports of $first the agent got before the kill (late $late)" "$(agent_reports "s-$first")" 0
-  else
-    sleep 5
+    kill9
+    rm -f "$PUPPET/hold-start"
+    "$INSTANCE" start
   fi
-  kill9
-  rm -f "$PUPPET/hold-start"
-  "$INSTANCE" start
   wait_until 60 "the Mono's agent gets each report (late $late)" each_reaches_the_agent "$first" "$second" "$late"
   # A second copy would follow the first within the same second or two.
   sleep 5
