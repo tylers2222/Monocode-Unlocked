@@ -15,6 +15,7 @@ mod rights;
 mod route;
 mod state;
 mod store;
+mod stuck;
 pub(crate) mod taps;
 mod text;
 mod tree;
@@ -139,6 +140,22 @@ pub(crate) fn alarm_session<R: Runtime>(
 #[cfg(test)]
 pub(crate) mod test_taps {
     pub(crate) use super::store::outbox_key;
+    pub(crate) use super::text::Replied;
+
+    /// What episode `id`'s alarm would say it is stuck on at `active`.
+    pub(crate) fn stuck(conn: &rusqlite::Connection, id: &str, active: i64) -> super::text::Stuck {
+        let episode = super::route::episode(conn, id).unwrap().unwrap();
+        super::stuck::read(conn, &episode, active)
+    }
+
+    /// The open work lines every level of episode `id` gives at `active`.
+    pub(crate) fn open_work(conn: &rusqlite::Connection, id: &str, active: i64) -> Vec<String> {
+        let episode = super::route::episode(conn, id).unwrap().unwrap();
+        let settings = super::store::Settings::load(conn).unwrap();
+        super::route::stall(conn, &episode, &settings, active)
+            .unwrap()
+            .open_work
+    }
 
     /// Episode `id`, a row the test wrote, opens as `Pass::open` opens one.
     pub(crate) fn opened(conn: &rusqlite::Connection, id: &str, active: i64) {

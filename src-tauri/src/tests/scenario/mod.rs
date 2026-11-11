@@ -12,6 +12,8 @@ mod agents;
 mod alarms_limit;
 mod alarms_route;
 mod alarms_stall;
+mod alarms_text;
+mod alarms_text_edges;
 mod alarms_turns;
 mod alarms_unseen;
 mod alarms_wakes;
