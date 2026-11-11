@@ -32,6 +32,10 @@ PATH_ATTR = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]')
 ATTR = re.compile(r"^\s*#\[")
 # nextest's per-test failure lines (FAIL, a signal, ABORT, TIMEOUT, LEAK-FAIL).
 NEXTEST_FAIL = re.compile(r"^\s*(?:FAIL|SIG[A-Z]+|ABORT|TIMEOUT|LEAK-FAIL)\s+\[", re.M)
+# Terminal colour codes (CSI sequences). dtolnay/rust-toolchain sets CARGO_TERM_COLOR=always
+# on GitHub, so nextest wraps FAIL in them; unstripped, no caught mutant was proven and
+# every one re-ran in pass 2 (#574, run 42951620743: the 110-minute timeout, ADE-317).
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ROOTS = ("lib.rs", "main.rs")
 
 
@@ -111,7 +115,7 @@ def proven_caught(out: Path, o: dict) -> bool:
     if o["summary"] != "CaughtMutant":
         return False
     log = out / o["log_path"]
-    return log.is_file() and bool(NEXTEST_FAIL.search(log.read_text(errors="replace")))
+    return log.is_file() and bool(NEXTEST_FAIL.search(ANSI.sub("", log.read_text(errors="replace"))))
 
 
 def rust_regex_escape(s: str) -> str:
@@ -119,9 +123,13 @@ def rust_regex_escape(s: str) -> str:
 
 
 def retry(out: Path) -> list[str]:
-    return ["^" + rust_regex_escape(o["scenario"]["Mutant"]["name"]) + "$"
-            for o in outcomes(out)
-            if o["summary"] != "Unviable" and not proven_caught(out, o)]
+    rows = outcomes(out)
+    again = [o for o in rows if o["summary"] != "Unviable" and not proven_caught(out, o)]
+    caught = sum(o["summary"] == "CaughtMutant" for o in rows)
+    # On stderr, so a pass 1 that proves nothing shows in the job log (ADE-317).
+    print(f"mutation: pass 1 proved {caught - sum(o['summary'] == 'CaughtMutant' for o in again)}"
+          f" of {caught} caught mutants by a failing test", file=sys.stderr)
+    return ["^" + rust_regex_escape(o["scenario"]["Mutant"]["name"]) + "$" for o in again]
 
 
 def merge(out: Path, full: Path | None) -> None:

@@ -119,6 +119,18 @@ class RetryAndMerge(unittest.TestCase):
             self.assertTrue(any(re.fullmatch(r, n) for r in got), n)
         self.assertFalse(any(re.fullmatch(r, "a.rs:1:1: caught (x)") for r in got))
 
+    def test_a_coloured_nextest_fail_line_proves_the_catch(self):
+        # nextest under CARGO_TERM_COLOR=always, as dtolnay/rust-toolchain sets on GitHub
+        # (#574 run 42951620743: 0 of 31 proven, every one re-ran in pass 2; ADE-317).
+        red = "\x1b[31;1m        FAIL\x1b[0m [   0.010s] \x1b[35;1mapp_lib\x1b[0m bells::ring::tests::rings\n"
+        green = "\x1b[32;1m        PASS\x1b[0m [   0.010s] app_lib bells::ring::tests::rings\n"
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            write_out(out, [("a.rs:1:1: coloured fail", "CaughtMutant", red),
+                            ("a.rs:2:1: coloured pass only", "CaughtMutant", green)])
+            got = N.retry(out)
+        self.assertEqual(got, ["^a\\.rs:2:1: coloured pass only$"])
+
     def test_the_regex_matches_only_its_own_name(self):
         name = "src/a.rs:9:5: replace Pass<'_>::agent -> Vec<i64> with vec![] (a|b)"
         rx = "^" + N.rust_regex_escape(name) + "$"
