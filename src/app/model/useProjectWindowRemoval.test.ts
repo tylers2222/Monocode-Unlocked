@@ -4,6 +4,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setOpenSessionsSource } from "../../features/projects/model/projectDeleteCheck";
+import { removeProjectFromActiveSpace } from "../../features/projects/model/projectRowActions";
 import {
   purgeProjectInSpace,
   type ProjectPurge,
@@ -41,6 +42,10 @@ vi.mock("../../integrations/harness/core/registry", async (original) => ({
 vi.mock("../../features/projects/model/projectPurge", async (original) => ({
   ...(await original<object>()),
   purgeProjectInSpace: vi.fn(),
+}));
+vi.mock("../../features/projects/model/projectRowActions", async (original) => ({
+  ...(await original<object>()),
+  removeProjectFromActiveSpace: vi.fn(),
 }));
 vi.mock("../../features/projects/model/projectDeleteCheck", async (original) => ({
   ...(await original<object>()),
@@ -504,5 +509,76 @@ describe("the hook", () => {
     expect(second.setRecents).toHaveBeenCalled();
     expect(first.setRecents).not.toHaveBeenCalled();
     act(() => root.unmount());
+  });
+});
+
+describe("Remove from this Space (T5, T6)", () => {
+  const leave = (ctx: ProjectRemovalContext, path = P) =>
+    removeProject(ctx, path, { purgeData: false, leaveSpace: true });
+
+  it("answers the refusal and changes nothing", async () => {
+    vi.mocked(removeProjectFromActiveSpace).mockResolvedValue({ refusal: "No." });
+    const ctx = context([], [newTab("x")], { projectCwdRef: { current: P } });
+    await expect(leave(ctx, `${P}/`)).resolves.toBe("No.");
+    expect(removeProjectFromActiveSpace).toHaveBeenCalledWith(P);
+    expect(ctx.setProjectCwd).not.toHaveBeenCalled();
+    expect(loadArchivedProjects()).toEqual([]);
+    expect(purgeProjectInSpace).not.toHaveBeenCalled();
+  });
+
+  it("keeps chats and tabs, and moves the window to the next project", async () => {
+    vi.mocked(removeProjectFromActiveSpace).mockResolvedValue({ removed: true });
+    rememberProject(OTHER);
+    rememberProject(P);
+    const mine = session("mine");
+    const tab = newTab(mine.id);
+    const ctx = context([mine], [tab], { projectCwdRef: { current: P } });
+    await expect(leave(ctx)).resolves.toBeNull();
+    expect(ctx.onSelectProject).toHaveBeenCalledWith(OTHER);
+    expect(ctx.setProjectCwd).toHaveBeenCalledWith(OTHER);
+    expect(ids(ctx.sessionsRef.current)).toEqual(["mine"]);
+    expect(ctx.tabsRef.current).toEqual([tab]);
+    expect(ctx.setTabs).not.toHaveBeenCalled();
+    expect(loadRecents().map((item) => item.path)).toEqual([P, OTHER]);
+  });
+
+  it("opens a blank tab on no project when nothing is left, keeping the hidden tabs", async () => {
+    vi.mocked(removeProjectFromActiveSpace).mockResolvedValue({ removed: true });
+    rememberProject(P);
+    const mine = session("mine", { runtimeMode: "full-access" as Session["runtimeMode"] });
+    const tab = newTab(mine.id);
+    const ctx = context([mine], [tab], { projectCwdRef: { current: P } });
+    await leave(ctx);
+    expect(ctx.setProjectCwd).toHaveBeenCalledWith("~");
+    expect(ctx.setComposerFocused).toHaveBeenCalledWith(true);
+    const [kept, blank] = ctx.sessionsRef.current;
+    expect(kept).toBe(mine);
+    expect(blank.cwd).toBe("~");
+    expect(blank.runtimeMode).toBe("full-access");
+    const [oldTab, newOne] = ctx.tabsRef.current;
+    expect(oldTab).toBe(tab);
+    expect(newOne.id).not.toBe(tab.id);
+    expect(ctx.activeTabIdRef.current).toBe(newOne.id);
+    expect(ctx.setSessions).toHaveBeenCalledWith([mine, blank]);
+    expect(ctx.setTabs).toHaveBeenCalledWith([tab, newOne]);
+    expect(ctx.setActiveTabId).toHaveBeenCalledWith(newOne.id);
+  });
+
+  it("stays put when another project is open", async () => {
+    vi.mocked(removeProjectFromActiveSpace).mockResolvedValue({ removed: true });
+    rememberProject(P);
+    const ctx = context([], [newTab("x")]);
+    await expect(leave(ctx)).resolves.toBeNull();
+    expect(ctx.setProjectCwd).not.toHaveBeenCalled();
+    expect(ctx.setTabs).not.toHaveBeenCalled();
+  });
+
+  it("stays put when the project was not in this Space", async () => {
+    vi.mocked(removeProjectFromActiveSpace).mockResolvedValue({ removed: false });
+    rememberProject(P);
+    const ctx = context([], [newTab("x")], { projectCwdRef: { current: P } });
+    await expect(leave(ctx)).resolves.toBeNull();
+    expect(ctx.setProjectCwd).not.toHaveBeenCalled();
+    expect(ctx.setTabs).not.toHaveBeenCalled();
   });
 });

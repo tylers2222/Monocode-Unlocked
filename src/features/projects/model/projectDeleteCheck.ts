@@ -97,6 +97,20 @@ async function readWindowSpace(): Promise<string> {
 }
 
 /**
+ * T8's window half for this Space, for an event with no dialog (T5, T6). It
+ * throws if the window's Space cannot be read.
+ */
+export async function checkWindowRunning(path: string): Promise<string | null> {
+  return windowRunningRefusal(
+    path,
+    await readWindowSpace(),
+    await listSessionsByProject(path),
+    openSessions(),
+    false,
+  );
+}
+
+/**
  * Why Delete is refused right now, before its dialog opens and again before the
  * delete. The backend answers first: a Mono's refusal comes before a running
  * session's. On the last Space (T11) a session running in any Space refuses.

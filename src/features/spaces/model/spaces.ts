@@ -120,6 +120,11 @@ export function checkProjectArchive(projectPath: string): Promise<null> {
   return invoke<null>("spaces_project_archive_check", { projectPath });
 }
 
+/** T5 or T6. False: it was not in the Space, and nothing changed. */
+export function removeProjectFromSpace(projectPath: string): Promise<boolean> {
+  return invoke<boolean>("spaces_project_remove", { projectPath });
+}
+
 /** The text of a typed Space refusal (`{ code, message }`), or of any failure. */
 export function refusalMessage(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error) {
