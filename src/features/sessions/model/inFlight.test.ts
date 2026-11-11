@@ -192,6 +192,7 @@ describe("markTurnInterrupted", () => {
       expect.objectContaining({
         id: "mono-completion-r1",
         text: notice.text,
+        attachments: [],
         monoSessionCompletion: notice.monoSessionCompletion,
         pausedBy: "quit",
       }),
@@ -199,6 +200,46 @@ describe("markTurnInterrupted", () => {
     ]);
     expect(restored.queueStatus).toBe("paused");
     expect(canAutoContinue(restored)).toBe(false);
+  });
+
+  // r4 M2: a running queue is paused by the quit, so the relaunch wakes it.
+  it("gives the notice its quit reason when the queue was running", () => {
+    const typed = { id: "q1", text: "wait", attachments: [] };
+    const restored = markTurnInterrupted(
+      mono({ queuedMessages: [typed], queueStatus: "active" }),
+    );
+    expect(restored.queuedMessages).toEqual([
+      expect.objectContaining({ id: "mono-completion-r1", pausedBy: "quit" }),
+      typed,
+    ]);
+    expect(restored.queueStatus).toBe("paused");
+  });
+
+  // r4 M1: other app-delivered turns (a Mono message, an ask) carry an
+  // appRequestId too, but no completion: the quit marks them as usual.
+  it("marks a cut app-delivered turn that is no completion notice", () => {
+    const typed = { id: "q1", text: "wait", attachments: [] };
+    const restored = markTurnInterrupted(
+      mono({
+        blocks: [
+          {
+            id: "m1",
+            role: "user",
+            text: "A Mono message",
+            appRequestId: "mono-message-1",
+          },
+        ],
+        queuedMessages: [typed],
+      }),
+    );
+    expect(restored.blocks.map((block) => block.id)).toEqual([
+      "u0",
+      "a0",
+      "m1",
+      expect.any(String),
+    ]);
+    expect(restored.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+    expect(restored.queuedMessages).toEqual([typed]);
   });
 
   it("keeps a queue the user paused paused when it requeues the notice", () => {
@@ -230,11 +271,14 @@ describe("markTurnInterrupted", () => {
   // every record idle), so a requeued notice must not be in that list.
   it("requeues the notice once across the quit save and the relaunch", () => {
     const cutTurn = chat("/tmp/b", { busy: true });
-    const sessions = [mono({}), cutTurn];
+    const idle = chat("/tmp/c");
+    const sessions = [mono({}), cutTurn, idle];
     const quit = markQuitSessions(
       sessions,
       sessions.map((session) => newTab(session.id)),
     );
+    // r4 M4: a chat the quit did not cut is saved as it was.
+    expect(quit.sessions[2]).toBe(idle);
     expect(quit.cut.map((ref) => ref.sessionId)).toEqual([
       sessions[0].id,
       cutTurn.id,
