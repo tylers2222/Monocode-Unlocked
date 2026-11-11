@@ -452,8 +452,8 @@ fn on_opens_only_a_monos_codex_home(rig: &Rig) {
         "fx",
         &[],
         Homes {
-            account: None,
             codex: Some(&home),
+            ..Homes::default()
         },
         || Some(rig.pinned.clone()),
     )

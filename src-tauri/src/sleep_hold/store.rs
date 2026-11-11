@@ -313,17 +313,6 @@ pub(crate) fn waiting(conn: &Connection, id: &str, until: i64) -> rusqlite::Resu
     Ok(())
 }
 
-/// The hold client of `session` reported in: its hook is installed.
-/// `false` when the session has no activity row to mark.
-pub(crate) fn ping(conn: &Connection, session: &str, wall: i64) -> rusqlite::Result<bool> {
-    Ok(conn.execute(
-        "UPDATE agent_activity SET hold_state = 'installed', hold_missing_reason = NULL,
-           updated_wall_ms = ?2
-         WHERE session_id = ?1",
-        params![session, wall],
-    )? == 1)
-}
-
 /// Tyler's holds waiting for an answer that no banner has shown yet.
 pub(crate) fn tyler_unshown(conn: &Connection) -> rusqlite::Result<Vec<HoldRow>> {
     conn.prepare(&format!(

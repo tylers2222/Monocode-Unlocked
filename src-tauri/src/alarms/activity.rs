@@ -9,11 +9,16 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
 use super::live::Write;
-use super::state::{Background, Dialog, DialogKind, Progress, Turn};
+use super::state::{Background, Dialog, DialogKind, Hold, Progress, Turn};
 use super::taps::{Harness, Snapshot};
 use crate::mono_messages::SessionId;
+use crate::session_store::ensure_column;
+use crate::sleep_hold::install::{HoldState, PING_GRACE_MS};
 
-/// `hold_state` and `hold_missing_reason` are the sleep hold's (row H).
+/// `hold_state`, `hold_missing_reason`, `hold_ping_due_active_ms` and
+/// `hold_missing_told` are the sleep hold's (rows H, P2): a due time is set
+/// while an omp session's extension has yet to report in, and `told` once
+/// this spawn's missing hold opened its episode.
 pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS agent_activity (
@@ -37,9 +42,18 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            wake_pending_since_active_ms INTEGER,
            hold_state              TEXT CHECK (hold_state IN ('installed', 'missing')),
            hold_missing_reason     TEXT,
+           hold_ping_due_active_ms INTEGER,
+           hold_missing_told       INTEGER NOT NULL DEFAULT 0 CHECK (hold_missing_told IN (0, 1)),
            updated_wall_ms         INTEGER NOT NULL,
            CHECK ((dialog_kind IS NULL) = (dialog_since_active_ms IS NULL))
          );",
+    )?;
+    ensure_column(conn, "agent_activity", "hold_ping_due_active_ms", "INTEGER")?;
+    ensure_column(
+        conn,
+        "agent_activity",
+        "hold_missing_told",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (hold_missing_told IN (0, 1))",
     )
 }
 
@@ -129,9 +143,15 @@ pub(crate) fn apply(
     match write {
         Write::TurnStarted { turn_id, at } => turn_started(conn, session, turn_id, *at, wall),
         Write::TurnEnded { turn_id, at } => turn_ended(conn, session, turn_id, *at, wall),
-        Write::Spawned { harness, at } => {
-            spawned(conn, session, *harness, (*at, wall_at(*at)?), wall)
-        }
+        Write::Spawned { harness, hold, at } => spawned(
+            conn,
+            session,
+            *harness,
+            hold.as_ref(),
+            (*at, wall_at(*at)?),
+            wall,
+        ),
+        Write::HoldPinged => hold_pinged(conn, session, wall),
         Write::Tap(row) => write_tap(conn, session, row, wall_at(row.last_progress_at)?, wall),
         Write::PlanAnswered => plan_answered(conn, session, wall),
     }
@@ -181,6 +201,7 @@ fn turn_ended(
     at: i64,
     wall: i64,
 ) -> rusqlite::Result<()> {
+    crate::sleep_hold::install::mark_unreported(conn, session.as_str(), turn_id)?;
     conn.execute(
         "INSERT INTO agent_activity (session_id, turn_state, turn_id, turn_ended_active_ms,
            updated_wall_ms)
@@ -197,31 +218,56 @@ fn turn_ended(
 
 /// A new child of `session` was spawned at `at`: what its tap knows starts
 /// over, and `harness` names the tap that reads it (`None`: no tap). A
-/// background task the old child was running ends at `at` (S1 r6 m1).
+/// background task the old child was running ends at `at` (S1 r6 m1). Its
+/// sleep hold starts over too (H risk 3): a respawn keeps no ping of the
+/// child before it.
 fn spawned(
     conn: &Connection,
     session: &SessionId,
     harness: Option<Harness>,
+    hold: Option<&HoldState>,
     (at, at_wall): (i64, i64),
     wall: i64,
 ) -> rusqlite::Result<()> {
+    let (state, reason, due) = match hold {
+        Some(HoldState::Installed) => (Some("installed"), None, None),
+        Some(HoldState::Missing(reason)) => (Some("missing"), Some(reason.as_str()), None),
+        Some(HoldState::AwaitingPing) => (None, None, Some(at + PING_GRACE_MS)),
+        None => (None, None, None),
+    };
     conn.execute(
         "INSERT INTO agent_activity (session_id, harness, turn_ended_active_ms,
-           last_progress_active_ms, last_progress_wall_ms, updated_wall_ms)
-         VALUES (?1, ?2, ?3, ?3, ?5, ?4)
+           last_progress_active_ms, last_progress_wall_ms, hold_state, hold_missing_reason,
+           hold_ping_due_active_ms, updated_wall_ms)
+         VALUES (?1, ?2, ?3, ?3, ?5, ?6, ?7, ?8, ?4)
          ON CONFLICT (session_id) DO UPDATE SET harness = ?2, last_progress_active_ms = ?3,
            last_progress_wall_ms = ?5, tool_running = 0, background_running = 0,
            background_ended_active_ms = CASE background_running
              WHEN 1 THEN ?3 ELSE background_ended_active_ms END,
            todo_open = 0, dialog_kind = NULL, dialog_request_id = NULL, dialog_text = NULL,
-           dialog_since_active_ms = NULL, updated_wall_ms = ?4",
+           dialog_since_active_ms = NULL, hold_state = ?6, hold_missing_reason = ?7,
+           hold_ping_due_active_ms = ?8, hold_missing_told = 0, updated_wall_ms = ?4",
         params![
             session.as_str(),
             harness.map(Harness::as_str),
             at,
             wall,
-            at_wall
+            at_wall,
+            state,
+            reason,
+            due
         ],
+    )?;
+    Ok(())
+}
+
+/// The child's hold client reported in: its hook is installed.
+fn hold_pinged(conn: &Connection, session: &SessionId, wall: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agent_activity SET hold_state = 'installed', hold_missing_reason = NULL,
+           hold_ping_due_active_ms = NULL, updated_wall_ms = ?2
+         WHERE session_id = ?1",
+        params![session.as_str(), wall],
     )?;
     Ok(())
 }
@@ -298,6 +344,7 @@ pub(crate) struct Activity {
     pub dialog_text: Option<String>,
     pub todo_open: bool,
     pub wake_pending_since: Option<i64>,
+    pub hold: Hold,
 }
 
 pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
@@ -306,7 +353,7 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
             "SELECT session_id, harness, turn_state, turn_started_active_ms, turn_ended_active_ms,
                last_progress_active_ms, tool_running, dialog_kind, dialog_since_active_ms,
                dialog_text, todo_open, wake_pending_since_active_ms, background_running,
-               background_ended_active_ms
+               background_ended_active_ms, hold_state, hold_missing_reason, hold_missing_told
              FROM agent_activity ORDER BY session_id",
         )?
         .query_map([], |row| {
@@ -347,10 +394,26 @@ pub(crate) fn all(conn: &Connection) -> rusqlite::Result<Vec<Activity>> {
                 dialog_text: row.get(9)?,
                 todo_open: row.get(10)?,
                 wake_pending_since: row.get(11)?,
+                hold: match row.get::<_, Option<String>>(14)?.as_deref() {
+                    Some("missing") => Hold::Missing {
+                        reason: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
+                        told: row.get(16)?,
+                    },
+                    _ => Hold::Held,
+                },
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows.into_iter().flatten().collect())
+}
+
+/// This spawn's missing hold opened its episode: it opens no other.
+pub(crate) fn hold_told(conn: &Connection, session: &SessionId) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE agent_activity SET hold_missing_told = 1 WHERE session_id = ?1",
+        [session.as_str()],
+    )?;
+    Ok(())
 }
 
 /// The detector's own column: when it first saw a wake waiting.
@@ -380,6 +443,49 @@ mod tests {
 
     fn turn_of(conn: &Connection) -> Turn {
         all(conn).unwrap().remove(0).turn
+    }
+
+    // Defect: a database whose agent_activity table an earlier build made
+    // lacks the hold's due and told columns, so every spawn's write fails.
+    #[test]
+    fn a_table_from_before_the_hold_install_takes_its_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agent_activity (
+               session_id TEXT PRIMARY KEY, harness TEXT,
+               turn_state TEXT NOT NULL DEFAULT 'idle', turn_id TEXT,
+               turn_started_active_ms INTEGER, turn_ended_active_ms INTEGER NOT NULL,
+               last_progress_active_ms INTEGER, last_progress_wall_ms INTEGER,
+               tool_running INTEGER NOT NULL DEFAULT 0,
+               background_running INTEGER NOT NULL DEFAULT 0,
+               background_ended_active_ms INTEGER, dialog_kind TEXT,
+               dialog_request_id TEXT, dialog_text TEXT, dialog_since_active_ms INTEGER,
+               todo_open INTEGER NOT NULL DEFAULT 0, wake_pending_since_active_ms INTEGER,
+               hold_state TEXT, hold_missing_reason TEXT, updated_wall_ms INTEGER NOT NULL);
+             INSERT INTO agent_activity (session_id, turn_ended_active_ms, updated_wall_ms)
+               VALUES ('s-1', 5, 0);",
+        )
+        .unwrap();
+        ensure_table(&conn).unwrap();
+        ensure_table(&conn).unwrap();
+        let session = SessionId::parse("s-1").unwrap();
+        spawned(
+            &conn,
+            &session,
+            None,
+            Some(&HoldState::AwaitingPing),
+            (10, 0),
+            0,
+        )
+        .unwrap();
+        let (due, told): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT hold_ping_due_active_ms, hold_missing_told FROM agent_activity",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((due, told), (Some(10 + PING_GRACE_MS), 0));
     }
 
     // Defect (review M2): a kill whose end is written before its turn's

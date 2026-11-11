@@ -621,16 +621,11 @@ pub(crate) fn call(
             })
             .map(|(hold, notices)| (json!({"ok": true, "hold": hold}), notices)),
         "wait" => wait(store, session, input, now, caller).map(|reply| (reply, Notices::default())),
-        "ping" => store
-            .lock_conn()
-            .map_err(Refusal::from)
-            .and_then(|conn| Ok(store::ping(&conn, session, now(&conn)?.wall)?))
-            .map(|recorded| {
-                (
-                    json!({"ok": true, "recorded": recorded}),
-                    Notices::default(),
-                )
-            }),
+        // Through the taps' queue, behind the spawn that resets the hold.
+        "ping" => Ok((
+            json!({"ok": true, "recorded": store.alarms.hold_pinged(session)}),
+            Notices::default(),
+        )),
         _ => Err(Refusal::InvalidInput(
             "Unknown hold action. The hold namespace takes request, wait and ping.".into(),
         )),

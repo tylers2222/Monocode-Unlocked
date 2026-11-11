@@ -200,7 +200,9 @@ fn branches(agents: &[Agent], edges: &Edges, now: i64) -> Vec<(Vec<Child>, Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alarms::state::{next_state, Background, Cause, OpenWork, Progress, Transition};
+    use crate::alarms::state::{
+        next_state, Background, Cause, Hold, OpenWork, Progress, Transition,
+    };
 
     const MIN: i64 = 60_000;
     const LIMITS: Thresholds = Thresholds {
@@ -222,6 +224,7 @@ mod tests {
             children: Vec::new(),
             settled_at: None,
             wake_pending_since: None,
+            hold: Hold::Held,
             episode: None,
         }
     }

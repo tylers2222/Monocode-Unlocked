@@ -74,7 +74,7 @@ pub(super) fn ran_a_turn(world: &mut World, session: &SessionId) {
 pub(super) fn claude_tap(world: &World, session: &SessionId) -> ChildTap {
     let alarms = &world.store().alarms;
     let tap = alarms.tap(session.as_str(), Some("claude")).unwrap();
-    alarms.spawned(session.as_str(), Some(&tap));
+    alarms.spawned(session.as_str(), Some(&tap), None);
     tap
 }
 
@@ -666,42 +666,39 @@ fn foreign_episode(world: &World, actor: &str, cause: &str) {
 }
 
 // Defect (S1 r2 F2): an open episode whose cause the detector does not
-// parse (the sleep hold's `hold_missing`, or a newer build's) is dropped
-// from the pass, so every pass tries a second open episode for the agent,
-// fails on the unique index and skips the agent; the episode never closes.
+// parse (a newer build's) is dropped from the pass, so every pass tries a
+// second open episode for the agent, fails on the unique index and skips
+// the agent; the episode never closes. The sleep hold's `hold_missing` has
+// its own rule (scenario sleep_hold_install).
 #[test]
 fn an_episode_of_a_cause_the_detector_does_not_judge_stays_until_its_agent_goes() {
-    for cause in ["hold_missing", "a_newer_cause"] {
-        let mut world = World::new(&format!("alarm-foreign-{cause}"));
-        let mono = world.add_mono_in("alf-mono", MonoRole::Mono, &[P]);
-        let lead = start_lead(&world, &mono, "alf-lead");
-        align(&mut world);
-        ran_a_turn(&mut world, &lead);
-        foreign_episode(&world, "session:alf-lead", cause);
-        world.advance(N + PASS);
-        let open: Vec<(String, String)> = episodes(&world)
-            .into_iter()
-            .filter(|episode| episode.open)
-            .map(|episode| (episode.id, episode.cause))
-            .collect();
-        assert_eq!(open, [("al_foreign".to_string(), cause.to_string())]);
-        assert_eq!(
-            world.store().alarms.last_fault(),
-            None,
-            "{cause}: no agent skipped"
-        );
+    let mut world = World::new("alarm-foreign");
+    let mono = world.add_mono_in("alf-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "alf-lead");
+    align(&mut world);
+    ran_a_turn(&mut world, &lead);
+    foreign_episode(&world, "session:alf-lead", "a_newer_cause");
+    world.advance(N + PASS);
+    let open: Vec<(String, String)> = episodes(&world)
+        .into_iter()
+        .filter(|episode| episode.open)
+        .map(|episode| (episode.id, episode.cause))
+        .collect();
+    assert_eq!(
+        open,
+        [("al_foreign".to_string(), "a_newer_cause".to_string())]
+    );
+    assert_eq!(world.store().alarms.last_fault(), None, "no agent skipped");
 
-        world
-            .conn()
-            .execute("UPDATE sessions SET archived = 1 WHERE id = 'alf-lead'", [])
-            .unwrap();
-        world.advance(PASS);
-        assert_eq!(
-            close_reason(&world, "al_foreign").as_deref(),
-            Some("agent_gone"),
-            "{cause}"
-        );
-    }
+    world
+        .conn()
+        .execute("UPDATE sessions SET archived = 1 WHERE id = 'alf-lead'", [])
+        .unwrap();
+    world.advance(PASS);
+    assert_eq!(
+        close_reason(&world, "al_foreign").as_deref(),
+        Some("agent_gone")
+    );
 }
 
 // Defect (review F4): a notice or message the window saved into the

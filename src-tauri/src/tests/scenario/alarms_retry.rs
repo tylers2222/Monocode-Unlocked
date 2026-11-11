@@ -628,10 +628,18 @@ fn an_alarm_that_is_not_idle_type_never_says_taking_turns() {
         .execute(
             "INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json,
                stalled_since_active_ms, stalled_since_wall_ms, opened_active_ms, opened_wall_ms,
-               level, next_escalate_active_ms)
+               level, next_escalate_active_ms, dialog_text)
              VALUES ('al_hold', 'session:art-lead', 'art-mono', 'mono:art-mono', 'hold_missing',
-               '[]', ?1, 1, ?1, 1, 1, ?2)",
+               '[]', ?1, 1, ?1, 1, 1, ?2, 'hooks disabled')",
             rusqlite::params![since, since + 2 * MINUTE],
+        )
+        .unwrap();
+    world
+        .conn()
+        .execute(
+            "UPDATE agent_activity SET hold_state = 'missing', hold_missing_reason = 'hooks disabled',
+               hold_missing_told = 1 WHERE session_id = 'art-lead'",
+            [],
         )
         .unwrap();
     ran_a_turn_named(&mut world, &lead, "after-it");
@@ -644,7 +652,10 @@ fn an_alarm_that_is_not_idle_type_never_says_taking_turns() {
             |row| row.get(0),
         )
         .unwrap();
-    assert!(text.contains("sleep hold missing"), "{text}");
+    assert!(
+        text.contains("runs without the sleep hold (hooks disabled)"),
+        "{text}"
+    );
     assert!(!text.contains("taking turns"), "{text}");
 }
 

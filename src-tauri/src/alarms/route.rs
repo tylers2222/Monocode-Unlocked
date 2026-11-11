@@ -362,6 +362,8 @@ pub(crate) fn stall(
         last_activity: or_unknown(last_activity(conn, &episode.actor), None),
         dialog,
         stuck: stuck::read(conn, episode, active),
+        hold_missing: (episode.cause == "hold_missing")
+            .then(|| episode.dialog_text.clone().unwrap_or_default()),
         escalate_minutes: settings.escalate_minutes,
         held: 0,
         turning,

@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use super::taps::{Harness, Pipe, Snapshot, Tap};
 use crate::mono_messages::SessionId;
+use crate::sleep_hold::install::HoldState;
 
 /// One change to a session's row, in the order it happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,11 +24,15 @@ pub(crate) enum Write {
         turn_id: String,
         at: i64,
     },
-    /// A new child; `harness` names the tap that reads it (`None`: none).
+    /// A new child; `harness` names the tap that reads it (`None`: none),
+    /// `hold` its sleep hold (`None`: its harness has none).
     Spawned {
         harness: Option<Harness>,
+        hold: Option<HoldState>,
         at: i64,
     },
+    /// The child's sleep hold reported in (`hold ping`).
+    HoldPinged,
     Tap(Snapshot),
     /// The agent's provisioner answered its plan (lead ruling, S2 r2 m1).
     PlanAnswered,
@@ -181,10 +186,11 @@ impl Live {
     }
 
     /// `session`'s child is now the one `tap` reads (`None`: one no tap
-    /// reads), and only `tap` writes its row from now on. Recorded for every
+    /// reads), spawned with sleep hold `hold` (`None`: its harness has none),
+    /// and only `tap` writes its row from now on. Recorded for every
     /// harness, so a session that moves to one no tap reads is not judged
     /// by the last tap's row.
-    pub(crate) fn spawned(&self, session: &str, tap: Option<&ChildTap>) {
+    pub(crate) fn spawned(&self, session: &str, tap: Option<&ChildTap>, hold: Option<HoldState>) {
         let Some(session) = SessionId::parse(session) else {
             return;
         };
@@ -195,8 +201,19 @@ impl Live {
         };
         if let Some(at) = self.now() {
             let harness = tap.map(|tap| tap.harness);
-            pending.push(&session, Write::Spawned { harness, at });
+            pending.push(&session, Write::Spawned { harness, hold, at });
         }
+    }
+
+    /// The sleep hold of `session` reported in. Queued in order with the
+    /// spawn's reset, which `harness_spawn` records as the child starts, long
+    /// before omp boots far enough to ping. `false` when not recorded.
+    pub(crate) fn hold_pinged(&self, session: &str) -> bool {
+        let (Some(session), Some(_)) = (SessionId::parse(session), self.now()) else {
+            return false;
+        };
+        self.record(&session, Write::HoldPinged);
+        true
     }
 
     /// The tap for a child of `session` by `provider`, when this build
@@ -301,7 +318,7 @@ mod tests {
     fn records_wait_for_the_clock_and_a_newer_snapshot_replaces_the_last() {
         let live = Live::default();
         let tap = live.tap("s-1", Some("claude")).unwrap();
-        live.spawned("s-1", Some(&tap));
+        live.spawned("s-1", Some(&tap), None);
         live.turn("s-1", "t1", Edge::Started);
         assert!(live.take().is_empty(), "no clock runs here");
         live.set_now(7);

@@ -33,7 +33,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_STDIN: u64 = 4_000_000;
 const MAX_REPLY: u64 = 64_000;
 const MAX_SHOWN: usize = 300;
-const SHORT_SLEEP_SKIP: &str = "MONOCODE_SHORT_SLEEP_SKIP_S";
+pub(crate) const SHORT_SLEEP_SKIP: &str = "MONOCODE_SHORT_SLEEP_SKIP_S";
 /// Alarms design 12 (card #87): a single wait under 10 s runs unasked.
 const DEFAULT_SHORT_SLEEP_SKIP: Duration = Duration::from_secs(10);
 
@@ -139,9 +139,12 @@ pub(crate) enum Cause {
 static COMMAND: OnceLock<String> = OnceLock::new();
 
 pub fn run(args: Vec<String>) -> i32 {
+    let var = |key: &str| std::env::var(key).ok();
+    if args == ["ping"] {
+        return ping(|| Tcp::from_env(&var), &mut io::stderr());
+    }
     let clock = SystemClock(Instant::now());
     install_panic_refusal();
-    let var = |key: &str| std::env::var(key).ok();
     let outcome = match harness_arg(&args) {
         None => failed(None, "usage: hold --harness claude|codex|omp"),
         Some(harness) => match read_stdin() {
@@ -150,6 +153,26 @@ pub fn run(args: Vec<String>) -> i32 {
         },
     };
     finish(outcome, &mut io::stderr())
+}
+
+/// `<exe> hold ping`: the omp extension reports that its hook is in. Exit
+/// 0 once the app recorded it, else 1 with why on stderr.
+pub(crate) fn ping<T: Transport>(
+    connect: impl FnOnce() -> Result<T, String>,
+    stderr: &mut dyn Write,
+) -> i32 {
+    let reply = connect().and_then(|mut app| app.call("ping", json!({}), "hold-ping", REPLY_WAIT));
+    match reply {
+        Ok(reply) if reply["ok"] == true && reply["recorded"] == true => 0,
+        Ok(reply) => {
+            let _ = writeln!(stderr, "MonoCode did not record the hold ping: {reply}");
+            1
+        }
+        Err(error) => {
+            let _ = writeln!(stderr, "{error}");
+            1
+        }
+    }
 }
 
 /// Codex fails open when a hook crashes, so a panic writes the refusal and
@@ -678,6 +701,39 @@ mod tests {
             (code, stderr.trim_end()),
             (2, refusal(Some("sleep 30"), &Cause::NoAnswer).as_str())
         );
+    }
+
+    #[test]
+    fn a_ping_succeeds_only_when_the_app_recorded_it() {
+        // Defect: the omp extension takes a refused or unrecorded ping as
+        // installed and never pings again, so the session reads as missing.
+        let ping_with = |reply: Value| {
+            let app = FakeApp::start(move |_| reply.to_string());
+            let env: HashMap<_, _> = app.env().into_iter().collect();
+            let mut stderr = Vec::new();
+            let code = ping(|| Tcp::from_env(&|key| env.get(key).cloned()), &mut stderr);
+            (code, String::from_utf8(stderr).unwrap(), app.requests())
+        };
+        let (code, stderr, requests) = ping_with(json!({"ok": true, "recorded": true}));
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        let [request] = <[Value; 1]>::try_from(requests).unwrap();
+        assert_eq!(
+            (&request["action"], &request["namespace"], &request["token"]),
+            (&json!("ping"), &json!("hold"), &json!(TOKEN))
+        );
+        for reply in [
+            json!({"ok": true, "recorded": false}),
+            json!({"ok": false, "code": "failed", "error": "No turn of this session is running"}),
+        ] {
+            let (code, stderr, _) = ping_with(reply.clone());
+            assert_eq!(code, 1, "{reply}");
+            assert!(stderr.contains("did not record the hold ping"), "{stderr}");
+        }
+        let mut stderr = Vec::new();
+        assert_eq!(ping(|| Tcp::from_env(&|_| None), &mut stderr), 1);
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("MONOCODE_APP_ENDPOINT"));
     }
 
     #[test]

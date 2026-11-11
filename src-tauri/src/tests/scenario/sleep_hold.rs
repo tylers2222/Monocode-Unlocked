@@ -34,13 +34,13 @@ const SECOND: i64 = 1_000;
 const GH_WATCH: &str = "gh pr checks 912 --watch";
 
 /// A Giga, its Mono, the Mono's lead and the lead's worker.
-struct Chain {
+pub(super) struct Chain {
     mono: Mono,
     lead: SessionId,
-    worker: SessionId,
+    pub(super) worker: SessionId,
 }
 
-fn chain(world: &World, name: &str) -> Chain {
+pub(super) fn chain(world: &World, name: &str) -> Chain {
     world.add_mono_in(&format!("{name}-giga"), MonoRole::Giga, &[P]);
     let mono = world.add_mono_in(&format!("{name}-mono"), MonoRole::Mono, &[P]);
     let start = |caller, id: &str| {
@@ -491,9 +491,38 @@ fn a_ping_marks_the_session_hold_installed() {
     let chain = chain(&world, "hp");
     world.alarm_turn_started(&chain.worker, "turn-1");
     world.advance(SECOND);
-    let (reply, _) = service::call(
+    assert_eq!(
+        ping(&world, &chain.worker),
+        json!({"ok": true, "recorded": true})
+    );
+    world.advance(PASS);
+    assert_eq!(
+        hold_state_of(&world, &chain.worker),
+        (Some("installed".into()), None)
+    );
+}
+
+pub(super) const PASS: i64 = 5 * SECOND;
+
+/// `agent_activity.hold_state` and `hold_missing_reason` of `session`.
+pub(super) fn hold_state_of(
+    world: &World,
+    session: &SessionId,
+) -> (Option<String>, Option<String>) {
+    world
+        .conn()
+        .query_row(
+            "SELECT hold_state, hold_missing_reason FROM agent_activity WHERE session_id = ?1",
+            [session.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+pub(super) fn ping(world: &World, session: &SessionId) -> Value {
+    service::call(
         world.store(),
-        chain.worker.as_str(),
+        session.as_str(),
         "ping",
         &json!({}),
         &|_: &Connection| Ok((0, 0).into()),
@@ -502,17 +531,8 @@ fn a_ping_marks_the_session_hold_installed() {
             peer: None,
             may_block: true,
         },
-    );
-    assert_eq!(reply, json!({"ok": true, "recorded": true}));
-    let state: Option<String> = world
-        .conn()
-        .query_row(
-            "SELECT hold_state FROM agent_activity WHERE session_id = ?1",
-            [chain.worker.as_str()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(state.as_deref(), Some("installed"));
+    )
+    .0
 }
 
 /// The hook client's clock: no real time passes.
