@@ -10,11 +10,13 @@ import {
  * a failed read: the add list hides, and a Mono's choices stay the rail's.
  */
 let known: readonly KnownProject[] = [];
-let latest = 0;
+/** The newest read's token: an older read's answer comes in too late. */
+let latest: object | undefined;
 const listeners = new Set<() => void>();
 
 export function loadKnownProjects(): Promise<void> {
-  const request = ++latest;
+  const request = {};
+  latest = request;
   return listKnownProjects()
     .then((reply) => (Array.isArray(reply) ? reply : []))
     .catch(() => [])
@@ -43,7 +45,7 @@ export function __knownProjectsTestReset(): void {
   stopWatching?.();
   stopWatching = undefined;
   known = [];
-  latest = 0;
+  latest = undefined;
   listeners.clear();
 }
 

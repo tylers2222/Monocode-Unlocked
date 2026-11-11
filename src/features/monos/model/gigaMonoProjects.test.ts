@@ -56,3 +56,17 @@ it("falls back to the rail when the known list cannot be read", async () => {
   await loadKnownProjects();
   expect(monoProjectChoices().map((item) => item.path)).toEqual(["/work/rail"]);
 });
+
+it("accepts a name with spaces around it", () => {
+  expect(resolveMonoProjects(["  shared "], undefined)).toEqual([
+    "/work/shared",
+  ]);
+});
+
+it("names every choice, with its folder, in a refusal", () => {
+  expect(() => resolveMonoProjects(["/work/none"], undefined)).toThrow(
+    new Error(
+      "Not a project in MonoCode: /work/none. Projects: rail (/work/rail), shared (/work/shared)",
+    ),
+  );
+});
