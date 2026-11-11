@@ -74,12 +74,18 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
 vi.mock("../../projects/model/projectDeleteCheck", async (original) => ({
   ...(await original<object>()),
   checkProjectDelete: vi.fn(async () => null),
-  readProjectDeletePrompt: vi.fn(async () => ({
-    sessions: 0,
-    scoped: true,
-    spaceName: "Space 1",
+}));// The dialog's text has its own tests; here it is a last-Space delete.
+vi.mock("../../projects/model/projectDeleteDialog", () => ({
+  readProjectDeleteText: vi.fn(async (name: string) => ({
+    title: `Delete “${name}”?`,
+    summary: "",
+    keeps: [],
+    count: null,
+    location: "",
+    confirm: "Delete",
   })),
 }));
+
 
 let container: HTMLDivElement;
 let root: Root;

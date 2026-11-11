@@ -33,12 +33,18 @@ vi.mock("../../features/projects/model/projectDeleteCheck", async (original) => 
   ...(await original<object>()),
   checkProjectArchive: vi.fn(async () => null),
   checkProjectDelete: vi.fn(async () => null),
-  readProjectDeletePrompt: vi.fn(async () => ({
-    sessions: 0,
-    scoped: true,
-    spaceName: "Space 1",
+}));// The dialog's text has its own tests; here it is a last-Space delete.
+vi.mock("../../features/projects/model/projectDeleteDialog", () => ({
+  readProjectDeleteText: vi.fn(async (name: string) => ({
+    title: `Delete “${name}”?`,
+    summary: "",
+    keeps: [],
+    count: null,
+    location: "",
+    confirm: "Delete",
   })),
 }));
+
 
 beforeEach(async () => {
   onRemoveProject.mockReset();

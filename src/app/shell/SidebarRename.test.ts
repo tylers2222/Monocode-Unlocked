@@ -2363,11 +2363,15 @@ describe("collapsed rail Inbox actions", () => {
         remove.click();
         await new Promise((done) => setTimeout(done));
       });
+      // The dialog opens once it has read what the delete would do.
+      await act(async () => {
+        await new Promise((done) => setTimeout(done));
+      });
       expect(projectSearchInput()).not.toBeNull();
       const dialog = document.querySelector('[aria-label="Delete other"]')!;
       const confirm = Array.from(
         dialog.querySelectorAll<HTMLButtonElement>("button"),
-      ).find((button) => button.textContent === "Delete")!;
+      ).find((button) => button.textContent?.startsWith("Delete"))!;
       act(() => confirm.click());
       expect(props.onRemoveProject).toHaveBeenCalledWith("/workspace/other", {
         purgeData: true,
