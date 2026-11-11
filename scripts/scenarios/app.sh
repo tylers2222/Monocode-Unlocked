@@ -13,6 +13,8 @@
 #                             a plaintext database on, each stopping the app
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
+#   app.sh warm               ADE-273: spawn fx from the app until it starts,
+#                             so the first scenario skips the cold exec
 #   app.sh r9                 R9: reminders reach an idle lead, a lead at its
 #                             turn end and a lead across two kills, once each;
 #                             R10: each offers one extension, used once
@@ -491,6 +493,32 @@ run_r6() {
   return "$FAILED"
 }
 
+# warm: on a fresh runner the first fx the app spawns is slow to exec
+# (ADE-273 type A): 7 s in a pass, and in runs 43029497477 and 43030457436
+# no Node start within fx's 30 s initialize timer, so the shard's first
+# scenario (r9, s0) failed. A Giga habit spawns fx, up to 4 launches, until
+# the puppet logs its start. It never fails: it only logs how long it took.
+puppet_started() { grep -q '"event":"start"' "$PUPPET/timing.jsonl" 2>/dev/null; }
+run_warm() {
+  local try started _
+  for try in 1 2 3 4; do
+    fresh_pair warm
+    jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [{match: "WARM-HABIT", reply: "Warm."}]}' \
+      >"$PUPPET/script.json"
+    request_habit warm-giga "Warm up" "WARM-HABIT: reply."
+    started=$SECONDS
+    "$INSTANCE" start
+    for _ in $(seq 1 45); do puppet_started && break; sleep 1; done
+    "$INSTANCE" stop
+    if puppet_started; then
+      log "warm-up: fx started on launch $try, $((SECONDS - started)) s after the start"
+      return 0
+    fi
+    log "warm-up: no fx start on launch $try in 45 s"
+  done
+  log "warm-up: no fx start in 4 launches; the first scenario may time out"
+}
+
 # R9: the Giga asks the Mono, which starts three leads with a 10-minute start
 # ask each and never acks. The idle lead's turn ends at once; the busy and
 # late leads' first turns wait while $PUPPET/hold and $PUPPET/hold-late
@@ -765,6 +793,8 @@ case "${1:-}" in
   s0-run) run_s0 "$2" ;;
   d1) run_d1 ;;
   r6) run_r6 ;;
+  # A warm-up that stops early is logged, never a failure.
+  warm) (run_warm) || log "warm-up: stopped early (exit $?)" ;;
   r9) run_r9 ;;
   r11) run_r11 ;;
   ceiling) run_ceiling ;;
@@ -795,5 +825,5 @@ case "${1:-}" in
     for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
     log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,44p' "$0"; exit 2 ;;
+  *) sed -n '2,46p' "$0"; exit 2 ;;
 esac
