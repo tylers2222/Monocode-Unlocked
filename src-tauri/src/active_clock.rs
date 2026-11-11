@@ -4,12 +4,15 @@
 //! downtime and sleep never make a deadline pass. A 1 s tick adds the
 //! uptime that passed, read straight from a clock that stops during sleep,
 //! never from `Instant` or a Tokio timer (Rust leaves their sleep behaviour
-//! unspecified). Raw uptime is never stored: it restarts at every boot.
+//! unspecified). One exception, not on Windows: between ticks the lease
+//! holder's hold reading moves the last tick on by `Instant`, at most one
+//! step ([`crate::alarms::Live::now_at`]). Raw uptime is never stored: it
+//! restarts at every boot.
 //! Downtime and sleep are kept in `mono_downtime` only to explain delays.
 
 use std::fs::{File, TryLockError};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use tauri::{AppHandle, Manager};
@@ -19,9 +22,9 @@ use crate::session_store::SessionStore;
 
 /// The clocks the active clock reads. `uptime_ns` stops while the computer
 /// sleeps and `monotonic_ns` does not; both restart at boot. `boot_wall_ms`
-/// is the wall time the computer booted.
+/// is the wall time the computer booted. `read_at` is when they were read.
 pub trait Clock {
-    /// All four clocks at one instant, so a launch or a tick never mixes
+    /// All the clocks at one instant, so a launch or a tick never mixes
     /// values from two readings.
     fn now(&mut self) -> Reading;
 }
@@ -35,19 +38,63 @@ pub struct Reading {
     pub monotonic_ns: u64,
     pub wall_ms: i64,
     pub boot_wall_ms: i64,
+    #[cfg_attr(
+        any(feature = "fake-clock", test),
+        serde(skip, default = "Instant::now")
+    )]
+    pub read_at: Instant,
 }
 
 /// How often the app's thread ticks.
 const TICK: Duration = Duration::from_secs(1);
 /// The most one tick adds, so a tick that stalled (App Nap, a busy store)
 /// cannot add a long gap at once.
-const MAX_STEP_NS: u64 = 30_000_000_000;
+pub(crate) const MAX_STEP: Duration = Duration::from_secs(30);
 /// The active time a crash may lose: the row is written this often.
 const PERSIST_EVERY_NS: u64 = 5_000_000_000;
 /// A monotonic minus uptime gap below this is scheduling noise, not sleep.
 const SLEEP_MIN_NS: u64 = 2_000_000_000;
 
 const NS_PER_MS: u64 = 1_000_000;
+
+/// The active time as a process reads it, with whether the clock runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Active {
+    Running(i64),
+    /// No process ticks the clock: the time it stopped at.
+    Stopped(i64),
+}
+
+/// The active time at wall time `wall` as any process reads it: `live`,
+/// this process's clock when it holds the lease, else the stored clock
+/// moved on by the wall time since it was written. The lease holder writes
+/// it every 5 s, so a longer gap, or no clock at all, is a clock that
+/// stopped; wall time never stands in for it, as the computer may sleep.
+pub(crate) fn active_at(
+    live: Option<i64>,
+    conn: &Connection,
+    wall: i64,
+) -> rusqlite::Result<Active> {
+    if let Some(active) = live {
+        return Ok(Active::Running(active));
+    }
+    let stored: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT active_ms, last_wall_ms FROM mono_clock WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    // One persist interval plus one tick: the tightest bound that never
+    // reads a holder that keeps pace as stopped. A holder tick late by more
+    // than a second reads as stopped here, which fails closed.
+    let stale_ms = ms(PERSIST_EVERY_NS) + ms(TICK.as_nanos() as u64);
+    Ok(match stored {
+        None => Active::Stopped(0),
+        Some((active, last_wall)) if wall - last_wall > stale_ms => Active::Stopped(active),
+        Some((active, last_wall)) => Active::Running(active + (wall - last_wall).max(0)),
+    })
+}
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -94,6 +141,7 @@ pub(crate) struct ActiveClock<C: Clock> {
     persisted_ns: u64,
     uptime_ns: u64,
     monotonic_ns: u64,
+    read_at: Instant,
     /// The `alarms::PASS_MS` slice the detector last ran in.
     alarm_slice: Option<i64>,
 }
@@ -142,6 +190,7 @@ impl<C: Clock> ActiveClock<C> {
             _lease: lease,
             uptime_ns: now.uptime_ns,
             monotonic_ns: now.monotonic_ns,
+            read_at: now.read_at,
             clock,
             active_ns,
             persisted_ns: active_ns,
@@ -167,7 +216,8 @@ impl<C: Clock> ActiveClock<C> {
             .saturating_sub(awake);
         self.uptime_ns = uptime;
         self.monotonic_ns = monotonic;
-        self.active_ns += awake.min(MAX_STEP_NS);
+        self.read_at = now.read_at;
+        self.active_ns += awake.min(MAX_STEP.as_nanos() as u64);
         if slept >= SLEEP_MIN_NS {
             let wall = now.wall_ms;
             conn.execute(
@@ -184,8 +234,12 @@ impl<C: Clock> ActiveClock<C> {
             self.persisted_ns = self.active_ns;
         }
         let active = self.active_ms();
-        alarms.live.set_now(active);
+        self.stamp(alarms.live);
         let mut notices = crate::ask_scheduler::run(conn, active, now.wall_ms)?;
+        // A hold fault must not stop the reminders or the clock either.
+        if let Err(error) = crate::sleep_hold::service::sweep(conn, (active, now.wall_ms)) {
+            eprintln!("Could not time out the sleep holds: {error}");
+        }
         let slice = active / crate::alarms::PASS_MS;
         if self.alarm_slice != Some(slice) {
             self.alarm_slice = Some(slice);
@@ -205,6 +259,12 @@ impl<C: Clock> ActiveClock<C> {
 
     pub(crate) fn active_ms(&self) -> i64 {
         ms(self.active_ns)
+    }
+
+    /// Hands `live` the active time as of the last read of the clocks, not
+    /// of the store writes after it.
+    pub(crate) fn stamp(&self, live: &crate::alarms::Live) {
+        live.set_now_at(self.active_ms(), self.read_at);
     }
 }
 
@@ -258,9 +318,7 @@ pub(crate) fn init<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
         return Ok(());
     };
     // Taps record from launch, not from the first tick.
-    app.state::<SessionStore>()
-        .alarms
-        .set_now(clock.active_ms());
+    clock.stamp(&app.state::<SessionStore>().alarms);
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
@@ -388,6 +446,7 @@ mod system {
 impl Clock for SystemClock {
     fn now(&mut self) -> Reading {
         Reading {
+            read_at: Instant::now(),
             uptime_ns: system::uptime_ns(),
             monotonic_ns: system::monotonic_ns(),
             wall_ms: crate::mono_messages::now_ms(),
@@ -436,7 +495,10 @@ mod fake {
                 Ok(now) => self.last = now,
                 Err(error) => eprintln!("{error}"),
             }
-            self.last
+            Reading {
+                read_at: std::time::Instant::now(),
+                ..self.last
+            }
         }
     }
 
@@ -524,5 +586,42 @@ mod tests {
         assert_eq!(wall(90_000), 91_000 + 8 * HOUR_MS, "after the sleep only");
         assert_eq!(wall(150_000), 151_000 + 9 * HOUR_MS, "after both");
         assert_eq!(wall(180_000), now.1);
+    }
+
+    // Defect: a process without the lease reads the clock its holder
+    // stored up to 5 s ago, so it takes a hold's answer after the cut; or
+    // a holder that stopped leaves the clock frozen, so holds never time
+    // out, or makes it run on with the wall clock.
+    #[test]
+    fn a_process_without_the_lease_reads_the_stored_clock_moved_on_by_wall_time() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_tables(&conn).unwrap();
+        let at = |wall| active_at(None, &conn, wall).unwrap();
+        assert_eq!(at(9_000), Active::Stopped(0), "no clock yet");
+        conn.execute(
+            "INSERT INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms)
+             VALUES (1, 100000, 50000, 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(at(50_000), Active::Running(100_000));
+        assert_eq!(
+            at(54_000),
+            Active::Running(104_000),
+            "4 s since the holder wrote it"
+        );
+        assert_eq!(
+            at(49_000),
+            Active::Running(100_000),
+            "a wall clock set back adds nothing"
+        );
+        assert_eq!(at(56_000), Active::Running(106_000));
+        assert_eq!(at(56_001), Active::Stopped(100_000), "the holder stopped");
+        assert_eq!(at(500_000), Active::Stopped(100_000));
+        assert_eq!(
+            active_at(Some(7), &conn, 500_000).unwrap(),
+            Active::Running(7),
+            "the lease holder's own"
+        );
     }
 }

@@ -44,6 +44,11 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub(crate) use route::TylerAlarm;
+// The sleep hold (row H) asks the same provisioner chain, in the same words.
+pub(crate) use provisioner::Provisioner;
+pub(crate) use rights::standing;
+pub(crate) use route::{climb, provisioner_of, short, who};
+pub(crate) use store::Settings;
 
 /// Whether `above` is `agent` itself or a provisioner on `agent`'s chain:
 /// the ones who may set up a wake for `agent` (`ci.watch`).

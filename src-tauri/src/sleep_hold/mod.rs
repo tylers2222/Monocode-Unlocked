@@ -4,13 +4,25 @@
 //! and the `hold` namespace messages it exchanges with the app.
 pub mod classify;
 pub mod client;
+pub(crate) mod service;
+pub(crate) mod store;
+
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use classify::{classify, Wait, WaitKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// How long a hold takes an answer, from its request. The client's last
+/// wait ends here and the app closes the hold here, so a logged decision
+/// is always one the client received (lead ruling, H risk 1).
+pub const ANSWER_CUT: Duration = Duration::from_secs(115);
+/// The longest `hold.wait`: the client asks for at most this, the app
+/// serves at most this inside its 35 s reply window and refuses more.
+pub const MAX_WAIT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Harness {
     Claude,
@@ -50,15 +62,18 @@ pub struct HoldRequested {
 }
 
 /// `hold.wait` input: block up to `timeout_seconds` for a decision.
+/// `last`: the client sends no wait after this one, so the app closes the
+/// hold at its end and no answer lands once the client stopped listening.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HoldWait<'a> {
     pub hold: &'a str,
     pub timeout_seconds: u64,
+    pub last: bool,
 }
 
 /// `hold.wait` answer: `{"ok":true,"status":"pending"}` and so on.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum HoldWaitReply {
     Pending,

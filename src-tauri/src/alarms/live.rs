@@ -5,8 +5,9 @@
 //! takes the records and writes them in its own transaction.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use super::taps::{Harness, Pipe, Snapshot, Tap};
 use crate::mono_messages::SessionId;
@@ -62,9 +63,10 @@ impl Pending {
 }
 
 struct Hub {
-    /// The active time of this process's clock at its last tick; -1 while
-    /// no clock runs here (another process holds the lease and the rows).
-    now: AtomicI64,
+    /// The active time of this process's clock at its last tick, and when
+    /// that tick ran; `None` while no clock runs here (another process
+    /// holds the lease and the rows).
+    ticked: Mutex<Option<(i64, Instant)>>,
     /// The id of the last tap made.
     taps: AtomicU64,
     pending: Mutex<Pending>,
@@ -79,12 +81,37 @@ pub(crate) struct Live(Arc<Hub>);
 impl Default for Live {
     fn default() -> Self {
         Self(Arc::new(Hub {
-            now: AtomicI64::new(-1),
+            ticked: Mutex::default(),
             taps: AtomicU64::new(0),
             pending: Mutex::default(),
             fault: Mutex::default(),
         }))
     }
+}
+
+/// Whether a hold reading moves the last tick on by `Instant`. On macOS
+/// and Linux `Instant` is the clock the tick adds, which stops during
+/// sleep. On Windows it counts sleep, so a reading in the second after a
+/// wake would run up to one step ahead: a hold stamped then would stay open
+/// past its client's cut (fails open), and one checked then would time out
+/// early, which is harmless as the client's own `Instant` ran ahead too.
+/// There the reading stays at the last tick instead: it lags by up to a
+/// tick, so a hold stamped then times out early (fails closed), but while
+/// the tick stalls a hold whose client stopped closes up to the stall late
+/// (#547).
+const EXTRAPOLATE: bool = !cfg!(windows);
+
+/// The last tick `(active, when it read its clock)` at `at`: moved on by
+/// the time since, at most the step the next tick may add, so a stalled
+/// tick (App Nap, a busy store) does not hold the clock back.
+fn reading((active, ticked): (i64, Instant), at: Instant, extrapolate: bool) -> i64 {
+    if !extrapolate {
+        return active;
+    }
+    let since = at
+        .saturating_duration_since(ticked)
+        .min(crate::active_clock::MAX_STEP);
+    active.saturating_add(i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -94,14 +121,26 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Live {
-    /// The clock thread's tick: taps measure against `active` from now on.
+    #[cfg(test)]
     pub(crate) fn set_now(&self, active: i64) {
-        self.0.now.store(active, Ordering::Relaxed);
+        self.set_now_at(active, Instant::now());
+    }
+
+    /// The clock's stamp: taps measure against `active` from now on, and
+    /// the hold reading moves on from `at`, when the clock read it.
+    pub(crate) fn set_now_at(&self, active: i64, at: Instant) {
+        *lock(&self.0.ticked) = Some((active, at));
     }
 
     pub(crate) fn now(&self) -> Option<i64> {
-        let now = self.0.now.load(Ordering::Relaxed);
-        (now >= 0).then_some(now)
+        lock(&self.0.ticked).map(|(active, _)| active)
+    }
+
+    /// The active time at `at`, with no tick lag where [`EXTRAPOLATE`]
+    /// holds, else the last tick's.
+    pub(crate) fn now_at(&self, at: Instant) -> Option<i64> {
+        let ticked = (*lock(&self.0.ticked))?;
+        Some(reading(ticked, at, EXTRAPOLATE))
     }
 
     fn record(&self, session: &SessionId, write: Write) {
@@ -247,6 +286,8 @@ impl ChildTap {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn session() -> SessionId {
@@ -272,6 +313,41 @@ mod tests {
         assert_eq!(writes.len(), 2, "{writes:?}");
         assert!(matches!(&writes[1], Write::Tap(row) if row.last_progress_at == 20_000));
         assert!(live.take().is_empty());
+    }
+
+    // Defect: a hold reads the clock its last tick left, so a tick that
+    // stalled for seconds makes a live hold client look idle; or the
+    // reading runs past what the next tick adds; or, where `Instant`
+    // counts sleep, it runs on past the tick and a hold stamped after a
+    // wake stays open past its client's cut.
+    #[test]
+    fn the_live_reading_moves_on_from_the_last_tick_up_to_one_step() {
+        let ticked = Instant::now();
+        let at = |ms: u64, extrapolate| {
+            reading(
+                (40_000, ticked),
+                ticked + Duration::from_millis(ms),
+                extrapolate,
+            )
+        };
+        assert_eq!(
+            [0, 4_900, 90_000].map(|ms| at(ms, true)),
+            [40_000, 44_900, 70_000]
+        );
+        assert_eq!(
+            [0, 4_900, 90_000].map(|ms| at(ms, false)),
+            [40_000; 3],
+            "stays at the tick"
+        );
+        let live = Live::default();
+        assert_eq!(live.now_at(ticked), None, "no clock runs here");
+        live.set_now_at(40_000, ticked);
+        let later = live.now_at(ticked + Duration::from_millis(4_900));
+        #[cfg(not(windows))]
+        assert_eq!(later, Some(44_900));
+        #[cfg(windows)]
+        assert_eq!(later, Some(40_000), "Instant counts sleep here");
+        assert_eq!(live.now(), Some(40_000), "taps still read the tick");
     }
 
     // Defect: the writes of a pass that rolled back are lost, or come back

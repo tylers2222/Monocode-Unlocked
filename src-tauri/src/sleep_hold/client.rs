@@ -13,17 +13,17 @@ use serde_json::{json, Value};
 
 use super::{
     classify, parse_payload, Harness, HoldRequest, HoldRequested, HoldWait, HoldWaitReply,
+    ANSWER_CUT, MAX_WAIT,
 };
 
-/// The client's own deadline. The hook timeout is 150 s and Codex fails
-/// open when a hook times out, so the client must give up first.
-const DEADLINE: Duration = Duration::from_secs(120);
-/// The longest `hold.wait`, inside the app's reply window.
-const SLICE: Duration = Duration::from_secs(30);
+/// The client's own deadline: its last wait ends at the app's answer cut.
+/// The hook timeout is 150 s and Codex fails open when a hook times out,
+/// so the client must give up first.
+const DEADLINE: Duration = Duration::from_secs(ANSWER_CUT.as_secs() + MARGIN.as_secs());
 /// How long the app may take to answer any call (control.rs REPLY_WAIT).
 const REPLY_WAIT: Duration = Duration::from_secs(35);
 /// Time left for a reply to arrive after the app's wait ends.
-const MARGIN: Duration = Duration::from_secs(5);
+pub(crate) const MARGIN: Duration = Duration::from_secs(5);
 /// The least time between two `hold.wait` calls, so an app that answers
 /// `pending` at once is not polled in a tight loop.
 const POLL_FLOOR: Duration = Duration::from_secs(1);
@@ -67,13 +67,13 @@ pub trait Transport {
 
 /// The app's loopback endpoint, one JSON line each way per call, as
 /// control_cli.rs frames it, in the `hold` namespace.
-struct Tcp {
+pub(crate) struct Tcp {
     address: SocketAddr,
     token: String,
 }
 
 impl Tcp {
-    fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
+    pub(crate) fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
         let var = |key: &str| var(key).filter(|value| !value.is_empty());
         let (Some(endpoint), Some(token)) =
             (var("MONOCODE_APP_ENDPOINT"), var("MONOCODE_APP_TOKEN"))
@@ -119,7 +119,7 @@ impl Transport for Tcp {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Outcome {
+pub(crate) enum Outcome {
     /// Not a wait, or allowed: the harness's normal flow continues.
     Run,
     Refused {
@@ -129,7 +129,7 @@ enum Outcome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Cause {
+pub(crate) enum Cause {
     Denied(Option<String>),
     NoAnswer,
     Failed(String),
@@ -187,7 +187,7 @@ fn failed(command: Option<String>, error: &str) -> Outcome {
     }
 }
 
-fn hold<T: Transport>(
+pub(crate) fn hold<T: Transport>(
     harness: Harness,
     stdin: &str,
     var: &dyn Fn(&str) -> Option<String>,
@@ -233,6 +233,7 @@ fn hold<T: Transport>(
 }
 
 /// Asks once, then long-polls in slices that all end before the deadline.
+/// It marks its last slice, so it never stops without telling the app.
 fn ask(
     transport: &mut impl Transport,
     clock: &dyn Clock,
@@ -249,19 +250,17 @@ fn ask(
     let mut slice = 0u32;
     loop {
         let started = clock.elapsed();
-        let Some(wait) = DEADLINE
-            .checked_sub(started + MARGIN)
-            .map(|left| Duration::from_secs(left.min(SLICE).as_secs()))
-            .filter(|wait| !wait.is_zero())
-        else {
-            return Ok(HoldWaitReply::Timeout);
-        };
+        let left = DEADLINE.saturating_sub(started + MARGIN);
+        let wait = Duration::from_secs(left.min(MAX_WAIT).as_secs());
+        let last = left - wait < Duration::from_secs(1);
         let input = json!(HoldWait {
             hold: &requested.hold,
             timeout_seconds: wait.as_secs(),
+            last,
         });
         let request_id = format!("hold-{id}-wait-{slice}");
         match read_reply(transport.call("wait", input, &request_id, wait + MARGIN)?)? {
+            HoldWaitReply::Pending if last => return Ok(HoldWaitReply::Timeout),
             HoldWaitReply::Pending => {
                 slice += 1;
                 let spent = clock.elapsed().saturating_sub(started);
@@ -465,7 +464,7 @@ mod tests {
         assert_eq!(requests[1]["namespace"], "hold");
         assert_eq!(
             requests[1]["input"],
-            json!({"hold": "sh_1", "timeoutSeconds": 30})
+            json!({"hold": "sh_1", "timeoutSeconds": 30, "last": false})
         );
         assert_eq!(requests.len(), 2);
     }
@@ -530,6 +529,37 @@ mod tests {
             clock.elapsed() + MARGIN + POLL_FLOOR > DEADLINE,
             "gave up early"
         );
+    }
+
+    #[test]
+    fn the_client_tells_the_app_which_wait_is_its_last() {
+        // Defect: the client stops after a wait the app did not know was its
+        // last, so the app takes an answer that no one hears.
+        for overrun in [0, 600, 10_000].map(Duration::from_millis) {
+            let clock = FakeClock::default();
+            let waited = clock.clone();
+            let app = FakeApp::start(move |request| {
+                if request["action"] == "request" {
+                    return json!({"ok": true, "hold": "sh_1"}).to_string();
+                }
+                let slice = request["input"]["timeoutSeconds"].as_u64().unwrap();
+                waited.advance(Duration::from_secs(slice) + overrun);
+                json!({"ok": true, "status": "pending"}).to_string()
+            });
+            let (code, _) = run_hold(
+                Harness::Claude,
+                &claude_bash("sleep 600", false),
+                &app.env(),
+                &clock,
+            );
+            assert_eq!(code, 2);
+            let last: Vec<bool> = app.requests()[1..]
+                .iter()
+                .map(|request| request["input"]["last"].as_bool().unwrap())
+                .collect();
+            let (end, before) = last.split_last().unwrap();
+            assert!(*end && !before.contains(&true), "{overrun:?}: {last:?}");
+        }
     }
 
     #[test]

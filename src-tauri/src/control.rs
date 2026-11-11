@@ -5,8 +5,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -527,105 +528,326 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         inner: inner.clone(),
     });
     let app = app.clone();
+    let waits = HoldWaits::new(Arc::new(crate::sleep_hold::service::now));
     std::thread::spawn(move || {
         // Limit concurrent readers, including unauthenticated sockets.
-        let (tx, rx) = mpsc::sync_channel::<TcpStream>(32);
+        let (tx, rx) = mpsc::sync_channel::<(TcpStream, Instant)>(32);
         let rx = Arc::new(Mutex::new(rx));
         for _ in 0..8 {
             let rx = rx.clone();
             let app = app.clone();
             let inner = inner.clone();
+            let waits = waits.clone();
             std::thread::spawn(move || loop {
                 let stream = match rx.lock() {
                     Ok(rx) => rx.recv(),
                     Err(_) => return,
                 };
-                let Ok(stream) = stream else { return };
-                serve(stream, &app, &inner);
+                let Ok((stream, accepted)) = stream else {
+                    return;
+                };
+                serve(stream, accepted, &app, &inner, &waits);
             });
         }
         for stream in listener.incoming().flatten() {
-            let _ = tx.try_send(stream);
+            let _ = tx.try_send((stream, Instant::now()));
         }
     });
     Ok(())
 }
 
-fn serve<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, inner: &Arc<Mutex<Inner>>) {
+/// One request line off `stream`, checked as every namespace needs it.
+fn read_request(stream: &mut TcpStream) -> Result<Request, Failure> {
+    let mut raw = String::new();
+    BufReader::new(stream)
+        .take(262_145)
+        .read_line(&mut raw)
+        .map_err(|e| e.to_string())?;
+    if raw.len() > 262_144 {
+        return Err("Request exceeds 256 KiB".into());
+    }
+    let request: Request = serde_json::from_str(&raw).map_err(|_| "Invalid control request")?;
+    if !request.input.is_object() || request.request_id.is_empty() || request.request_id.len() > 128
+    {
+        return Err("Invalid input or request ID".into());
+    }
+    Ok(request)
+}
+
+/// The clock of every `hold` call this listener serves.
+pub(crate) type HoldNow = Arc<
+    dyn Fn(&SessionStore, &Connection) -> rusqlite::Result<crate::sleep_hold::service::HoldTime>
+        + Send
+        + Sync,
+>;
+
+/// The `hold.wait` calls served at once, each on its own thread so a long
+/// poll never takes one of the eight readers. Past the cap, a wait answers
+/// on the reader at once.
+pub(crate) struct HoldWaits {
+    running: AtomicUsize,
+    now: HoldNow,
+}
+
+/// One running `hold.wait`; it gives its place back however its thread
+/// ends, a panic included.
+struct WaitSlot(Arc<HoldWaits>);
+
+impl HoldWaits {
+    const MAX: usize = 64;
+
+    fn new(now: HoldNow) -> Arc<Self> {
+        Arc::new(Self {
+            running: AtomicUsize::new(0),
+            now,
+        })
+    }
+
+    /// A place, or `None` past the cap; a refused place is given back as
+    /// its slot drops.
+    fn take(self: &Arc<Self>) -> Option<WaitSlot> {
+        let before = self.running.fetch_add(1, Ordering::SeqCst);
+        let slot = WaitSlot(self.clone());
+        (before < Self::MAX).then_some(slot)
+    }
+}
+
+impl Drop for WaitSlot {
+    fn drop(&mut self) {
+        self.0.running.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn serve<R: Runtime>(
+    mut stream: TcpStream,
+    accepted: Instant,
+    app: &AppHandle<R>,
+    inner: &Arc<Mutex<Inner>>,
+    waits: &Arc<HoldWaits>,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
-    let result = (|| -> Result<Value, Failure> {
-        let mut raw = String::new();
-        BufReader::new(&mut stream)
-            .take(262_145)
-            .read_line(&mut raw)
-            .map_err(|e| e.to_string())?;
-        if raw.len() > 262_144 {
-            return Err("Request exceeds 256 KiB".into());
-        }
-        let request: Request = serde_json::from_str(&raw).map_err(|_| "Invalid control request")?;
-        if !request.input.is_object()
-            || request.request_id.is_empty()
-            || request.request_id.len() > 128
-        {
-            return Err("Invalid input or request ID".into());
-        }
-        let mut emit = |window: &str, event: Event| {
-            app.emit_to(window, "monocode-control-request", event)
-                .is_ok()
-        };
-        let call = Call {
-            namespace: request.namespace.clone(),
-            request_id: request.request_id,
-            action: request.action,
-            input: request.input,
-        };
-        let store_action = call.action.starts_with("alarms.") || call.action.starts_with("ci.");
-        if call.namespace == "app" && store_action {
-            let grant = {
-                let host = inner.lock().map_err(|_| "Control service unavailable")?;
-                request_grant(&host, "app", &request.token)?
-            };
-            if call.action.starts_with("alarms.") {
-                return alarm_call(app, inner, &grant, call, &mut emit, REPLY_WAIT);
+    let response = match read_request(&mut stream) {
+        Err(failure) => failure.response(),
+        Ok(request) if request.namespace == "hold" => {
+            if request.action == "wait" {
+                if let Some(slot) = waits.take() {
+                    let (app, inner, now) = (app.clone(), inner.clone(), waits.now.clone());
+                    // A thread the OS refuses drops this call, not the reader.
+                    let _ = std::thread::Builder::new().spawn(move || {
+                        let _slot = slot;
+                        serve_hold(stream, accepted, &app, &inner, &request, now, true);
+                    });
+                    return;
+                }
             }
-            let store = app.state::<SessionStore>();
-            let conn = store.lock_conn()?;
-            return Ok(crate::ci_watch::call(
-                &conn,
-                &grant.session,
-                &call.action,
-                &call.input,
-                &call.request_id,
-                crate::session_store::now_millis(),
-            ));
+            serve_hold(
+                stream,
+                accepted,
+                app,
+                inner,
+                &request,
+                waits.now.clone(),
+                false,
+            );
+            return;
         }
-        let sent = (call.namespace == "app")
-            .then(|| message_target(&call.action, &call.input))
-            .flatten()
-            .map(|to| (to, call.request_id.clone()));
-        let response = dispatch(
-            inner,
-            |host| request_grant(host, &request.namespace, &request.token),
-            call,
-            &mut emit,
-            REPLY_WAIT,
-        )?;
-        if let (Some((to, request_id)), true) = (sent, response["ok"] == true) {
-            let caller = inner.lock().ok().and_then(|host| {
-                host.app_grants
-                    .values()
-                    .find(|grant| grant.token == request.token)
-                    .map(|grant| grant.session.clone())
-            });
-            if let Some(caller) = caller {
-                message_act(app, &caller, &to, &request_id);
-            }
-        }
-        Ok(response)
-    })();
-    let response = result.unwrap_or_else(Failure::response);
+        Ok(request) => answer(app, inner, request).unwrap_or_else(Failure::response),
+    };
     let _ = writeln!(stream, "{response}");
+}
+
+fn serve_hold<R: Runtime>(
+    mut stream: TcpStream,
+    accepted: Instant,
+    app: &AppHandle<R>,
+    inner: &Mutex<Inner>,
+    request: &Request,
+    now: HoldNow,
+    may_block: bool,
+) {
+    let store = app.state::<SessionStore>();
+    let caller = crate::sleep_hold::service::Received {
+        at: accepted,
+        peer: stream.try_clone().ok(),
+        may_block,
+    };
+    let at = |conn: &Connection| now(&store, conn);
+    let (response, notices) = hold_call(inner, &store, request, &at, &caller);
+    let _ = writeln!(stream, "{response}");
+    notices.emit(app);
+}
+
+/// The `hold` namespace (alarms design 11): the sleep hold client's calls
+/// run here in Rust, never in a window. The control lock is let go before
+/// the store is read (5.3 lock order).
+fn hold_call(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    request: &Request,
+    now: crate::sleep_hold::service::Now,
+    caller: &dyn crate::sleep_hold::service::HoldCaller,
+) -> (Value, Notices) {
+    let grant = match inner.lock() {
+        Ok(host) => hold_grant(&host, &request.token),
+        Err(_) => Err("Control service unavailable".into()),
+    };
+    match grant {
+        Ok(grant) => crate::sleep_hold::service::call(
+            store,
+            &grant.session,
+            &request.action,
+            &request.input,
+            now,
+            caller,
+        ),
+        Err(failure) => (failure.response(), Notices::default()),
+    }
+}
+
+/// A hold call works under the session's app token while the session runs
+/// a turn in the token's window. App access (`/operator`) is not needed:
+/// the hold guards every agent's sleeps, not only those that call the app.
+fn hold_grant(host: &Inner, token: &str) -> Result<Grant, Failure> {
+    let grant = host
+        .app_grants
+        .values()
+        .find(|grant| grant.token == token)
+        .cloned()
+        .ok_or(Refusal::UnknownToken)?;
+    if !host
+        .active
+        .get(&grant.session)
+        .is_some_and(|turn| turn.window == grant.window)
+    {
+        return Err("No turn of this session is running, so MonoCode cannot hold its wait.".into());
+    }
+    Ok(grant)
+}
+
+/// The control host for a test: one session runs a turn in window `main`
+/// with no app access, and connections go through the app's own `serve`.
+#[cfg(test)]
+pub(crate) struct TestHoldHost {
+    inner: Arc<Mutex<Inner>>,
+    waits: Arc<HoldWaits>,
+    pub token: String,
+}
+
+#[cfg(test)]
+impl TestHoldHost {
+    pub(crate) fn running(session: &str, now: HoldNow) -> Self {
+        let mut inner = Inner::default();
+        let turn = ActiveTurn {
+            window: "main".into(),
+            cwd: "/p/hold".into(),
+            app_allowed: false,
+            turn_id: "turn-1".into(),
+            started_by: StartedBy::MonoCode,
+            next: None,
+        };
+        inner.authorize_turn(session, turn).unwrap();
+        let token = inner.app_grants[session].token.clone();
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+            waits: HoldWaits::new(now),
+            token,
+        }
+    }
+
+    /// Serves the next connection on `listener` as the app does.
+    pub(crate) fn serve_next<R: Runtime>(&self, listener: &TcpListener, app: &AppHandle<R>) {
+        let (stream, _) = listener.accept().unwrap();
+        serve(stream, Instant::now(), app, &self.inner, &self.waits);
+    }
+
+    pub(crate) fn end_turn(&self, session: &str) {
+        self.inner.lock().unwrap().finish_turn(session, "turn-1");
+    }
+
+    fn running_waits(&self) -> usize {
+        self.waits.running.load(Ordering::SeqCst)
+    }
+
+    fn take_wait(&self) -> Option<WaitSlot> {
+        self.waits.take()
+    }
+}
+
+fn answer<R: Runtime>(
+    app: &AppHandle<R>,
+    inner: &Arc<Mutex<Inner>>,
+    request: Request,
+) -> Result<Value, Failure> {
+    let mut emit = |window: &str, event: Event| {
+        app.emit_to(window, "monocode-control-request", event)
+            .is_ok()
+    };
+    let call = Call {
+        namespace: request.namespace.clone(),
+        request_id: request.request_id,
+        action: request.action,
+        input: request.input,
+    };
+    let store_action = call.action.starts_with("alarms.") || call.action.starts_with("ci.");
+    if call.namespace == "app" && store_action {
+        let grant = {
+            let host = inner.lock().map_err(|_| "Control service unavailable")?;
+            request_grant(&host, "app", &request.token)?
+        };
+        if call.action.starts_with("alarms.") {
+            return alarm_call(app, inner, &grant, call, &mut emit, REPLY_WAIT);
+        }
+        let store = app.state::<SessionStore>();
+        let conn = store.lock_conn()?;
+        return Ok(crate::ci_watch::call(
+            &conn,
+            &grant.session,
+            &call.action,
+            &call.input,
+            &call.request_id,
+            crate::session_store::now_millis(),
+        ));
+    }
+    if call.namespace == "app" && call.action.starts_with("holds.") {
+        let grant = {
+            let host = inner.lock().map_err(|_| "Control service unavailable")?;
+            request_grant(&host, "app", &request.token)?
+        };
+        let store = app.state::<SessionStore>();
+        let now = |conn: &Connection| crate::sleep_hold::service::now(&store, conn);
+        return Ok(crate::sleep_hold::service::decide_call(
+            &store,
+            &grant.session,
+            &call.action,
+            &call.input,
+            &call.request_id,
+            &now,
+        ));
+    }
+    let sent = (call.namespace == "app")
+        .then(|| message_target(&call.action, &call.input))
+        .flatten()
+        .map(|to| (to, call.request_id.clone()));
+    let response = dispatch(
+        inner,
+        |host| request_grant(host, &request.namespace, &request.token),
+        call,
+        &mut emit,
+        REPLY_WAIT,
+    )?;
+    if let (Some((to, request_id)), true) = (sent, response["ok"] == true) {
+        let caller = inner.lock().ok().and_then(|host| {
+            host.app_grants
+                .values()
+                .find(|grant| grant.token == request.token)
+                .map(|grant| grant.session.clone())
+        });
+        if let Some(caller) = caller {
+            message_act(app, &caller, &to, &request_id);
+        }
+    }
+    Ok(response)
 }
 
 /// Design section 7: the `alarms.*` actions run here, on the store, under
@@ -2751,6 +2973,246 @@ pub(crate) mod tests {
         }
         std::fs::remove_dir_all(root).unwrap();
     }
+    /// A mock app whose store holds one undecided hold `sh_a1` of session
+    /// `hold-a` for Tyler, and a host where `hold-a` runs a turn. The
+    /// hold's clock stands still, so it never times out.
+    fn hold_app() -> (tauri::App<tauri::test::MockRuntime>, TestHoldHost) {
+        let store = SessionStore::open_in_memory().unwrap();
+        crate::sleep_hold::store::insert(
+            &store.lock_conn().unwrap(),
+            &crate::sleep_hold::store::NewHold {
+                id: "sh_a1",
+                actor: "session:hold-a",
+                session: "hold-a",
+                provisioner: "tyler",
+                harness: "claude",
+                tool_use_id: "toolu_1",
+                command: "sleep 60",
+                wait_kind: "sleep",
+                wait_seconds: Some(60.0),
+                reason: None,
+                prompt: None,
+                skipped: None,
+            },
+            (0, 0),
+        )
+        .unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(store)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        (
+            app,
+            TestHoldHost::running("hold-a", Arc::new(|_, _| Ok((0, 0).into()))),
+        )
+    }
+
+    /// Sends `request` to the app's own `serve` on loopback; the reader
+    /// is back once `serve` returns. The reply line is read afterwards.
+    fn send_through_serve(
+        host: &TestHoldHost,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        request: Value,
+    ) -> BufReader<TcpStream> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        writeln!(client, "{request}").unwrap();
+        host.serve_next(&listener, app.handle());
+        BufReader::new(client)
+    }
+
+    fn reply_line(reader: &mut BufReader<TcpStream>) -> Value {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    fn hold_request(token: &str, action: &str, input: Value) -> Value {
+        json!({"token": token, "namespace": "hold", "action": action, "input": input,
+               "requestId": format!("hold-{action}")})
+    }
+
+    #[test]
+    fn a_hold_call_needs_the_token_of_a_running_turn_and_no_app_access() {
+        // Defect: a hold call goes the app's way (a window, the pending
+        // map, the app grant) and is refused, so every sleep fails closed;
+        // a session without /operator is refused; or a stale token or a
+        // session with no running turn gets a hold.
+        let (app, host) = hold_app();
+        let ping = |token: &str| {
+            reply_line(&mut send_through_serve(
+                &host,
+                &app,
+                hold_request(token, "ping", json!({})),
+            ))
+        };
+        assert_eq!(
+            ping(&host.token),
+            json!({"ok": true, "recorded": false}),
+            "served in Rust, app_allowed is false"
+        );
+        assert_eq!(ping("not-a-token")["code"], "unknown_token");
+        host.end_turn("hold-a");
+        let ended = ping(&host.token);
+        assert_eq!(ended["ok"], false);
+        assert!(ended["error"].as_str().unwrap().contains("No turn"));
+    }
+
+    #[test]
+    fn a_hold_wait_runs_off_the_reader_and_gives_its_place_back() {
+        // Defect: a 30 s long poll holds one of the eight readers, the
+        // reader writes a second reply line, or a finished wait keeps its
+        // place, so after 64 of them every wait is a one-shot read.
+        let (app, host) = hold_app();
+        let wait = hold_request(
+            &host.token,
+            "wait",
+            json!({"hold": "sh_a1", "timeoutSeconds": 30}),
+        );
+        let mut reply = send_through_serve(&host, &app, wait);
+        assert_eq!(host.running_waits(), 1, "the reader is back, the wait runs");
+        let store = app.state::<SessionStore>();
+        let decided = crate::sleep_hold::service::tyler_decides(
+            &store.lock_conn().unwrap(),
+            "sh_a1",
+            true,
+            (0, 0).into(),
+        );
+        assert!(decided.unwrap());
+        assert_eq!(
+            reply_line(&mut reply),
+            json!({"ok": true, "status": "allow"})
+        );
+        let given_back = Instant::now() + Duration::from_secs(5);
+        while host.running_waits() > 0 && Instant::now() < given_back {
+            std::thread::yield_now();
+        }
+        assert_eq!(host.running_waits(), 0);
+        let mut rest = String::new();
+        reply.read_line(&mut rest).unwrap();
+        assert_eq!(rest, "", "one reply line");
+    }
+
+    #[test]
+    fn past_sixty_four_waits_a_wait_reads_its_hold_once_and_answers() {
+        // Defect: the 65th wait blocks a reader for 30 s, or a wait turned
+        // away keeps a place it never took.
+        let (app, host) = hold_app();
+        let taken: Vec<_> = std::iter::from_fn(|| host.take_wait()).collect();
+        assert_eq!(taken.len(), 64);
+        let wait = hold_request(
+            &host.token,
+            "wait",
+            json!({"hold": "sh_a1", "timeoutSeconds": 30}),
+        );
+        let mut reply = send_through_serve(&host, &app, wait);
+        assert_eq!(
+            reply_line(&mut reply),
+            json!({"ok": true, "status": "pending"})
+        );
+        assert_eq!(host.running_waits(), 64);
+        let last = hold_request(
+            &host.token,
+            "wait",
+            json!({"hold": "sh_a1", "timeoutSeconds": 30, "last": true}),
+        );
+        assert_eq!(
+            reply_line(&mut send_through_serve(&host, &app, last)),
+            json!({"ok": true, "status": "timeout"}),
+            "the client's last wait closes the hold at once"
+        );
+        drop(taken);
+        assert_eq!(host.running_waits(), 0);
+    }
+
+    #[test]
+    fn a_wait_longer_than_thirty_seconds_is_refused_and_the_reader_serves_on() {
+        // Defect: a client's timeoutSeconds goes into a sum unchecked, so
+        // u64::MAX panics the wait thread, or past the cap the reader
+        // itself, which is never started again.
+        let (app, host) = hold_app();
+        let wait = |timeout: &Value| {
+            let input = json!({"hold": "sh_a1", "timeoutSeconds": timeout});
+            let request = hold_request(&host.token, "wait", input);
+            reply_line(&mut send_through_serve(&host, &app, request))
+        };
+        let extremes = [json!(u64::MAX), json!(31), json!(-1), json!(1.5)];
+        for timeout in &extremes {
+            assert_eq!(wait(timeout)["code"], "invalid_input", "{timeout}");
+        }
+        let given_back = Instant::now() + Duration::from_secs(5);
+        while host.running_waits() > 0 && Instant::now() < given_back {
+            std::thread::yield_now();
+        }
+        let taken: Vec<_> = std::iter::from_fn(|| host.take_wait()).collect();
+        assert_eq!(taken.len(), 64, "the refused waits gave their places back");
+        for timeout in &extremes {
+            assert_eq!(
+                wait(timeout)["code"],
+                "invalid_input",
+                "past the cap: {timeout}"
+            );
+        }
+        assert_eq!(
+            wait(&json!(30)),
+            json!({"ok": true, "status": "pending"}),
+            "the reader serves on"
+        );
+        drop(taken);
+    }
+
+    #[test]
+    fn a_wait_whose_client_hangs_up_closes_its_hold() {
+        // Defect: the hook client is killed mid-wait and the app keeps the
+        // hold open, so a later allow is logged that no client heard.
+        let (app, host) = hold_app();
+        let wait = hold_request(
+            &host.token,
+            "wait",
+            json!({"hold": "sh_a1", "timeoutSeconds": 30}),
+        );
+        drop(send_through_serve(&host, &app, wait));
+        let store = app.state::<SessionStore>();
+        let decision = || -> Option<String> {
+            store
+                .lock_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT decision FROM sleep_holds WHERE id = 'sh_a1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let noticed = Instant::now() + Duration::from_secs(5);
+        while decision().is_none() && Instant::now() < noticed {
+            std::thread::yield_now();
+        }
+        assert_eq!(decision().as_deref(), Some("timeout"));
+        let late = crate::sleep_hold::service::tyler_decides(
+            &store.lock_conn().unwrap(),
+            "sh_a1",
+            true,
+            (0, 0).into(),
+        );
+        assert!(!late.unwrap(), "a later allow is refused");
+    }
+
+    #[test]
+    fn a_wait_whose_thread_panics_gives_its_place_back() {
+        // Defect: a panic in a wait (a poisoned lock, an emit) leaks its
+        // place for good.
+        let (_app, host) = hold_app();
+        let slot = host.take_wait().unwrap();
+        let panicked = std::thread::spawn(move || {
+            let _slot = slot;
+            panic!("a wait failed");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert_eq!(host.running_waits(), 0);
+    }
+
     #[test]
     fn checkout_reservations_include_nested_folders() {
         assert!(paths_overlap("/repo", "/repo/src"));
