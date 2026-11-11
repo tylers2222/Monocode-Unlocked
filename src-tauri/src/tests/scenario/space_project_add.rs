@@ -129,6 +129,12 @@ fn adding_assigns_a_new_project_and_links_a_known_one() {
 
     create_mono(&store, "m", FIRST_SPACE, &["/work/held"]);
     assert_eq!(add(TWO, "/work/held", false), Ok(Added::Linked), "Mono");
+    assert_eq!(
+        add(TWO, "/work/fresh", false),
+        Ok(Added::Assigned),
+        "a Mono that lists another path does not make this one known"
+    );
+    assert_eq!(spaces_of(&store, "/work/fresh"), [TWO]);
 
     let root = projects::workspace_roots().remove(0);
     for path in [root.clone(), format!("{root}/gigas/x")] {
