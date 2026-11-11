@@ -79,7 +79,6 @@ export function markTurnInterrupted(session: Session): Session {
   if (lastBlockIsInterrupt(sealed)) return sealed;
   const requeued = requeueUnansweredNotice(sealed);
   if (requeued) return requeued;
-  if (noticeAlreadyRequeued(session)) return sealed;
   return {
     ...sealed,
     blocks: [
@@ -142,18 +141,30 @@ function requeueUnansweredNotice(session: Session): Session | undefined {
 }
 
 /**
- * The second pass over a requeued notice. A graceful quit marks the session
- * when it saves it, and the relaunch marks the saved record again. That
- * record is idle, needs no input, and holds the notice at its queue head
- * instead of as an opener. No turn ran, so it gets no interrupt note and no
- * Continue: the queue sends the notice.
+ * The quit save: every in-flight chat is marked, and the in-flight list
+ * keeps only the chats whose marked copy ends in the interrupt note, as
+ * `persistBootingResume` does. A notice requeued by the mark ran no turn, so
+ * the relaunch must not mark it again: a second pass would put the note and
+ * a Continue on the turn before it (ADE-195). Its quit-paused queue sends the
+ * notice. `cut` is every chat the quit cut, for callers that need the count.
  */
-function noticeAlreadyRequeued(session: Session): boolean {
-  return (
-    !session.busy &&
-    !sessionNeedsInput(session) &&
-    !!session.queuedMessages?.[0]?.monoSessionCompletion
+export function markQuitSessions(
+  sessions: Session[],
+  tabs: WorkspaceTab[],
+): { sessions: Session[]; refs: InFlightRef[]; cut: InFlightRef[] } {
+  const cut = inFlightRefs(sessions, tabs);
+  const ids = new Set(cut.map((ref) => ref.sessionId));
+  const marked = sessions.map((session) =>
+    ids.has(session.id) ? markTurnInterrupted(session) : session,
   );
+  const interrupted = new Set(
+    marked.filter(wasTurnInterrupted).map((session) => session.id),
+  );
+  return {
+    sessions: marked,
+    refs: cut.filter((ref) => interrupted.has(ref.sessionId)),
+    cut,
+  };
 }
 
 export function workspaceFromResumed(

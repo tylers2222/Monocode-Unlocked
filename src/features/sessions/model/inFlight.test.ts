@@ -7,6 +7,7 @@ import {
   hasInFlightSessions,
   inFlightRefs,
   isInFlightSession,
+  markQuitSessions,
   markTurnInterrupted,
   quitWhileBusyMessage,
   shouldWriteInFlightSnapshot,
@@ -224,16 +225,59 @@ describe("markTurnInterrupted", () => {
 
   // r1 M1: a graceful quit marks the session when it saves it, and the
   // relaunch marks the saved record again.
-  it("requeues the notice once when the quit save and the relaunch both mark it", () => {
-    const twice = markTurnInterrupted(markTurnInterrupted(mono({})));
-    expect(twice.blocks.map((block) => block.id)).toEqual(["u0", "a0"]);
-    expect(twice.queuedMessages?.map((message) => message.id)).toEqual([
+  // r1 M1: a graceful quit marks the session when it saves it. The relaunch
+  // marks only the chats in the saved in-flight list (recordToSession loads
+  // every record idle), so a requeued notice must not be in that list.
+  it("requeues the notice once across the quit save and the relaunch", () => {
+    const cutTurn = chat("/tmp/b", { busy: true });
+    const sessions = [mono({}), cutTurn];
+    const quit = markQuitSessions(
+      sessions,
+      sessions.map((session) => newTab(session.id)),
+    );
+    expect(quit.cut.map((ref) => ref.sessionId)).toEqual([
+      sessions[0].id,
+      cutTurn.id,
+    ]);
+    expect(quit.refs).toEqual([{ sessionId: cutTurn.id, cwd: "/tmp/b" }]);
+
+    const listed = new Set(quit.refs.map((ref) => ref.sessionId));
+    const [notice1, cut1] = quit.sessions.map((saved) => {
+      const record = { ...saved, busy: false };
+      return listed.has(record.id) ? markTurnInterrupted(record) : record;
+    });
+    expect(notice1.blocks.map((block) => block.id)).toEqual(["u0", "a0"]);
+    expect(notice1.queuedMessages?.map((message) => message.id)).toEqual([
       "mono-completion-r1",
     ]);
     expect(
-      twice.blocks.some((block) => block.text === INTERRUPT_MESSAGE),
+      notice1.blocks.some((block) => block.text === INTERRUPT_MESSAGE),
     ).toBe(false);
-    expect(canAutoContinue(twice)).toBe(false);
+    expect(canAutoContinue(notice1)).toBe(false);
+    expect(
+      cut1.blocks.filter((block) => block.text === INTERRUPT_MESSAGE),
+    ).toHaveLength(1);
+  });
+
+  // r2 M1: a relaunch after a kill loads every record idle. A cut turn with
+  // a notice waiting at the queue head still gets the note and a Continue.
+  it("marks a reloaded cut turn with a notice waiting at the queue head", () => {
+    const waiting = {
+      id: "mono-completion-r3",
+      text: notice.text,
+      attachments: [],
+      monoSessionCompletion: notice.monoSessionCompletion,
+    };
+    const restored = markTurnInterrupted(
+      mono({
+        busy: false,
+        blocks: [{ id: "u1", role: "user", text: "go on" }],
+        queuedMessages: [waiting],
+      }),
+    );
+    expect(restored.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+    expect(restored.queuedMessages).toEqual([waiting]);
+    expect(canAutoContinue(restored)).toBe(true);
   });
 
   it("keeps a system note that follows the notice's opener", () => {
