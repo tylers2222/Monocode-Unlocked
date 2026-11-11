@@ -1,6 +1,6 @@
 import { leafIds, newTab, type WorkspaceTab } from "../../workspace/model/layout";
 import type { DockSide, ProjectTerminalDock } from "../../projects/model/projectTerminal";
-import { sessionNeedsInput, type Session } from "./session";
+import { sessionNeedsInput, type QueuedMessage, type Session } from "./session";
 import { stopStreaming } from "../../../integrations/harness/core/apply";
 import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
 
@@ -77,6 +77,8 @@ export function quitWhileBusyMessage(count: number): string {
 export function markTurnInterrupted(session: Session): Session {
   const sealed = { ...sealOpenWork(stopStreaming(session)), busy: false };
   if (lastBlockIsInterrupt(sealed)) return sealed;
+  const requeued = requeueUnansweredNotice(sealed);
+  if (requeued) return requeued;
   return {
     ...sealed,
     blocks: [
@@ -88,6 +90,51 @@ export function markTurnInterrupted(session: Session): Session {
         notice: "interrupt",
       },
     ],
+  };
+}
+
+/**
+ * ADE-195: a Mono completion notice opened the turn the quit cut, and no
+ * agent output follows it. The turn's commit took the notice out of the
+ * saved queue before the agent had its prompt, and the Continue sent after a
+ * relaunch does not carry it. So the agent may never have seen it. The
+ * notice goes back to the head of the queue, and its opener leaves the
+ * transcript. The Mono store marked the notice delivered when a save held
+ * it (`mono_completions::settle`), so a requeued notice is not reported
+ * again. If the agent read the prompt but did not answer before the quit,
+ * it gets the notice a second time. That is better than never.
+ */
+function requeueUnansweredNotice(session: Session): Session | undefined {
+  const { blocks } = session;
+  let index = blocks.length - 1;
+  while (index >= 0 && blocks[index].role === "system") index -= 1;
+  const opener = blocks[index];
+  if (
+    opener?.role !== "user" ||
+    !opener.monoSessionCompletion ||
+    !opener.appRequestId
+  )
+    return undefined;
+  const queued = session.queuedMessages ?? [];
+  // A queue the user or an error paused stays paused. Any other queue is
+  // paused by the quit, so the app sends it again when the Mono is idle.
+  const heldByUser =
+    session.queueStatus === "paused" &&
+    queued.length > 0 &&
+    !queued.some((message) => message.pausedBy === "quit");
+  const notice: QueuedMessage = {
+    id: opener.appRequestId,
+    text: opener.text,
+    attachments: [],
+    monoSessionCompletion: opener.monoSessionCompletion,
+    queuedAt: Date.now(),
+    ...(heldByUser ? {} : { pausedBy: "quit" as const }),
+  };
+  return {
+    ...session,
+    blocks: blocks.slice(0, index),
+    queuedMessages: [notice, ...queued],
+    queueStatus: "paused",
   };
 }
 

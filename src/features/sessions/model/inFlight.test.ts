@@ -146,6 +146,82 @@ describe("markTurnInterrupted", () => {
     ]);
   });
 
+  // ADE-195, from the e2e-macos-1 ade89-c failure: the quit cut the turn a
+  // completion notice opened before the agent had its prompt. A Continue
+  // does not carry the notice, so it goes back to the head of the queue.
+  const notice = {
+    id: "mono-completion-r1",
+    role: "user" as const,
+    text: "MonoCode completion notification: a session you are monitoring has now stopped.",
+    appRequestId: "mono-completion-r1",
+    internal: true,
+    startedAt: 1_000,
+    monoSessionCompletion: {
+      sessionId: "s-late",
+      title: "Agent session",
+      status: "cancelled" as const,
+    },
+  };
+  const mono = (patch: Partial<Session>) =>
+    chat("/tmp/a", {
+      busy: true,
+      providerSessionId: "p1",
+      ...patch,
+      blocks: [
+        { id: "u0", role: "user", text: "watch the work" },
+        { id: "a0", role: "assistant", text: "Started." },
+        ...(patch.blocks ?? [notice]),
+      ],
+    });
+
+  it("queues again a notice whose turn the agent never answered", () => {
+    const later = {
+      id: "mono-completion-r2",
+      text: "MonoCode completion notification: later",
+      attachments: [],
+      pausedBy: "quit" as const,
+    };
+    const restored = markTurnInterrupted(
+      mono({ queuedMessages: [later], queueStatus: "paused" }),
+    );
+
+    expect(restored.busy).toBe(false);
+    expect(restored.blocks.map((block) => block.id)).toEqual(["u0", "a0"]);
+    expect(restored.queuedMessages).toEqual([
+      expect.objectContaining({
+        id: "mono-completion-r1",
+        text: notice.text,
+        monoSessionCompletion: notice.monoSessionCompletion,
+        pausedBy: "quit",
+      }),
+      later,
+    ]);
+    expect(restored.queueStatus).toBe("paused");
+    expect(canAutoContinue(restored)).toBe(false);
+  });
+
+  it("keeps a queue the user paused paused when it requeues the notice", () => {
+    const typed = { id: "q1", text: "wait", attachments: [] };
+    const restored = markTurnInterrupted(
+      mono({ queuedMessages: [typed], queueStatus: "paused" }),
+    );
+    expect(restored.queuedMessages?.[0]).toEqual(
+      expect.not.objectContaining({ pausedBy: "quit" }),
+    );
+    expect(restored.queuedMessages?.[1]).toBe(typed);
+  });
+
+  it("marks a notice's turn interrupted once the agent answered", () => {
+    const answered = markTurnInterrupted(
+      mono({
+        blocks: [notice, { id: "a1", role: "assistant", text: "Review" }],
+      }),
+    );
+    expect(answered.queuedMessages).toBeUndefined();
+    expect(answered.blocks.map((block) => block.id)).toContain(notice.id);
+    expect(canAutoContinue(answered)).toBe(true);
+  });
+
   it("does not append the interrupt note twice for the same turn", () => {
     const once = markTurnInterrupted(chat("/tmp/a", { busy: true }));
     const twice = markTurnInterrupted(once);
