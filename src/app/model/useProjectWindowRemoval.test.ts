@@ -46,6 +46,26 @@ vi.mock("../../features/projects/model/projectDeleteCheck", async (original) => 
   ...(await original<object>()),
   setOpenSessionsSource: vi.fn(),
 }));
+/** The shown Space's list: by default every recent is in it. */
+const space = vi.hoisted(() => ({
+  list: {
+    spaceId: "space-1",
+    projects: [],
+    monoHeld: [],
+    noRowIsHere: true,
+    assignedElsewhere: [] as string[],
+  },
+}));
+vi.mock("../../features/spaces/model/activeSpace", async (original) => ({
+  ...(await original<object>()),
+  spacesView: () => ({
+    loaded: true,
+    spaces: [],
+    activeSpaceId: "space-1",
+    logins: [],
+    projectList: space.list,
+  }),
+}));
 
 const P = "/code/vibtra";
 const OTHER = "/code/other";
@@ -109,6 +129,7 @@ const ids = (items: { id: string }[]) => items.map((item) => item.id);
 
 beforeEach(() => {
   localStorage.clear();
+  space.list.assignedElsewhere = [];
   vi.mocked(invoke).mockClear();
   vi.mocked(forgetHarnessSession).mockClear();
 });
@@ -391,6 +412,16 @@ describe("the move off the open project", () => {
     expect(ctx.onSelectProject).not.toHaveBeenCalled();
     expect(ctx.setProjectCwd).toHaveBeenCalledWith("~");
     expect(ctx.setComposerFocused).toHaveBeenCalledWith(true);
+  });
+
+  it("never goes to a project the shown Space does not have", () => {
+    rememberProject(OTHER);
+    rememberProject(P);
+    space.list.assignedElsewhere = [OTHER];
+    const ctx = context([], [newTab("x")], { projectCwdRef: { current: P } });
+    removeProjectFromWindow(ctx, P, purge());
+    expect(ctx.onSelectProject).not.toHaveBeenCalled();
+    expect(ctx.setProjectCwd).toHaveBeenCalledWith("~");
   });
 
   it("stays put when another project is open", () => {

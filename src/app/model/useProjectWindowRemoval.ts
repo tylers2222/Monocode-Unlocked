@@ -13,8 +13,6 @@ import {
 } from "../../features/projects/model/projectPurge";
 import type { ProjectTerminalDock } from "../../features/projects/model/projectTerminal";
 import {
-  archiveProject,
-  looksLikeProject,
   normalizeProjectPath,
   sameProjectPath,
   type RecentProject,
@@ -31,7 +29,11 @@ import {
 } from "../../features/sessions/model/session";
 import { loadProjectSidebarTab } from "../../features/settings/model/projectSidebarTab";
 import type { SidebarTabId } from "../../features/settings/model/appearance";
-import { notifySpaceProjectsChanged } from "../../features/spaces/model/spaces";
+import { spacesView } from "../../features/spaces/model/activeSpace";
+import {
+  archiveProjectInSpace,
+  projectAfterLeaving,
+} from "../../features/spaces/model/spaceProjects";
 import { newTab, type WorkspaceTab } from "../../features/workspace/model/layout";
 import { filterTabsForProject } from "../../features/workspace/model/workspaceTabGroups";
 import { forgetHarnessSession } from "../../integrations/harness/core/registry";
@@ -162,9 +164,10 @@ function moveOffProject(
   remaining: readonly RecentProject[],
   normalized: string,
 ): void {
-  const next = remaining.find(
-    (item) =>
-      looksLikeProject(item.path) && !sameProjectPath(item.path, normalized),
+  const next = projectAfterLeaving(
+    remaining,
+    normalized,
+    spacesView().projectList,
   );
   if (next) {
     ctx.onSelectProject(next.path);
@@ -190,8 +193,7 @@ export function removeProjectFromWindow(
   const wasCurrent = sameProjectPath(ctx.projectCwdRef.current, normalized);
   const remaining = purge
     ? forgetPurgedProject(normalized, purge)
-    : archiveProject(normalized);
-  if (!purge) notifySpaceProjectsChanged();
+    : archiveProjectInSpace(normalized);
   if (purge && leaving) {
     ctx.setSidebarTabSelection((current) =>
       sameProjectPath(current.project, normalized)
