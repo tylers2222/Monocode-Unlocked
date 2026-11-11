@@ -621,3 +621,49 @@ describe("claiming the Mono completion results at boot", () => {
     ]);
   });
 });
+
+// r4 M5: a reload writes the in-flight list when the quit cut a chat, and
+// leaves a restored list alone when it cut none.
+describe("the in-flight list an unload writes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function chat(id: string, busy: boolean) {
+    return {
+      ...newSession("cursor", "/alpha"),
+      id,
+      busy,
+      blocks: [{ id: `${id}-u`, role: "user" as const, text: "hello" }],
+    };
+  }
+
+  async function unload(sessions: ReturnType<typeof chat>[]) {
+    const { persistQuitState } = await import("./appLifecycle");
+    await persistQuitState(
+      {
+        tabs: sessions.map((session) => newTab(session.id)),
+        sessions,
+        activeTabId: "",
+        projectCwd: "/alpha",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+      "unload",
+    );
+    return vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "session_set_in_flight");
+  }
+
+  it("writes the cut chat", async () => {
+    expect(await unload([chat("busy", true), chat("idle", false)])).toEqual([
+      ["session_set_in_flight", { sessions: [{ sessionId: "busy", cwd: "/alpha" }] }],
+    ]);
+  });
+
+  it("writes nothing when no chat was cut", async () => {
+    expect(await unload([chat("idle", false)])).toEqual([]);
+  });
+});

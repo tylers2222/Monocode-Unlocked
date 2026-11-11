@@ -161,7 +161,7 @@ run_ade89() {
   echo "  Continue prompts: $(prompts "Continue from where you left off.")"
   if [[ "$mode" == kill ]]; then
     crash_before_the_mark "$mono_chat" "$work"
-    part_release_then_kill "$mono_chat" a b c
+    part_release_then_kill "$mono_chat" a b c unread
     part_release_then_kill "$mono_chat" e f d
   fi
   "$INSTANCE" stop
@@ -196,13 +196,35 @@ crash_before_the_mark() {
   expect "notices after a row outlived its notice's save" "$(notices "$1")" 1
 }
 
+# agent_reports <session id>: the notices the Mono's agent got that report
+# on that session.
+agent_reports() {
+  jq -s --arg notice "$NOTICE" --arg id "\"sessionId\":\"$1\"" \
+    '[.[] | select(.rule == $notice) | .prompt | [scan($id)] | length] | add // 0' "$PUPPET/log.jsonl"
+}
+
+# opened <mono chat> <notice id>: the Mono chat's saved transcript holds the
+# turn that notice opened.
+opened() { holds "SELECT count(*) > 0 FROM mono_blocks WHERE session_id = '$1' AND json_extract(block_json, '$.appRequestId') = '$2'"; }
+
+# each_reaches_the_agent <session id...>: each one's report is in a prompt.
+each_reaches_the_agent() {
+  local id
+  for id in "$@"; do (($(agent_reports "s-$id") > 0)) || return 1; done
+}
+
 # Review r1 M2: one Mono turn watched three sessions. Two ended and their
 # notice is in the Mono's saved queue, the app was killed before the mark,
 # and the third never continues. The relaunch reports the third once and
 # the two not again, whichever request id sorts first. `reports` counts the
 # whole puppet log, so each call names its own sessions.
+# ADE-195: a notice leaves the saved queue when its turn opens, before the
+# agent has the prompt. With `unread`, the relaunch's agent reads no request,
+# so the app is killed in that gap. The next relaunch queues the notice
+# again; a Continue would not carry it. Either way the agent gets each report
+# exactly once.
 part_release_then_kill() {
-  local first="ade89-$2" second="ade89-$3" late="ade89-$4" group message
+  local unread="${5:-}" first="ade89-$2" second="ade89-$3" late="ade89-$4" group message
   group="mono-completion-batch-$(printf '%s\n' "$first" "$second" | sort | head -1)"
   message="json_object('id', '$group', 'attachments', json_array(),
     'monoSessionCompletion', json_object('sessionId', 's-$first', 'title', '2 session results', 'status', 'completed', 'sessionCount', 2),
@@ -215,12 +237,24 @@ part_release_then_kill() {
       ('$second', $(saved "$1" "$second" "s-$second" "Result $3" "$group"), 'main', 'killed-run'),
       ('$late', $(saved "$1" "$late" "s-$late"), 'main', 'killed-run');
     UPDATE sessions SET queued_messages_json = json_array($message) WHERE id = '$1';"
+  [[ -n "$unread" ]] && touch "$PUPPET/hold-start"
   "$INSTANCE" start
   wait_until 30 "the relaunch marks both notices" \
     holds "SELECT (SELECT count(*) FROM mono_completions) = 0 AND (SELECT count(*) FROM mono_completion_deliveries) = 2"
+  # Only the unread call kills again: on natural timing a kill can land after
+  # the agent read the notice and before it answered, and that notice comes
+  # twice by design (better twice than never).
+  if [[ -n "$unread" ]]; then
+    wait_until 60 "the batch notice opens a turn the agent does not read" opened "$1" "$group"
+    expect "reports of $first the agent got before the kill (late $late)" "$(agent_reports "s-$first")" 0
+    kill9
+    rm -f "$PUPPET/hold-start"
+    "$INSTANCE" start
+  fi
+  wait_until 60 "the Mono's agent gets each report (late $late)" each_reaches_the_agent "$first" "$second" "$late"
   # A second copy would follow the first within the same second or two.
   sleep 5
   for id in "$first" "$second" "$late"; do
-    expect "reports of $id after a part release and a kill (late $late)" "$(reports "$1" "s-$id")" 1
+    expect "reports of $id after a part release and a kill (late $late)" "$(agent_reports "s-$id")" 1
   done
 }
