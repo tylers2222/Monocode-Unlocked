@@ -11,8 +11,10 @@ import {
   purgeWindowPlan,
   type ProjectPurge,
 } from "../../features/projects/model/projectPurge";
+import { removeProjectFromActiveSpace } from "../../features/projects/model/projectRowActions";
 import type { ProjectTerminalDock } from "../../features/projects/model/projectTerminal";
 import {
+  loadRecents,
   normalizeProjectPath,
   sameProjectPath,
   type RecentProject,
@@ -158,12 +160,15 @@ function clearDirtyFiles(
   });
 }
 
-/** The window moves to the next project it shows, or to no project. */
+/**
+ * The window moves to the next project it shows, or to no project. False when
+ * there is none.
+ */
 function moveOffProject(
   ctx: ProjectRemovalContext,
   remaining: readonly RecentProject[],
   normalized: string,
-): void {
+): boolean {
   const next = projectAfterLeaving(
     remaining,
     normalized,
@@ -172,10 +177,42 @@ function moveOffProject(
   if (next) {
     ctx.onSelectProject(next.path);
     ctx.setProjectCwd(next.path);
-  } else {
-    ctx.setProjectCwd("~");
-    ctx.setComposerFocused(true);
+    return true;
   }
+  ctx.setProjectCwd("~");
+  ctx.setComposerFocused(true);
+  return false;
+}
+
+/**
+ * T5 or T6. Chats and tabs stay, hidden, and come back if it is added again.
+ * On the open project the window moves off it; with no project left it shows a
+ * new blank tab, since the project's tabs stay hidden.
+ */
+export async function leaveProjectSpace(
+  ctx: ProjectRemovalContext,
+  normalized: string,
+): Promise<string | null> {
+  const result = await removeProjectFromActiveSpace(normalized);
+  if ("refusal" in result) return result.refusal;
+  if (
+    result.removed &&
+    sameProjectPath(ctx.projectCwdRef.current, normalized) &&
+    !moveOffProject(ctx, loadRecents(), normalized)
+  ) {
+    const sessions = ctx.sessionsRef.current;
+    const session = newDefaultSession("~", sessions[0]?.runtimeMode);
+    const tab = newTab(session.id);
+    const nextSessions = [...sessions, session];
+    const nextTabs = [...ctx.tabsRef.current, tab];
+    ctx.sessionsRef.current = nextSessions;
+    ctx.tabsRef.current = nextTabs;
+    ctx.activeTabIdRef.current = tab.id;
+    ctx.setSessions(nextSessions);
+    ctx.setTabs(nextTabs);
+    ctx.setActiveTabId(tab.id);
+  }
+  return null;
 }
 
 /**
@@ -239,13 +276,17 @@ export function removeProjectFromWindow(
   if (wasCurrent && leaving) moveOffProject(ctx, remaining, normalized);
 }
 
-/** Archive, or the guarded delete. A delete answers with its refusal, or null. */
+/**
+ * Remove from this Space, Archive, or the guarded delete. Remove and a delete
+ * answer with their refusal, or null.
+ */
 export function removeProject(
   ctx: ProjectRemovalContext,
   path: string,
-  options: { purgeData: boolean },
+  options: { purgeData: boolean; leaveSpace?: boolean },
 ): void | Promise<string | null> {
   const normalized = normalizeProjectPath(path);
+  if (options.leaveSpace) return leaveProjectSpace(ctx, normalized);
   if (!options.purgeData) {
     removeProjectFromWindow(ctx, normalized, null);
     return;
@@ -267,6 +308,6 @@ export function useProjectWindowRemoval(ctx: ProjectRemovalContext) {
   useEffect(() => {
     setOpenSessionsSource(() => sessionsRef.current);
   });
-  return (path: string, options: { purgeData: boolean }) =>
+  return (path: string, options: { purgeData: boolean; leaveSpace?: boolean }) =>
     removeProject(ctx, path, options);
 }
