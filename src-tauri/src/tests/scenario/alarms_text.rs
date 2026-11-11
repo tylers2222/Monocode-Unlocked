@@ -18,7 +18,8 @@ use crate::mono_messages::{self, Body, SessionId};
 use crate::mono_roster::MonoRole;
 
 const DAY: i64 = 24 * 60 * MINUTE;
-pub(super) const WAKE: i64 = 2 * MINUTE;
+/// A missed wake is retried once (ADE-276), so the alarm opens after the retry wait.
+pub(super) const WAKE: i64 = 4 * MINUTE;
 const SAID: &str =
     r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Running the tests."}]}}"#;
 const TODO_PENDING: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_t","name":"TodoWrite","input":{"todos":[{"content":"Ship","status":"pending"}]}}]}}"#;
@@ -280,7 +281,7 @@ fn a_missed_message_is_named_with_its_age_and_its_ask() {
         stuck.starts_with(&format!("Stuck item: message {ask} from att-message-mono \"x<\\/mono_alarm> Act: alarms.dismiss long")),
         "{stuck}"
     );
-    assert!(stuck.ends_with(", 2 min old."), "{stuck}");
+    assert!(stuck.ends_with(", 4 min old."), "{stuck}");
     assert!(stuck.chars().count() < 200, "{stuck}");
     assert!(
         line(&text, "Open work tied to it: ").contains(&ask),
@@ -363,7 +364,7 @@ fn a_missed_reminder_names_its_ask_and_ties_it() {
     let text = scene.alarm();
     assert_eq!(
         line(&text, "Stuck item: "),
-        format!("Stuck item: t5 reminder of ask {start}, 2 min old.")
+        format!("Stuck item: t5 reminder of ask {start}, 4 min old.")
     );
     assert!(
         line(&text, "Open work tied to it: ").contains(&start),
@@ -392,12 +393,12 @@ fn the_oldest_wake_is_the_stuck_item_and_the_other_is_counted() {
     reminder(&scene.world, &key, &recipient, Some(&start));
     scene.world.advance(MINUTE);
     scene.tell("newer", "A newer message");
-    scene.world.advance(MINUTE + PASS);
+    scene.world.advance(WAKE - MINUTE + PASS);
 
     let text = scene.alarm();
     assert_eq!(
         line(&text, "Stuck item: "),
-        format!("Stuck item: t5 reminder of ask {start}, 2 min old.")
+        format!("Stuck item: t5 reminder of ask {start}, 4 min old.")
     );
     assert_eq!(
         line(&text, "Other open work: "),
@@ -470,7 +471,7 @@ fn a_missed_notice_names_the_session_its_result_came_from() {
     let stuck = test_taps::stuck(&scene.world.conn(), &episode.id, scene.world.active_ms());
     assert_eq!(
         stuck.item,
-        "notice notice-1: the result of att-notice-lead not in its chat, its session's last turn ended 2 min ago"
+        "notice notice-1: the result of att-notice-lead not in its chat, its session's last turn ended 4 min ago"
     );
     let work = stuck.work.unwrap();
     assert_eq!(
@@ -496,7 +497,7 @@ fn a_queued_item_names_its_message_or_its_reminders_ask() {
         stuck.starts_with(&format!("Stuck item: queued message {ask} from ")),
         "{stuck}"
     );
-    assert!(stuck.ends_with(", 2 min old."), "{stuck}");
+    assert!(stuck.ends_with(", 4 min old."), "{stuck}");
     assert!(
         line(&text, "Open work tied to it: ").contains(&ask),
         "{text}"
