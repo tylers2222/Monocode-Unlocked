@@ -147,13 +147,35 @@ jobs:
       # Real-harness specs (tests/browser/ade67-question-card.spec.ts) drive a
       # real omp. It is the standalone v18.2.11 release binary, checked against
       # the sha256 in the release's SHA256SUMS.txt; it bundles its dependencies.
+      # Anonymous release downloads returned 504 for hours, and curl's own retries rescued
+      # none (tyler/main run 42580086493, job 129036771058). So: cache first, keyed on the
+      # version and sha256. A miss downloads through scripts/fetch-omp.sh (job token, 6 tries
+      # 60 s apart) and saves right after the sha256 check, so a run cancelled later still
+      # fills it. Any ref saves on a miss: once tyler/main holds the key, every run hits
+      # and none saves.
+      - id: omp-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/omp
+          key: omp-v18.2.11-linux-x64-97cf3955
+      - name: Download omp 18.2.11 (cache miss)
+        if: steps.omp-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-omp.sh v18.2.11 omp-linux-x64 "$RUNNER_TEMP/omp"
       - name: Install omp 18.2.11 (sha256-checked release binary)
         run: |
-          curl -fsSL --retry 3 --retry-all-errors --retry-delay 30 --connect-timeout 15 -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-linux-x64
           echo "97cf39557bf3d98327dd4c9814380b7e6bcb76e41169edd9b0ff30424c733a2a  $RUNNER_TEMP/omp" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/omp-bin"
           install -m 0755 "$RUNNER_TEMP/omp" "$RUNNER_TEMP/omp-bin/omp"
-          echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/omp-bin" >>"$GITHUB_PATH"
+      - name: Save omp
+        if: matrix.shard == 1 && steps.omp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/omp
+          key: omp-v18.2.11-linux-x64-97cf3955
       - run: omp --version
       # list prints each test with its time, so the log shows which specs ran.
       - run: npm run test:browser -- --reporter=list --shard=${{ matrix.shard }}/${{ strategy.job-total }}
