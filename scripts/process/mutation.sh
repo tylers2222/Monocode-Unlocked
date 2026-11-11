@@ -25,6 +25,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 case ${1-} in
   rust)
+    # Plain logs: pass 1 proves a catch from nextest's FAIL lines (mutation_narrow.py), and
+    # dtolnay/rust-toolchain sets CARGO_TERM_COLOR=always on GitHub (ADE-317).
+    export CARGO_TERM_COLOR=never
     # The pinned binary the job installed (CARGO_MUTANTS, an absolute path), not the
     # `cargo mutants` subcommand a PR could alias; --no-config ignores its mutants.toml.
     "${CARGO_MUTANTS:?set by the workflow}" mutants --version
