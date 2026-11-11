@@ -506,7 +506,6 @@ import { rebaseProjectData } from "../features/projects/model/projectData";
 import { useProjectWindowRemoval } from "./model/useProjectWindowRemoval";
 import { spacesView } from "../features/spaces/model/activeSpace";
 import {
-  listProjectInSpace,
   openListedProjects,
   restoreProjectInSpace,
   shownProjects,
@@ -15420,7 +15419,6 @@ function Workspace({
               onCancel={() => setRemoteProjectDialogOpen(false)}
               onOpen={(key) => {
                 setRemoteProjectDialogOpen(false);
-                void listProjectInSpace(key);
                 onSelectProject(key);
               }}
             />

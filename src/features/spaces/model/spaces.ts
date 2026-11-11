@@ -157,3 +157,20 @@ export function refusalMessage(error: unknown): string {
   }
   return String(error);
 }
+
+/** The backend's workspace refusal reads "so it stays", which is Remove's. */
+const ADD_WORKSPACE_REFUSAL =
+  "This folder is part of the MonoCode workspace, so it can't be added to a Space.";
+
+/**
+ * A refused add in Add wording ("Add refusal text" in the decisions file):
+ * "<reason>, so it can't be added to <Space>.". The workspace refusal goes by
+ * its code; every other reason is the backend's message.
+ */
+export function addRefusalMessage(error: unknown, spaceName: string): string {
+  if ((error as { code?: unknown } | null | undefined)?.code === "workspace") {
+    return ADD_WORKSPACE_REFUSAL;
+  }
+  const reason = refusalMessage(error).trim().replace(/\.+$/, "");
+  return `${reason}, so it can't be added to ${spaceName}.`;
+}

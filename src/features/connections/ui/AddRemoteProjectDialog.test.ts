@@ -13,11 +13,13 @@ let root: Root;
 let container: HTMLDivElement;
 let machines: unknown[];
 const opened: string[] = [];
+let addProject: (input: unknown) => Promise<unknown>;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   opened.length = 0;
+  addProject = async () => "assigned";
   machines = [
     {
       id: "machine",
@@ -29,6 +31,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, input) => {
     if (command === "remote_machines") return machines;
+    if (command === "spaces_project_add") return addProject(input);
     const { method, params } = input as {
       method: string;
       params: { path?: string; cwd?: string };
@@ -175,4 +178,94 @@ it("refuses a typed path the machine resolves to a folder named MonoCode", async
   );
   expect(opened).toEqual([]);
   expect(localStorage.length).toBe(0);
+});
+
+it("adds a new machine folder to the Space as new, then opens it", async () => {
+  const calls: unknown[] = [];
+  addProject = async (input) => {
+    calls.push(input);
+    expect(opened).toEqual([]);
+    return "assigned";
+  };
+  await render();
+  await act(async () => button("Open").click());
+  expect(calls).toEqual([
+    { projectPath: "remote://env/home/me", knownToWindow: false },
+  ]);
+  expect(opened).toEqual(["remote://env/home/me"]);
+});
+
+it.each([
+  ["monocode.recentProjects", { path: "remote://env/home/me", openedAt: 1 }],
+  ["monocode.archivedProjects", { path: "remote://env/home/me", archivedAt: 1 }],
+])("adds a machine folder %s holds as known", async (key, entry) => {
+  localStorage.setItem(key, JSON.stringify([entry]));
+  const calls: unknown[] = [];
+  addProject = async (input) => {
+    calls.push(input);
+    return "linked";
+  };
+  await render();
+  await act(async () => button("Open").click());
+  expect(calls).toEqual([
+    { projectPath: "remote://env/home/me", knownToWindow: true },
+  ]);
+});
+
+it("shows a refused add and neither opens nor remembers the project", async () => {
+  addProject = () =>
+    Promise.reject({
+      code: "failed",
+      message: "The Space could not be read.",
+    });
+  await render();
+  await act(async () => button("Open").click());
+  expect(document.body.textContent).toContain("The Space could not be read.");
+  expect(opened).toEqual([]);
+  expect(remoteProjectFor("remote://env/home/me")).toBeUndefined();
+});
+
+it("adds nothing when the dialog closed while the folder opened", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finish!: (value: unknown) => void;
+  vi.mocked(invoke).mockImplementation((command, input) => {
+    if ((input as { method?: string } | undefined)?.method === "projects.open")
+      return new Promise((resolve) => { finish = resolve; });
+    return original(command, input);
+  });
+  const add = vi.fn(async () => "linked");
+  addProject = add;
+  await render();
+  await act(async () => button("Open").click());
+  await act(async () => button("Cancel").click());
+  await act(async () => finish({ id: "late", cwd: "/home/me", name: "me" }));
+  expect(add).not.toHaveBeenCalled();
+});
+
+it("drops an open that a newer folder browse replaced", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finish!: (value: unknown) => void;
+  vi.mocked(invoke).mockImplementation((command, input) => {
+    if ((input as { method?: string } | undefined)?.method === "projects.open")
+      return new Promise((resolve) => { finish = resolve; });
+    return original(command, input);
+  });
+  const add = vi.fn(async () => "linked");
+  addProject = add;
+  await render();
+  await act(async () => button("Open").click());
+  await act(async () => button("code").click());
+  await act(async () => finish({ id: "late", cwd: "/home/me", name: "me" }));
+  expect(add).not.toHaveBeenCalled();
+  expect(opened).toEqual([]);
+});
+
+it("drops a refusal that a newer folder browse replaced", async () => {
+  let refuse!: (reason: unknown) => void;
+  addProject = () => new Promise((_resolve, reject) => { refuse = reject; });
+  await render();
+  await act(async () => button("Open").click());
+  await act(async () => button("code").click());
+  await act(async () => refuse({ code: "failed", message: "Stale refusal." }));
+  expect(document.body.textContent).not.toContain("Stale refusal.");
 });

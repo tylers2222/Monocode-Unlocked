@@ -13,6 +13,8 @@ import {
   remoteProjectKey,
 } from "../model/remoteProjects";
 import { reservedProjectNameError } from "../../projects/model/reservedProjectName";
+import { knownToWindow } from "../../spaces/model/spaceProjects";
+import { addProjectToSpace, refusalMessage } from "../../spaces/model/spaces";
 import { knownHomeDir } from "../../../shared/lib/paths";
 import type { HostDirectory, HostProject } from "../model/protocol";
 
@@ -112,10 +114,14 @@ export function AddRemoteProjectDialog({
       // The machine may resolve the typed path to a folder named MonoCode.
       const resolved = reserved(project.cwd);
       if (resolved) throw new Error(resolved);
+      if (!alive.current || version !== requestVersion.current) return;
+      // T1 or T2 first, so a refused add remembers nothing and opens nothing.
+      const key = remoteProjectKey(machine.environmentId, project.cwd);
+      await addProjectToSpace(key, { knownToWindow: knownToWindow(key) });
       if (alive.current && version === requestVersion.current)
         onOpen(rememberRemoteProject(machine.environmentId, project).key);
     } catch (reason) {
-      if (alive.current && version === requestVersion.current) setError(String(reason).replace(/^Error: /, ""));
+      if (alive.current && version === requestVersion.current) setError(refusalMessage(reason));
     } finally {
       if (alive.current && version === requestVersion.current) setOpening(false);
     }

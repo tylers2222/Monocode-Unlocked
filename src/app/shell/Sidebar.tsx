@@ -203,6 +203,7 @@ import {
   ProjectPickerPopover,
   SearchableProjectPicker,
 } from "../../features/projects/ui/SearchableProjectPicker";
+import { addFromSpaceAction } from "../../features/projects/ui/AddFromSpaceEntry";
 import { useRailTooltip } from "./RailTooltip";
 import { useProjectMenu } from "./useProjectMenu";
 import { SessionFiltersMenu } from "../../features/sessions/ui/SessionFiltersMenu";
@@ -2228,6 +2229,7 @@ function SidebarComponent({
                 onDismiss={onClose}
                 onSelectProject={onSelectProject}
                 onOpenProject={onOpenProject}
+                footerAction={addFromSpaceAction}
                 onProjectContextMenu={headerProjectMenu.open}
                 projectMenuActive={headerProjectMenu.isActive}
               />
@@ -3483,6 +3485,7 @@ function SearchableProjectPickerWithMenu({
     <>
       <SearchableProjectPicker
         {...pickerProps}
+        footerAction={pickerProps.onOpenProject ? addFromSpaceAction : undefined}
         onProjectContextMenu={projectMenu.open}
         projectMenuActive={projectMenu.isActive}
       />
