@@ -62,17 +62,33 @@ case ${1-} in
     # Build caching: cargo-mutants copies the tree into one build dir per job without
     # target/, so each dir builds every dependency cold. Build the tests once here and let
     # it copy target/ (dependencies stay fresh), when the build dirs' disk holds a copy
-    # per job plus one: a 14 GB runner may not.
+    # per job plus one.
     # Each package exactly as cargo-mutants builds it (--package, not --workspace, whose
     # feature unification gives the dependencies other hashes, so the copy would rebuild).
+    # When the disk cannot hold the copies, the warm build only costs time (161 s on
+    # GitHub, run 42969715625) and leaves its target/ beside the cold build dirs (#618
+    # review r1 m1): skip it when the estimate does not fit, and remove a warm target/
+    # that turns out too big. A wrong estimate costs time only, never a verdict.
     warm_start=$(date +%s)
-    pkgs=$("${mutants[@]}" "${shard[@]}" --list --json | python3 "$here/mutation_narrow.py" packages)
-    for p in $pkgs; do cargo test --no-run --package="$p" --quiet; done
-    target_kb=$(du -sk target 2>/dev/null | cut -f1 || echo 0)
     free_kb=$(df -Pk "${TMPDIR:-/tmp}" | awk 'NR == 2 {print $4}')
+    had_target=0; [ -e target ] && had_target=1
+    target_kb=$(du -sk target 2>/dev/null | cut -f1 || echo 0)
+    # The warm target/ itself, then a copy per job plus one (target/ and the build dirs
+    # share a disk on GitHub). 5939 MB on GitHub (run 42969715625), 5997 MB on a box.
+    est_kb=$(( ${MUTATION_WARM_TARGET_MB:-6000} * 1024 )); [ "${target_kb:-0}" -le "$est_kb" ] || est_kb=$target_kb
     copy=(--copy-target=false)
-    [ "${target_kb:-0}" -gt 0 ] && [ "$free_kb" -gt $(( target_kb * (jobs + 2) )) ] && copy=(--copy-target=true)
-    echo "mutation: warm build $(( $(date +%s) - warm_start ))s, target $(( target_kb / 1024 )) MB, free $(( free_kb / 1024 )) MB, jobs $jobs: ${copy[*]}"
+    if [ "$free_kb" -le $(( est_kb * (jobs + 3) )) ]; then
+      echo "mutation: warm build skipped, free $(( free_kb / 1024 )) MB, needs $(( est_kb * (jobs + 3) / 1024 )) MB for jobs $jobs: ${copy[*]}"
+    else
+      pkgs=$("${mutants[@]}" "${shard[@]}" --list --json | python3 "$here/mutation_narrow.py" packages)
+      for p in $pkgs; do cargo test --no-run --package="$p" --quiet; done
+      target_kb=$(du -sk target 2>/dev/null | cut -f1 || echo 0)
+      free_kb=$(df -Pk "${TMPDIR:-/tmp}" | awk 'NR == 2 {print $4}')
+      [ "${target_kb:-0}" -gt 0 ] && [ "$free_kb" -gt $(( target_kb * (jobs + 2) )) ] && copy=(--copy-target=true)
+      # cargo-mutants never copies target/ with copy false: free its disk for the build dirs.
+      [ "${copy[0]}" = --copy-target=true ] || [ "$had_target" = 1 ] || rm -rf target
+      echo "mutation: warm build $(( $(date +%s) - warm_start ))s, target $(( target_kb / 1024 )) MB, free $(( free_kb / 1024 )) MB, jobs $jobs: ${copy[*]}"
+    fi
     mutants+=("${copy[@]}")
     # Pass 1, a speed-up only: nextest (fail-fast) on the tests that can reach the mutated
     # modules (mutation_narrow.py scope), or on the whole package when that mapping is not
