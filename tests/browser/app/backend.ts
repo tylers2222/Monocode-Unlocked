@@ -4,6 +4,7 @@ import {
   mockIPC,
   mockWindows,
 } from "@tauri-apps/api/mocks";
+import { emptyAlarmsView } from "../emptyAlarmsView";
 import type { Approval } from "../../../src/features/approvals/model/approvals";
 import type { Verdict } from "../../../src/features/approvals/model/boardDecision";
 import type { Automation } from "../../../src/features/automations/model/automations";
@@ -405,23 +406,7 @@ const HANDLERS: Record<string, Handler> = {
   // only to answer the child's protocol.
   harness_spawn: (_store, { cwd }) => spawned(4242, cwd),
   default_cwd: (store) => store.home,
-  // No alarms, under Rust's default settings (alarms/store.rs).
-  alarms_view: () => ({
-    readWallMs: Date.now(),
-    episodes: [],
-    closed: [],
-    holds: [],
-    settings: {
-      stallMinutes: 15,
-      escalateMinutes: 15,
-      sleepHold: true,
-      tylerSleepHold: true,
-      shortSleepSkipSeconds: 10,
-      rootGiga: null,
-      gigas: [],
-    },
-    stallMinutes: [],
-  }),
+  alarms_view: emptyAlarmsView,
   // The page is one window, so its own row is the only one.
   workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
   // session_store.rs snapshot_supersedes: a snapshot read before the stored
