@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AppWindow,
-  Archive,
   BellOff,
   FolderOpen,
   FolderTree,
@@ -61,6 +60,7 @@ import {
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { useProjectRemoval } from "./useProjectRemoval";
+import { REMOVE_FROM_SPACE } from "../../features/projects/ui/projectRemovalItems";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -89,7 +89,7 @@ const REVEAL_LABEL = IS_MAC
 
 function projectMenuExtraItems(
   pinned: boolean,
-  canRemove: boolean,
+  removal: TabGroupMenuExtraItem[],
   canConfigureNotifications: boolean,
   notificationReady: boolean,
   externalEditors: ExternalEditor[] | null,
@@ -180,22 +180,17 @@ function projectMenuExtraItems(
       icon: Settings,
     });
   }
-  if (canRemove) {
-    items.push(
-      { id: "archive", label: "Archive", icon: Archive, sepBefore: true },
-      { id: "delete", label: "Delete", icon: Trash2, danger: true },
-    );
-  }
+  items.push(...removal);
   return items;
 }
 
 type Point = { x: number; y: number };
 
 type Options = {
-  /** A purge answers with why it was refused, or null. */
+  /** A purge or a `leaveSpace` answers with why it was refused, or null. */
   onRemoveProject?: (
     path: string,
-    options: { purgeData: boolean },
+    options: { purgeData: boolean; leaveSpace?: boolean },
   ) => void | Promise<string | null>;
   onOpenNotificationSettings?: (projectPath?: string) => void;
   /** Called when a project or group menu opens, so hosts can close sibling menus. */
@@ -285,6 +280,7 @@ export function useProjectMenu({
   // Every close or move of the menu cancels the check, so an answer that
   // arrives is always for the menu still open.
   const removal = useProjectRemoval({
+    menuPath,
     closeMenu: () => setProjectMenu(null),
     reopenMenu: (menu, refusal) => {
       setProjectMenu(menu);
@@ -292,7 +288,7 @@ export function useProjectMenu({
     },
     showRefusal: (_path, refusal) => setMenuError(refusal),
     restoreFocus,
-    // The menu offers Archive and Delete only when there is a handler.
+    // The menu offers Remove, Archive and Delete only when there is a handler.
     onRemoveProject: onRemoveProject ?? (() => undefined),
   });
 
@@ -410,7 +406,10 @@ export function useProjectMenu({
         name: resolveTabGroupLabel(key, groupLabels, basename(path)),
       });
     } else if (action === "reveal") void revealPath(path);
-    else if (action === "archive") {
+    else if (action === REMOVE_FROM_SPACE) {
+      removal.leaveSpace(path);
+      return false;
+    } else if (action === "archive") {
       removal.archive(path);
       return false;
     } else if (action === "delete") {
@@ -485,9 +484,10 @@ export function useProjectMenu({
           loadPinnedProjects().some((pinned) =>
             sameProjectPath(pinned, projectMenu.path),
           ),
-          // The Giga workspace stays on the rail: no Archive or Delete.
-          Boolean(onRemoveProject) &&
-            !isInGigaWorkspace(projectMenu.path, home),
+          // No path at or under the Giga workspace has Remove, Archive or Delete.
+          onRemoveProject && !isInGigaWorkspace(projectMenu.path, home)
+            ? removal.menuItems(projectMenu.path)
+            : [],
           Boolean(onOpenNotificationSettings),
           Boolean(readyNotificationProject),
           externalEditors,

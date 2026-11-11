@@ -15,6 +15,11 @@ vi.mock("../../platform/tauri/fs", async (original) => ({
   listExternalEditors: vi.fn(async () => [{ id: "code", name: "Code" }]),
   openInExternalEditor: vi.fn(async () => undefined),
 }));
+// A row only in this Space: Archive and Delete, with no Remove (frame 20).
+vi.mock("../../features/projects/model/projectRowActions", async (original) => ({
+  ...(await original<object>()),
+  readProjectRowFacts: vi.fn(async () => ({ offersRemove: false })),
+}));
 vi.mock("../../features/projects/model/projectDeleteCheck", async (original) => ({
   ...(await original<object>()),
   checkProjectArchive: vi.fn(),

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { removeProjectFromActiveSpace } from "./projectRowActions";
+import {
+  readProjectRowFacts,
+  removeProjectFromActiveSpace,
+  rowOffersRemove,
+} from "./projectRowActions";
 import { setOpenSessionsSource, SPACE_UNREAD_REFUSAL } from "./projectDeleteCheck";
 import { __spacesTestReset } from "../../spaces/model/activeSpace";
 import type { Session } from "../../sessions/model/session";
@@ -43,6 +47,7 @@ beforeEach(() => {
       noRowIsHere: true,
       assignedElsewhere: [],
     },
+    spaces_project_known: [],
     spaces_project_remove: true,
     session_list_by_project: [],
   };
@@ -61,6 +66,44 @@ class Rejection {
 
 const removeCalls = () =>
   vi.mocked(invoke).mock.calls.filter(([name]) => name === "spaces_project_remove");
+
+describe("rowOffersRemove", () => {
+  it.each([
+    ["in another Space", [{ path: P, spaces: ["space-2", "space-1"] }], [], true],
+    ["only in this Space", [{ path: P, spaces: ["space-2"] }], [], false],
+    ["known to no Space", [], [], false],
+    ["only here, but a Mono holds it", [{ path: P, spaces: ["space-2"] }], [P], true],
+    ["compared in key form", [{ path: `${P}/`, spaces: ["space-1"] }], [], true],
+  ])("%s", (_, known, monoHeld, expected) => {
+    expect(rowOffersRemove(P, "space-2", known, monoHeld)).toBe(expected);
+  });
+});
+
+describe("readProjectRowFacts", () => {
+  it("reads whether the row is shared", async () => {
+    replies.spaces_project_known = [{ path: P, spaces: ["space-1", "space-2"] }];
+    await expect(readProjectRowFacts(P)).resolves.toEqual({
+      offersRemove: true,
+      machine: undefined,
+    });
+  });
+
+  it("fails open when a read fails: the backend answers the Remove", async () => {
+    replies.spaces_project_list = new Rejection("no database");
+    await expect(readProjectRowFacts(P)).resolves.toMatchObject({
+      offersRemove: true,
+    });
+  });
+
+  it("names a remote project's machine", async () => {
+    replies.remote_machines = [
+      { id: "m", name: "example-machine", environmentId: "env-facts" },
+    ];
+    await expect(
+      readProjectRowFacts("remote://env-facts/code/repo"),
+    ).resolves.toMatchObject({ machine: "example-machine" });
+  });
+});
 
 describe("removeProjectFromActiveSpace", () => {
   const queued = {

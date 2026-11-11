@@ -120,6 +120,14 @@ export function checkProjectArchive(projectPath: string): Promise<null> {
   return invoke<null>("spaces_project_archive_check", { projectPath });
 }
 
+/** A project some Space has, with those Spaces. */
+export type KnownProject = { path: string; spaces: string[] };
+
+/** Every project any Space has; no root or under-workspace path. */
+export function listKnownProjects(): Promise<KnownProject[]> {
+  return invoke<KnownProject[]>("spaces_project_known");
+}
+
 /** T5 or T6. False: it was not in the Space, and nothing changed. */
 export function removeProjectFromSpace(projectPath: string): Promise<boolean> {
   return invoke<boolean>("spaces_project_remove", { projectPath });
