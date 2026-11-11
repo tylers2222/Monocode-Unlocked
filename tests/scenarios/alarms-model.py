@@ -4,7 +4,10 @@
 Writes its port to <port-file>. Serves the Anthropic Messages API (Claude
 Code) and the OpenAI chat completions API (omp). A request whose messages
 contain a rule's `match` gets the rule's tool call n (n = tool results so
-far), then the text "done"; every other request gets "done". rules.json is
+far), then the text "done"; every other request gets "done". MonoCode's
+helper prompts (session titles, commit messages) quote the user's message,
+so they can hold a `match`; they say "Do not call tools", and get "done" as
+a model that obeys would. rules.json is
 [{"match": "...", "tools": [{"name": "Bash", "input": {...}}]}]. Each answer
 is a line in <log>.
 """
@@ -41,6 +44,8 @@ def pick(body, openai):
     text = json.dumps(messages)
     named = (lambda tool: tool.get("function", {}).get("name")) if openai else (lambda tool: tool.get("name"))
     tools = {named(tool) for tool in body.get("tools", [])}
+    if "Do not call tools" in text:
+        return None
     returned = results(messages, openai)
     for rule in RULES:
         if rule["match"] not in text or not tools:

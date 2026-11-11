@@ -6,9 +6,9 @@
 #                  active min, and 15 min with no act takes it to the Mono
 #   alarms dialog  a Claude worker's permission dialog alarms its lead at 3
 #                  min; the lead's alarms.answer --allow lets the worker go on
-#   alarms hold    Claude: `sleep 30 &` and run_in_background run unheld; a
-#                  foreground sleep waits for the Mono: deny, allow, no
-#                  answer until the 2 min cut
+#   alarms hold    Claude: a wait sent to the background with `&` or
+#                  run_in_background runs unheld; a foreground sleep waits
+#                  for the Mono: deny, allow, no answer until the 2 min cut
 #   alarms omp     the same three foreground holds for omp
 # Claude Code and omp talk to alarms-model.py, never to a real model.
 
@@ -71,12 +71,14 @@ SH
 }
 
 # omp from PATH (e2e.yml installs it) under the temp HOME, with the local
-# model as provider `alarms` (models.yml, as the P2 probe ran it).
+# model as provider `alarms` (models.yml, as the P2 probe ran it). A script,
+# not a link: the temp HOME refuses links that leave /tmp (ADE-112).
 install_alarms_omp() {
   local omp
   omp="$(command -v omp)" || die "alarms omp needs omp on PATH"
   mkdir -p "$EVAL_HOME/.local/bin" "$EVAL_HOME/.omp/agent"
-  ln -sf "$omp" "$EVAL_HOME/.local/bin/omp"
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$omp" >"$EVAL_HOME/.local/bin/omp"
+  chmod +x "$EVAL_HOME/.local/bin/omp"
   cat >"$EVAL_HOME/.omp/agent/models.yml" <<YML
 providers:
   alarms:
@@ -130,6 +132,7 @@ returned() {
   jq -rs --arg id "$1" 'map(.results[$id] // empty) | first // empty' "$ALARMS_MODEL"
 }
 has_returned() { jq -se --arg id "$1" 'map(.results | has($id)) | any' "$ALARMS_MODEL" >/dev/null; }
+errored() { [[ "$(returned "$1")" == error:* ]] && echo yes || echo no; }
 
 # advance_to <active ms>: the fake clock on to at least that active time, in
 # whole 5 s steps (a shorter step is not stored, see advance).
@@ -256,7 +259,7 @@ run_alarms_dialog() {
     "$(jq -rs 'first(.[] | select(.action == "alarms.answer") | .result.ok) | tostring' "$PUPPET/log.jsonl")" true
   wait_until 90 "the worker runs its command" test -e "$file"
   wait_until 90 "the worker sends the model its result" has_returned "$call"
-  expect "worker's Bash result: an error" "$([[ "$(returned "$call")" == error:* ]] && echo yes || echo no)" no
+  expect "worker's Bash result: an error" "$(errored "$call")" no
   advance 5000
   expect "dialog alarm: closed as, acts" \
     "$(q "SELECT ifnull(close_reason, 'open') || ' ' || (SELECT group_concat(how || ' by ' || actor) FROM alarm_acts WHERE episode_id = '$ep') FROM alarm_episodes WHERE id = '$ep'")" \
@@ -266,19 +269,25 @@ run_alarms_dialog() {
   "$INSTANCE" stop
 }
 
+# held <seconds>: a foreground wait the hold catches. Claude Code itself
+# refuses a command that starts with `sleep N`, before its PreToolUse hook
+# runs, so the sleep comes second, for both harnesses.
+held() { printf 'echo hold && sleep %s' "$1"; }
+
 # hold_rules <start>: the Mono starts the first session, denies its hold
-# (sleep 31) and starts the second, allows that one's (sleep 32) and starts
-# the third, and leaves the third's (sleep 33) unanswered. omp gives no
+# (held 31) and starts the second, allows that one's (held 32) and starts
+# the third, and leaves the third's (held 33) unanswered. omp gives no
 # reason for a call, so each hold is told apart by its command.
 hold_rules() {
-  jq -n --argjson start "$1" --argjson habit "$(alarms_habit_rule "HOLD-GO Start the first session.")" '[
-    {match: "Command: sleep 31", calls: [
+  jq -n --argjson start "$1" --argjson habit "$(alarms_habit_rule "HOLD-GO Start the first session.")" \
+    --arg deny "Command: $(held 31)" --arg allow "Command: $(held 32)" --arg timeout "Command: $(held 33)" '[
+    {match: $deny, calls: [
       {action: "holds.deny", arguments: {hold: "$hold", reason: "HOLD-DENIED run it in the background"}},
       {action: "sessions.start", arguments: ($start + {prompt: "HOLD-TWO Wait for the build."})}], reply: "Denied."},
-    {match: "Command: sleep 32", calls: [
+    {match: $allow, calls: [
       {action: "holds.allow", arguments: {hold: "$hold"}},
       {action: "sessions.start", arguments: ($start + {prompt: "HOLD-THREE Wait for the deploy."})}], reply: "Allowed."},
-    {match: "Command: sleep 33", reply: "Not now."},
+    {match: $timeout, reply: "Not now."},
     $habit,
     {match: "HOLD-GO", calls: [{action: "sessions.start", arguments: ($start + {prompt: "HOLD-ONE Wait for the tests."})}],
       reply: "Started."}]'
@@ -294,26 +303,26 @@ hold_decision() {
 check_holds() {
   local harness="$1" deny="$2" allow=toolu_hold_two_0 timeout=toolu_hold_three_0 left
   wait_until 180 "the denied wait reaches the agent" has_returned "$deny"
-  expect "$harness deny: hold" "$(hold_decision "$deny")" "sleep 31 deny mono:alarms-mono"
+  expect "$harness deny: hold" "$(hold_decision "$deny")" "$(held 31) deny mono:alarms-mono"
   expect "$harness deny: the agent sees the refusal" \
-    "$(returned "$deny" | grep -oF "Refused: foreground wait \"sleep 31\" was not allowed (denied: HOLD-DENIED run it in the background)")" \
-    "Refused: foreground wait \"sleep 31\" was not allowed (denied: HOLD-DENIED run it in the background)"
+    "$(returned "$deny" | grep -oF "Refused: foreground wait \"$(held 31)\" was not allowed (denied: HOLD-DENIED run it in the background)")" \
+    "Refused: foreground wait \"$(held 31)\" was not allowed (denied: HOLD-DENIED run it in the background)"
   wait_until 180 "the allowed wait runs and returns" has_returned "$allow"
-  expect "$harness allow: hold" "$(hold_decision "$allow")" "sleep 32 allow mono:alarms-mono"
-  expect "$harness allow: the wait ran, no refusal" "$(returned "$allow" | grep -c 'Refused:' || true)" 0
+  expect "$harness allow: hold" "$(hold_decision "$allow")" "$(held 32) allow mono:alarms-mono"
+  expect "$harness allow: the wait ran: error, refusals" "$(errored "$allow") $(returned "$allow" | grep -c 'Refused:' || true)" "no 0"
   wait_until 120 "the third wait is held" holds "SELECT count(*) = 1 FROM sleep_holds WHERE tool_use_id = '$timeout'"
-  wait_until 60 "the Mono gets the third hold and does not answer" saw "Command: sleep 33"
+  wait_until 60 "the Mono gets the third hold and does not answer" saw "Command: $(held 33)"
   left="$(q "SELECT deadline_active_ms - requested_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'")"
   expect "$harness timeout: answer window" "$left" 120000
   advance_to $(($(q "SELECT deadline_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'") - 15000))
-  expect "$harness timeout: hold 15 s before the cut" "$(hold_decision "$timeout")" "sleep 33 open -"
+  expect "$harness timeout: hold 15 s before the cut" "$(hold_decision "$timeout")" "$(held 33) open -"
   expect "$harness timeout: the agent still waits 15 s before the cut" "$(has_returned "$timeout" && echo returned || echo waiting)" waiting
   advance 20000
   wait_until 60 "the unanswered wait is refused at the cut" has_returned "$timeout"
-  expect "$harness timeout: hold" "$(hold_decision "$timeout")" "sleep 33 timeout -"
+  expect "$harness timeout: hold" "$(hold_decision "$timeout")" "$(held 33) timeout -"
   expect "$harness timeout: the agent sees the refusal" \
-    "$(returned "$timeout" | grep -oF "Refused: foreground wait \"sleep 33\" was not allowed (no answer in 2 min)")" \
-    "Refused: foreground wait \"sleep 33\" was not allowed (no answer in 2 min)"
+    "$(returned "$timeout" | grep -oF "Refused: foreground wait \"$(held 33)\" was not allowed (no answer in 2 min)")" \
+    "Refused: foreground wait \"$(held 33)\" was not allowed (no answer in 2 min)"
 }
 
 # Design 14 E2E 4 and 5 on Claude Code. The Mono's chat is full-access, so
@@ -324,20 +333,20 @@ run_alarms_hold() {
   alarms_pair hold "$(hold_rules "$start")" install_alarms_claude
   sqlite3 "$DB" "UPDATE sessions SET runtime_mode = 'full-access'
     WHERE id = (SELECT json_extract(data_json, '\$.sessionId') FROM monos WHERE id = 'alarms-mono')"
-  alarms_model '[
-    {"match": "HOLD-ONE", "tools": [
-      {"name": "Bash", "input": {"command": "sleep 30 &", "description": "Wait in the background"}},
-      {"name": "Bash", "input": {"command": "sleep 30", "description": "Wait as a background task", "run_in_background": true}},
-      {"name": "Bash", "input": {"command": "sleep 31", "description": "Wait for the tests"}}]},
-    {"match": "HOLD-TWO", "tools": [{"name": "Bash", "input": {"command": "sleep 32", "description": "Wait for the build"}}]},
-    {"match": "HOLD-THREE", "tools": [{"name": "Bash", "input": {"command": "sleep 33", "description": "Wait for the deploy"}}]}]'
+  alarms_model "$(jq -n --arg deny "$(held 31)" --arg allow "$(held 32)" --arg timeout "$(held 33)" '[
+    {match: "HOLD-ONE", tools: [
+      {name: "Bash", input: {command: "echo start && sleep 30 &", description: "Wait in the background"}},
+      {name: "Bash", input: {command: "sleep 30", description: "Wait as a background task", run_in_background: true}},
+      {name: "Bash", input: {command: $deny, description: "Wait for the tests"}}]},
+    {match: "HOLD-TWO", tools: [{name: "Bash", input: {command: $allow, description: "Wait for the build"}}]},
+    {match: "HOLD-THREE", tools: [{name: "Bash", input: {command: $timeout, description: "Wait for the deploy"}}]}]')"
   "$INSTANCE" start
   echo "alarms hold readings (Claude Code):"
   wait_until 180 "the first session's background waits return" has_returned toolu_hold_one_1
-  expect "sleep 30 &: held, refused" \
-    "$(q "SELECT count(*) FROM sleep_holds WHERE tool_use_id = 'toolu_hold_one_0'") $(returned toolu_hold_one_0 | grep -c 'Refused:' || true)" "0 0"
-  expect "run_in_background sleep 30: held, refused" \
-    "$(q "SELECT count(*) FROM sleep_holds WHERE tool_use_id = 'toolu_hold_one_1'") $(returned toolu_hold_one_1 | grep -c 'Refused:' || true)" "0 0"
+  expect "echo start && sleep 30 &: held, error, refused" \
+    "$(q "SELECT count(*) FROM sleep_holds WHERE tool_use_id = 'toolu_hold_one_0'") $(errored toolu_hold_one_0) $(returned toolu_hold_one_0 | grep -c 'Refused:' || true)" "0 no 0"
+  expect "run_in_background sleep 30: held, error, refused" \
+    "$(q "SELECT count(*) FROM sleep_holds WHERE tool_use_id = 'toolu_hold_one_1'") $(errored toolu_hold_one_1) $(returned toolu_hold_one_1 | grep -c 'Refused:' || true)" "0 no 0"
   check_holds claude toolu_hold_one_2
   expect "holds the three foreground waits made" "$(q "SELECT count(*) FROM sleep_holds")" 3
   expect "puppet calls that failed" "$(failed_calls)" 0
@@ -351,10 +360,10 @@ run_alarms_omp() {
   alarms_pair omp "$(hold_rules "$start")"
   sqlite3 "$DB" "UPDATE sessions SET runtime_mode = 'full-access'
     WHERE id = (SELECT json_extract(data_json, '\$.sessionId') FROM monos WHERE id = 'alarms-mono')"
-  alarms_model '[
-    {"match": "HOLD-ONE", "tools": [{"name": "bash", "input": {"command": "sleep 31"}}]},
-    {"match": "HOLD-TWO", "tools": [{"name": "bash", "input": {"command": "sleep 32"}}]},
-    {"match": "HOLD-THREE", "tools": [{"name": "bash", "input": {"command": "sleep 33"}}]}]'
+  alarms_model "$(jq -n --arg deny "$(held 31)" --arg allow "$(held 32)" --arg timeout "$(held 33)" '[
+    {match: "HOLD-ONE", tools: [{name: "bash", input: {command: $deny}}]},
+    {match: "HOLD-TWO", tools: [{name: "bash", input: {command: $allow}}]},
+    {match: "HOLD-THREE", tools: [{name: "bash", input: {command: $timeout}}]}]')"
   install_alarms_omp
   "$INSTANCE" start
   echo "alarms hold readings (omp):"
