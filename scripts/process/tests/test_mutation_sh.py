@@ -22,6 +22,8 @@ cfg = json.loads(Path(os.environ["STUB_CFG"]).read_text())
 args = sys.argv[1:]
 with open(os.environ["STUB_LOG"], "a") as f:
     f.write(" ".join(args) + "\n")
+with open(os.environ["STUB_LOG"] + ".color", "a") as f:
+    f.write(os.environ.get("CARGO_TERM_COLOR", "unset") + "\n")
 if "--version" in args:
     print("cargo-mutants 27.1.0"); sys.exit(0)
 names = cfg["shard"] if "--shard" in args else cfg["all"]
@@ -93,6 +95,8 @@ class MutationShRust(unittest.TestCase):
         env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "CARGO_MUTANTS": str(stub),
                "RUNNER_TEMP": str(d), "STUB_CFG": str(d / "cfg.json"), "STUB_LOG": str(d / "calls.log")}
         env.pop("MUTATION_BASELINE", None)
+        # As on GitHub: dtolnay/rust-toolchain sets it for every later step.
+        env["CARGO_TERM_COLOR"] = "always"
         if baseline:
             env["MUTATION_BASELINE"] = baseline
         p = subprocess.run(["bash", str(MUTATION_SH), "rust", str(d / "pr.diff"), "0/3"],
@@ -128,6 +132,14 @@ class MutationShRust(unittest.TestCase):
         self.assertEqual(len(runs), 1, runs)
         self.assertIn("mutation: pass 1 caught every mutant with a failing test", p.stdout)
         self.assertEqual((work / "mutants.out" / "caught.txt").read_text(), f"{A}\n{B}\n")
+        self.assertIn("mutation: pass 1 proved 2 of 2 caught mutants by a failing test", p.stderr)
+
+    def test_cargo_mutants_runs_with_plain_logs_when_the_job_asks_for_colour(self):
+        p, runs, work = self.run_sh({"all": [A], "shard": [A], "pass1": {}, "pass2": {}})
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        colors = (work.parent / "calls.log.color").read_text().split()
+        self.assertTrue(colors, "the stub never ran")
+        self.assertEqual(set(colors), {"never"})
 
     @unittest.skipUnless(bash_has_mapfile(), "bash has no mapfile (macOS /bin/bash 3.2); gate/lint runs it on Linux")
     def test_a_missed_mutant_goes_to_pass_2_alone_with_the_requested_skip_and_stays_red(self):
