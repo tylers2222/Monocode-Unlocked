@@ -192,7 +192,6 @@ async function tylerAnswer(
     host.refused("alarms.answer", answer);
     return;
   }
-  // Effect, then log.
   await call(host, "alarms_tyler_act", {
     alarm: episode.id,
     how: "answer",

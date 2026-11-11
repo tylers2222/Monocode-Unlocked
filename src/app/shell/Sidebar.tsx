@@ -552,7 +552,6 @@ function SidebarComponent({
   monos,
   monoViewActive = false,
 }: Props) {
-  // The window's alarms feed, unless a caller passed its own.
   const feedStalls = useSessionStalls();
   const feedStallMinutes = useSessionStallMinutes();
   const sessionStalls = givenSessionStalls ?? feedStalls;
