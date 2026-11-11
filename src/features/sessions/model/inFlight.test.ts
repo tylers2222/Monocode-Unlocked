@@ -297,8 +297,9 @@ describe("markTurnInterrupted", () => {
   });
 
   it("marks the turn interrupted when the notice opener has no request id", () => {
-    const { appRequestId: _, ...bare } = notice;
-    const restored = markTurnInterrupted(mono({ blocks: [bare] }));
+    const restored = markTurnInterrupted(
+      mono({ blocks: [{ ...notice, appRequestId: undefined }] }),
+    );
     expect(restored.queuedMessages).toBeUndefined();
     expect(restored.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
   });
