@@ -131,6 +131,23 @@ class RetryAndMerge(unittest.TestCase):
             got = N.retry(out)
         self.assertEqual(got, ["^a\\.rs:2:1: coloured pass only$"])
 
+    def test_a_nextest_timeout_is_not_a_proven_catch(self):
+        # nextest's slow-timeout terminate-after kills a hung test and exits non-zero, so
+        # cargo-mutants records CaughtMutant. The old single run reported that hang as a
+        # Timeout (red): pass 2's cargo test must decide it (#618 review r1 m2).
+        timeout = "    TIMEOUT [   5.004s] app_lib bells::ring::tests::rings\n"
+        coloured = "\x1b[35;1m    TIMEOUT\x1b[0m [   5.004s] app_lib bells::ring::tests::rings\n"
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            write_out(out, [("a.rs:1:1: hung", "CaughtMutant", timeout),
+                            ("a.rs:2:1: hung, coloured", "CaughtMutant", coloured),
+                            ("a.rs:3:1: hung and failed", "CaughtMutant", timeout + FAILED)])
+            self.assertEqual(N.retry(out), ["^a\\.rs:1:1: hung$", "^a\\.rs:2:1: hung, coloured$"])
+            N.merge(out, None)
+            self.assertEqual((out / "caught.txt").read_text(), "a.rs:3:1: hung and failed\n")
+            self.assertEqual((out / "missed.txt").read_text().splitlines(),
+                             ["a.rs:1:1: hung", "a.rs:2:1: hung, coloured"])
+
     def test_the_regex_matches_only_its_own_name(self):
         name = "src/a.rs:9:5: replace Pass<'_>::agent -> Vec<i64> with vec![] (a|b)"
         rx = "^" + N.rust_regex_escape(name) + "$"

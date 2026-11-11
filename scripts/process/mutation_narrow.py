@@ -30,8 +30,11 @@ MOD_DECL = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
 INLINE_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*\{")
 PATH_ATTR = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]')
 ATTR = re.compile(r"^\s*#\[")
-# nextest's per-test failure lines (FAIL, a signal, ABORT, TIMEOUT, LEAK-FAIL).
-NEXTEST_FAIL = re.compile(r"^\s*(?:FAIL|SIG[A-Z]+|ABORT|TIMEOUT|LEAK-FAIL)\s+\[", re.M)
+# nextest's per-test failure lines (FAIL, a signal, ABORT, LEAK-FAIL). Not TIMEOUT: a test
+# that nextest's slow-timeout terminate-after killed is a hang, which the old single
+# cargo-mutants run reported as a Timeout (red), not a catch. Such a mutant goes to pass 2,
+# whose cargo test verdict is final (#618 review r1 m2; a PR can add .config/nextest.toml).
+NEXTEST_FAIL = re.compile(r"^\s*(?:FAIL|SIG[A-Z]+|ABORT|LEAK-FAIL)\s+\[", re.M)
 # Terminal colour codes (CSI sequences). dtolnay/rust-toolchain sets CARGO_TERM_COLOR=always
 # on GitHub, so nextest wraps FAIL in them; unstripped, no caught mutant was proven and
 # every one re-ran in pass 2 (#574, run 42951620743: the 110-minute timeout, ADE-317).
