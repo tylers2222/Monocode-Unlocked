@@ -67,26 +67,34 @@ const LINKS: &str = "SELECT space_id || ' ' || project_path FROM space_project_l
 /// Defect (T1, T2, P3, I9): a new folder added in Space 2 lands in Space 1, or
 /// shows in Space 1 too; `knownToWindow` is ignored, so a recent of Space 1 with
 /// no row moves out of Space 1; a known project moves a Space's assignment, or
-/// writes a link to the Space already assigned; a second add changes anything;
-/// or a workspace path or `~` is added.
+/// writes a link to the Space already assigned; a second add changes anything
+/// or says it wrote; a remote project is not a project; or a workspace path or
+/// `~` is added.
 #[test]
 fn adding_assigns_a_new_project_and_links_a_known_one() {
     let store = store();
     let add = |space: &str, path: &str, known| project_add::add(&store, space, path, known);
 
-    assert_eq!(add(TWO, "/work/new/", false), Ok(Added::Assigned));
+    assert_eq!(add(TWO, "/work/new/", false), Ok((Added::Assigned, true)));
     assert_eq!(spaces_of(&store, "/work/new"), [TWO], "P3: only in Space 2");
-    assert_eq!(add(TWO, "/work/new", false), Ok(Added::Linked), "I9");
+    assert_eq!(
+        add(TWO, "/work/new", false),
+        Ok((Added::Linked, false)),
+        "I9"
+    );
     assert!(rows(&store, LINKS).is_empty(), "already assigned: no write");
 
-    assert_eq!(add(FIRST_SPACE, "/work/first", false), Ok(Added::Assigned));
+    assert_eq!(
+        add(FIRST_SPACE, "/work/first", false),
+        Ok((Added::Assigned, true))
+    );
     assert_eq!(
         rows(&store, "SELECT project_path FROM space_projects ORDER BY 1"),
         ["/work/first", "/work/new"],
         "T1 writes the row in Space 1 too"
     );
 
-    assert_eq!(add(TWO, "/work/recent", true), Ok(Added::Linked));
+    assert_eq!(add(TWO, "/work/recent", true), Ok((Added::Linked, true)));
     assert_eq!(
         spaces_of(&store, "/work/recent"),
         [FIRST_SPACE, TWO],
@@ -95,14 +103,19 @@ fn adding_assigns_a_new_project_and_links_a_known_one() {
 
     assert_eq!(
         add(FIRST_SPACE, "/work/new", false),
-        Ok(Added::Linked),
+        Ok((Added::Linked, true)),
         "row"
+    );
+    assert_eq!(
+        add(FIRST_SPACE, "/work/new", false),
+        Ok((Added::Linked, false)),
+        "already linked: no write"
     );
     assert_eq!(spaces_of(&store, "/work/new"), [TWO, FIRST_SPACE]);
 
     assert_eq!(
         add(FIRST_SPACE, "/work/recent", false),
-        Ok(Added::Linked),
+        Ok((Added::Linked, false)),
         "a link knows it"
     );
     assert_eq!(
@@ -122,19 +135,30 @@ fn adding_assigns_a_new_project_and_links_a_known_one() {
         .unwrap();
     assert_eq!(
         add(TWO, "/work/chatted", false),
-        Ok(Added::Linked),
+        Ok((Added::Linked, true)),
         "session"
     );
     assert_eq!(spaces_of(&store, "/work/chatted"), [FIRST_SPACE, TWO]);
 
     create_mono(&store, "m", FIRST_SPACE, &["/work/held"]);
-    assert_eq!(add(TWO, "/work/held", false), Ok(Added::Linked), "Mono");
+    assert_eq!(
+        add(TWO, "/work/held", false),
+        Ok((Added::Linked, true)),
+        "Mono"
+    );
     assert_eq!(
         add(TWO, "/work/fresh", false),
-        Ok(Added::Assigned),
+        Ok((Added::Assigned, true)),
         "a Mono that lists another path does not make this one known"
     );
     assert_eq!(spaces_of(&store, "/work/fresh"), [TWO]);
+
+    assert_eq!(
+        add(TWO, "remote://box/srv/app/", false),
+        Ok((Added::Assigned, true)),
+        "a remote project takes the states of any project"
+    );
+    assert_eq!(spaces_of(&store, "remote://box/srv/app"), [TWO]);
 
     let root = projects::workspace_roots().remove(0);
     for path in [root.clone(), format!("{root}/gigas/x")] {
@@ -152,8 +176,9 @@ fn adding_assigns_a_new_project_and_links_a_known_one() {
 /// Defect (T3, T4, F10): a Mono's project gets no link in its Space, or one in
 /// the wrong Space; a Mono losing a project, or being deleted, drops it from the
 /// Space, for a legacy Mono with no link too; a patch of another field writes a
-/// link; or the workspace root or a path under it gets a link (a live Giga lists
-/// the root).
+/// link; a listed path that is no key, or `~` (no project, which Remove
+/// refuses), gets a link or stops the later paths getting theirs; or the
+/// workspace root or a path under it gets a link (a live Giga lists the root).
 #[test]
 fn a_monos_list_writes_links_that_outlive_it() {
     let store = store();
@@ -163,7 +188,7 @@ fn a_monos_list_writes_links_that_outlive_it() {
         &store,
         "two",
         TWO,
-        &["/work/a/", root.as_str(), under.as_str()],
+        &["relative/x", "~", "/work/a/", root.as_str(), under.as_str()],
     );
     assert_eq!(rows(&store, LINKS), ["space-2 /work/a"], "T3 on create");
 
@@ -220,7 +245,8 @@ fn a_monos_list_writes_links_that_outlive_it() {
 
 /// Defect (T13, R6): a Mono's list changes with no event, so the window shows it
 /// only after a reload, or every Mono write refetches the list; the add command
-/// reads a Space other than the window's or tells no window.
+/// reads a Space other than the window's, tells no window of a write, or tells
+/// every window of an add that wrote nothing.
 #[test]
 fn the_commands_read_the_windows_space_and_tell_every_window() {
     let app = tauri::test::mock_builder()
@@ -253,20 +279,26 @@ fn the_commands_read_the_windows_space_and_tell_every_window() {
         ..SettingsPatch::default()
     };
     spaces::spaces_settings_set(window.clone(), app.state(), patch).unwrap();
-    let added = project_add::spaces_project_add(
-        window,
-        app.handle().clone(),
-        app.state(),
-        "/work/new".into(),
-        false,
-    );
-    assert_eq!(added, Ok(Added::Assigned));
+    let add = |path: &str, known| {
+        project_add::spaces_project_add(
+            window.clone(),
+            app.handle().clone(),
+            app.state(),
+            path.into(),
+            known,
+        )
+    };
+    assert_eq!(add("/work/new", false), Ok(Added::Assigned));
     assert_eq!(
         serde_json::to_value(Added::Assigned).unwrap(),
         json!("assigned")
     );
     assert_eq!(spaces_of(&app.state(), "/work/new"), [TWO]);
     assert_eq!(events(), 1, "an add tells the windows");
+    assert_eq!(add("/work/new", false), Ok(Added::Linked));
+    assert_eq!(events(), 1, "an add that wrote nothing tells no window");
+    assert_eq!(add("/work/recent", true), Ok(Added::Linked));
+    assert_eq!(events(), 2, "an add that wrote a link tells the windows");
 
     let state: tauri::State<'_, SessionStore> = app.state();
     create_mono(&state, "m", TWO, &["/work/a"]);
@@ -278,9 +310,9 @@ fn the_commands_read_the_windows_space_and_tell_every_window() {
         mono_roster::monos_update(app.handle().clone(), app.state(), vec![update(patch)]).unwrap()
     };
     write(json!({"name": "renamed"}));
-    assert_eq!(events(), 1, "a rename does not touch the list");
+    assert_eq!(events(), 2, "a rename does not touch the list");
     write(json!({"projects": ["/work/a", "/work/b"]}));
-    assert_eq!(events(), 2, "T3");
+    assert_eq!(events(), 3, "T3");
     write(json!({"projects": []}));
-    assert_eq!(events(), 3, "T4");
+    assert_eq!(events(), 4, "T4");
 }
