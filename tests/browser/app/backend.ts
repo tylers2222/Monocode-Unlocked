@@ -405,6 +405,23 @@ const HANDLERS: Record<string, Handler> = {
   // only to answer the child's protocol.
   harness_spawn: (_store, { cwd }) => spawned(4242, cwd),
   default_cwd: (store) => store.home,
+  // No alarms, under Rust's default settings (alarms/store.rs).
+  alarms_view: () => ({
+    readWallMs: Date.now(),
+    episodes: [],
+    closed: [],
+    holds: [],
+    settings: {
+      stallMinutes: 15,
+      escalateMinutes: 15,
+      sleepHold: true,
+      tylerSleepHold: true,
+      shortSleepSkipSeconds: 10,
+      rootGiga: null,
+      gigas: [],
+    },
+    stallMinutes: [],
+  }),
   // The page is one window, so its own row is the only one.
   workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
   // session_store.rs snapshot_supersedes: a snapshot read before the stored
