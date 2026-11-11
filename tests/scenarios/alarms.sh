@@ -26,11 +26,16 @@ alarms_habit_rule() {
 
 # alarms_pair <part> <rules> [installer]: a fresh Giga and Mono with the
 # puppet's rules, the Giga's habit due, and the logs kept for the e2e
-# artifact.
+# artifact. The habit's daily time is 12 h away: at the default 09:00, a
+# run started just before 09:00 ran the habit again once the fake clock
+# passed 09:00, and the Mono started every session twice.
 alarms_pair() {
+  local habits="$APP_DATA/monos/alarms-giga/habits.json"
   fresh_pair alarms "${@:3}"
   jq -n --arg app "$(target_bin instance)" --argjson rules "$2" '{app: $app, rules: $rules}' >"$PUPPET/script.json"
   request_habit alarms-giga "Start the work" "AL-HABIT: tell Alarms Mono to start."
+  jq --arg time "$(printf '%02d:00' $(((10#$(date +%H) + 12) % 24)))" '.[0].schedule.time = $time' "$habits" >"$habits.tmp"
+  mv "$habits.tmp" "$habits"
   : >"$ALARMS_MODEL"
   ALARMS_PART="$1"
   trap 'cp "$PUPPET/log.jsonl" "$EVAL_OUT/alarms-$ALARMS_PART-puppet.log"; cp "$ALARMS_MODEL" "$EVAL_OUT/alarms-$ALARMS_PART-model.log"
@@ -313,7 +318,7 @@ hold_decision() {
 advance_with_hold() {
   local open="SELECT decision IS NULL FROM sleep_holds WHERE tool_use_id = '$1'" until to
   while (($2 - $(active_ms) >= 5000)) && holds "$open"; do
-    until="$(q "SELECT waiting_until_active_ms FROM sleep_holds WHERE tool_use_id = '$1'")"
+    until="$(q "SELECT ifnull(waiting_until_active_ms, 0) FROM sleep_holds WHERE tool_use_id = '$1'")"
     to=$((until < $2 ? until : $2))
     if ((to - $(active_ms) >= 5000)); then
       advance $((to - $(active_ms)))
@@ -325,7 +330,9 @@ advance_with_hold() {
 }
 
 # check_holds <harness> <deny call>: the three holds of hold_rules, each
-# through the harness's real hook.
+# through the harness's real hook. The third hold is held while the allowed
+# wait still sleeps: the clock must follow its client from the first wait
+# on, so the allowed wait's return is checked last.
 check_holds() {
   local harness="$1" deny="$2" allow=toolu_hold_two_0 timeout=toolu_hold_three_0 cut
   wait_until 180 "the denied wait reaches the agent" has_returned "$deny"
@@ -333,10 +340,9 @@ check_holds() {
   expect "$harness deny: the agent sees the refusal" \
     "$(returned "$deny" | grep -oF "Refused: foreground wait \"$(held 31)\" was not allowed (denied: HOLD-DENIED run it in the background)")" \
     "Refused: foreground wait \"$(held 31)\" was not allowed (denied: HOLD-DENIED run it in the background)"
-  wait_until 180 "the allowed wait runs and returns" has_returned "$allow"
+  wait_until 120 "the second wait is answered" \
+    holds "SELECT decision IS NOT NULL FROM sleep_holds WHERE tool_use_id = '$allow'"
   expect "$harness allow: hold" "$(hold_decision "$allow")" "$(held 32) allow mono:alarms-mono"
-  expect "$harness allow: the wait ran: error, refusals, output" \
-    "$(errored "$allow") $(returned "$allow" | grep -c 'Refused:' || true) $(returned "$allow" | grep -qw hold && echo hold)" "no 0 hold"
   wait_until 120 "the third wait is held" holds "SELECT count(*) = 1 FROM sleep_holds WHERE tool_use_id = '$timeout'"
   wait_until 60 "the Mono gets the third hold and does not answer" saw "Command: $(held 33)"
   cut="$(q "SELECT deadline_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'")"
@@ -353,6 +359,9 @@ check_holds() {
   expect "$harness timeout: the agent sees the refusal" \
     "$(returned "$timeout" | grep -oF "Refused: foreground wait \"$(held 33)\" was not allowed (no answer in 2 min)")" \
     "Refused: foreground wait \"$(held 33)\" was not allowed (no answer in 2 min)"
+  wait_until 180 "the allowed wait runs and returns" has_returned "$allow"
+  expect "$harness allow: the wait ran: error, refusals, output" \
+    "$(errored "$allow") $(returned "$allow" | grep -c 'Refused:' || true) $(returned "$allow" | grep -qw hold && echo hold)" "no 0 hold"
 }
 
 # Design 14 E2E 4 and 5 on Claude Code. The Mono's chat is full-access, so
