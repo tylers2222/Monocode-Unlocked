@@ -41,6 +41,10 @@ SCENARIOS=(
   "spaces grants|build|1|"
   "spaces login|build|2|"
   "spaces messages|build|2|"
+  "alarms stall|build|1|"
+  "alarms dialog|build|2|"
+  "alarms hold|build|2|"
+  "alarms omp|build|1|"
   "approvals|build|1|reads a copy of the real app database, which a CI runner does not have"
   "ade89 two|build-two|2|ADE-152 and PR #413: 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
 )
