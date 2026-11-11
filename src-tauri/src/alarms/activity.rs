@@ -12,6 +12,7 @@ use super::live::Write;
 use super::state::{Background, Dialog, DialogKind, Hold, Progress, Turn};
 use super::taps::{Harness, Snapshot};
 use crate::mono_messages::SessionId;
+use crate::session_store::ensure_column;
 use crate::sleep_hold::install::{HoldState, PING_GRACE_MS};
 
 /// `hold_state`, `hold_missing_reason`, `hold_ping_due_active_ms` and
@@ -46,6 +47,13 @@ pub(crate) fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            updated_wall_ms         INTEGER NOT NULL,
            CHECK ((dialog_kind IS NULL) = (dialog_since_active_ms IS NULL))
          );",
+    )?;
+    ensure_column(conn, "agent_activity", "hold_ping_due_active_ms", "INTEGER")?;
+    ensure_column(
+        conn,
+        "agent_activity",
+        "hold_missing_told",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (hold_missing_told IN (0, 1))",
     )
 }
 
@@ -435,6 +443,49 @@ mod tests {
 
     fn turn_of(conn: &Connection) -> Turn {
         all(conn).unwrap().remove(0).turn
+    }
+
+    // Defect: a database whose agent_activity table an earlier build made
+    // lacks the hold's due and told columns, so every spawn's write fails.
+    #[test]
+    fn a_table_from_before_the_hold_install_takes_its_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agent_activity (
+               session_id TEXT PRIMARY KEY, harness TEXT,
+               turn_state TEXT NOT NULL DEFAULT 'idle', turn_id TEXT,
+               turn_started_active_ms INTEGER, turn_ended_active_ms INTEGER NOT NULL,
+               last_progress_active_ms INTEGER, last_progress_wall_ms INTEGER,
+               tool_running INTEGER NOT NULL DEFAULT 0,
+               background_running INTEGER NOT NULL DEFAULT 0,
+               background_ended_active_ms INTEGER, dialog_kind TEXT,
+               dialog_request_id TEXT, dialog_text TEXT, dialog_since_active_ms INTEGER,
+               todo_open INTEGER NOT NULL DEFAULT 0, wake_pending_since_active_ms INTEGER,
+               hold_state TEXT, hold_missing_reason TEXT, updated_wall_ms INTEGER NOT NULL);
+             INSERT INTO agent_activity (session_id, turn_ended_active_ms, updated_wall_ms)
+               VALUES ('s-1', 5, 0);",
+        )
+        .unwrap();
+        ensure_table(&conn).unwrap();
+        ensure_table(&conn).unwrap();
+        let session = SessionId::parse("s-1").unwrap();
+        spawned(
+            &conn,
+            &session,
+            None,
+            Some(&HoldState::AwaitingPing),
+            (10, 0),
+            0,
+        )
+        .unwrap();
+        let (due, told): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT hold_ping_due_active_ms, hold_missing_told FROM agent_activity",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((due, told), (Some(10 + PING_GRACE_MS), 0));
     }
 
     // Defect (review M2): a kill whose end is written before its turn's
