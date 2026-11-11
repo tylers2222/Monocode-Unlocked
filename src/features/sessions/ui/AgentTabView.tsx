@@ -1,11 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { AgentTranscript } from "./AgentTranscript";
+import { useBlockNavigator } from "./useBlockNavigator";
 import { useSessionSnapshot } from "../model/sessionStateStore";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -51,17 +46,8 @@ export function AgentTabView({
 }) {
   const session = useSessionSnapshot(initialSession, visible);
   const alarms = useTranscriptAlarms(session?.id);
-  const navigateBlockRef = useRef<
-    ((blockId: string | null, query?: string) => boolean) | null
-  >(null);
-  const [navigatorReady, setNavigatorReady] = useState(false);
-  const onNavigateReady = useCallback(
-    (navigate: (blockId: string | null, query?: string) => boolean) => {
-      navigateBlockRef.current = navigate;
-      setNavigatorReady(true);
-    },
-    [],
-  );
+  const { navigateBlockRef, navigatorReady, onNavigateReady } =
+    useBlockNavigator();
   const navigateBlock = useCallback(
     (blockId: string | null, query?: string) =>
       navigateBlockRef.current?.(blockId, query) ?? false,

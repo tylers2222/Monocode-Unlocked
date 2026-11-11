@@ -62,6 +62,7 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { useBlockNavigator } from "./useBlockNavigator";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -603,17 +604,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (blockId: string) => revealBlockRef.current?.(blockId) ?? false,
     [],
   );
-  const navigateBlockRef = useRef<
-    ((blockId: string | null, query?: string) => boolean) | null
-  >(null);
-  const [navigatorReady, setNavigatorReady] = useState(false);
-  const onNavigateReady = useCallback(
-    (navigate: (blockId: string | null, query?: string) => boolean) => {
-      navigateBlockRef.current = navigate;
-      setNavigatorReady(true);
-    },
-    [],
-  );
+  const { navigateBlockRef, navigatorReady, onNavigateReady } =
+    useBlockNavigator();
   const navigateBlock = useCallback(
     async (blockId: string | null, query?: string) => {
       if (navigateBlockRef.current?.(blockId, query)) return true;
