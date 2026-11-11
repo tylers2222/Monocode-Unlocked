@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { queuedAppDelivery } from "../../sessions/model/messageQueue";
 import { newSession, type Block } from "../../sessions/model/session";
 import { mobileTranscript } from "./mobileTranscript";
 
@@ -157,5 +158,42 @@ describe("mobile transcript", () => {
         },
       ],
     });
+  });
+
+  // Defect: the phone has no alarm card, yet a delivered <mono_alarm> is no
+  // longer internal, so it showed as a raw user bubble (and as the turn's
+  // prompt). It must read exactly as a hidden nudge reminder does.
+  it.each([
+    ["a session", {}],
+    ["a Mono's chat", { mono: { name: "Pip" } }],
+  ])("hides a delivered alarm in %s as it hides a nudge", (_, extra) => {
+    const transcript = (key: string, text: string) =>
+      mobileTranscript(
+        session([
+          prompt(
+            "u",
+            text,
+            queuedAppDelivery({
+              id: key,
+              appRequestId: key,
+              text,
+              attachments: [],
+              monoReminder: true,
+            }),
+          ),
+          reply("a", "Nudging it."),
+        ]),
+        { busy: false, ...extra },
+      );
+    const alarm = transcript(
+      "alarm-al_7Q2-1",
+      '<mono_alarm alarm="al_7Q2" level="1" cause="dialog">\nS1 waits on a dialog.\n</mono_alarm>',
+    );
+    const nudge = transcript("nudge-al_7Q2-2", "Still on the dialog?");
+    expect(JSON.stringify(alarm)).not.toContain("mono_alarm");
+    expect(alarm.flatMap((turn) => turn.items)).not.toContainEqual(
+      expect.objectContaining({ type: "user" }),
+    );
+    expect(alarm).toEqual(nudge);
   });
 });

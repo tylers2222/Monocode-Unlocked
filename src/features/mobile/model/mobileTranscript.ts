@@ -1,3 +1,4 @@
+import { monoAlarmId } from "../../alarms/model/alarmViews";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import {
   launchAnchors,
@@ -118,6 +119,11 @@ export type MobileTurn = {
 const MAX_TURNS = 30;
 const MAX_STEPS = 40;
 
+/** The phone has no alarm card, so a delivered alarm hides like a reminder. */
+export function hiddenOnPhone(block: Block): boolean {
+  return !!block.internal || (block.role === "user" && !!monoAlarmId(block));
+}
+
 type Options = {
   busy: boolean;
   mono?: { name: string };
@@ -138,9 +144,13 @@ export function mobileTranscript(
   options: Options,
 ): MobileTurn[] {
   const inlineWork = !!options.mono;
-  const blocks = inlineWork
-    ? monoReactionBlocks(session.blocks)
-    : session.blocks;
+  const blocks = (
+    inlineWork ? monoReactionBlocks(session.blocks) : session.blocks
+  ).map((block) =>
+    !block.internal && hiddenOnPhone(block)
+      ? { ...block, internal: true }
+      : block,
+  );
   const cache = new TranscriptTurnCache();
   const turns = cache.group(blocks, false, inlineWork);
   const activeTurnIndex = turns.reduce(

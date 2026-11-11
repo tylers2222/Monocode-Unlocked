@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { mobileQuestionReply } from "./mobileWorkspace";
+import { queuedAppDelivery } from "../../sessions/model/messageQueue";
+import { newSession, type Block } from "../../sessions/model/session";
+import { mobileMessages, mobileQuestionReply } from "./mobileWorkspace";
 
 const prompt = {
   requestId: 1,
@@ -55,4 +57,36 @@ describe("mobile question replies", () => {
     expect(mobileQuestionReply({ kind: "maybe" }, prompt)).toBeUndefined();
     expect(mobileQuestionReply(null, prompt)).toBeUndefined();
   });
+});
+
+// Defect: a delivered <mono_alarm> is no longer internal, so the phone's
+// message list sent its raw tag as a message from the user.
+it("leaves a delivered alarm and a nudge out of the phone's messages", () => {
+  const delivered = (id: string, key: string, text: string): Block => ({
+    id,
+    role: "user",
+    text,
+    ...queuedAppDelivery({
+      id: key,
+      appRequestId: key,
+      text,
+      attachments: [],
+      monoReminder: true,
+    }),
+  });
+  const session = {
+    ...newSession("claude", "/repo"),
+    blocks: [
+      delivered(
+        "alarm",
+        "alarm-al_7Q2-1",
+        '<mono_alarm alarm="al_7Q2" level="1" cause="dialog">\nS1 waits on a dialog.\n</mono_alarm>',
+      ),
+      delivered("nudge", "nudge-al_7Q2-2", "Still on the dialog?"),
+      { id: "a", role: "assistant", text: "Nudging it." } as Block,
+    ],
+  };
+  expect(mobileMessages(session)).toEqual([
+    { id: "a", role: "assistant", text: "Nudging it." },
+  ]);
 });

@@ -67,7 +67,7 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
-import { mobileTranscript } from "./mobileTranscript";
+import { hiddenOnPhone, mobileTranscript } from "./mobileTranscript";
 import {
   CUSTOM_OPTION_ID,
   buildQuestionReply,
@@ -243,7 +243,7 @@ export function mobileMessages(session: Session) {
     .filter(
       (block) =>
         (block.role === "user" || block.role === "assistant") &&
-        !block.internal &&
+        !hiddenOnPhone(block) &&
         !block.draft,
     )
     .slice(-200)
