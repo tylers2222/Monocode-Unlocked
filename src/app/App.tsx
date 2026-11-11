@@ -36,6 +36,11 @@ import {
   type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
 import { submitQueued } from "../features/monos/model/monoReminders";
+import {
+  AlarmsProvider,
+  useAlarmsFeed,
+} from "../features/alarms/ui/AlarmsProvider";
+import { appAlarmsHost } from "./model/appAlarmsHost";
 import { levelGate, resolveCaller } from "../features/monos/model/monoCaller";
 import {
   newTurnId,
@@ -14865,9 +14870,19 @@ function Workspace({
         inset={insetLayout}
       />
     );
+  const alarmsFeed = useAlarmsFeed(
+    appAlarmsHost({
+      sessions: () => sessionsRef.current,
+      openSession: openReminderSession,
+      openMono: onOpenMono,
+      submit: (sessionId, text, options) =>
+        onSubmit(sessionId, text, [], options),
+    }),
+  );
 
   return (
     <SessionStateContext.Provider value={sessionState}>
+    <AlarmsProvider feed={alarmsFeed}>
     <OrchestrationActions.Provider value={orchestrationActions}>
       <OrchestrationWorkers.Provider value={orchestrationWorkers}>
         <div
@@ -15541,6 +15556,7 @@ function Workspace({
         <TranscriptPoolOutlet pool={transcriptPool} />
       </OrchestrationWorkers.Provider>
     </OrchestrationActions.Provider>
+    </AlarmsProvider>
     </SessionStateContext.Provider>
   );
 }

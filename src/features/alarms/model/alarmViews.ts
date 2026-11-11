@@ -20,14 +20,17 @@ export type AlarmAgent = {
   role: AlarmAgentRole;
 };
 
-/** `alarm_episodes.last_activity`: "13:48 Bash `cargo test` (completed)". */
+/**
+ * `alarm_episodes.last_activity`: "13:48 Bash `cargo test` (completed)". Rust
+ * sends one line, so a line without a command or a state has none.
+ */
 export type AlarmLastActivity = {
-  /** Wall clock, "13:48". */
+  /** Wall clock, "13:48"; empty when Rust had no progress time. */
   at: string;
   tool: string;
-  command: string;
+  command?: string;
   /** "completed", "waiting for permission". */
-  state: string;
+  state?: string;
 };
 
 export type AlarmDialog = {
@@ -188,19 +191,24 @@ export type SleepHoldView = {
   decision?: SleepHoldDecision;
 };
 
+export type AlarmGiga = { id: string; name: string };
+
 /** `alarm_settings` and the per-agent `agent_alarm_settings.stall_minutes`. */
 export type AlarmSettingsView = {
   stallMinutes: number;
-  rootGiga: string;
-  gigas: string[];
+  /** A Giga in `gigas`, by id; none when there is no real Giga to name. */
+  rootGiga?: string;
+  gigas: AlarmGiga[];
   holdForegroundWaits: boolean;
   holdTylerSleeps: boolean;
   shortSleepSkipSeconds: number;
 };
 
-export const ALARM_SETTINGS_DEFAULTS: Omit<AlarmSettingsView, "gigas"> = {
+export const ALARM_SETTINGS_DEFAULTS: Omit<
+  AlarmSettingsView,
+  "gigas" | "rootGiga"
+> = {
   stallMinutes: 15,
-  rootGiga: "Monocode General",
   holdForegroundWaits: true,
   holdTylerSleeps: true,
   shortSleepSkipSeconds: 10,
@@ -299,7 +307,14 @@ export function dialogLine(dialog: AlarmDialog | undefined): string {
 }
 
 export function lastActivityText(activity: AlarmLastActivity): string {
-  return `${activity.at} ${activity.tool} ${activity.command} (${activity.state})`;
+  return [
+    activity.at,
+    activity.tool,
+    activity.command,
+    activity.state && `(${activity.state})`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function countdownText(view: AlarmCardView): string {

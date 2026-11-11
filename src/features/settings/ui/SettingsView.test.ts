@@ -17,7 +17,12 @@ import {
   settingsSectionsByGroup,
   type SettingsSectionId,
 } from "../model/settings";
-import { ALARM_SETTINGS_DEFAULTS } from "../../alarms/model/alarmViews";
+import {
+  createAlarmsFeed,
+  type AlarmsFeed,
+} from "../../alarms/model/alarmsFeed";
+import { AlarmsProvider } from "../../alarms/ui/AlarmsProvider";
+import { snapshotWire } from "../../alarms/test/alarmsFixtures";
 import { loadInsetLayout } from "../model/appearance";
 import {
   providerAccounts,
@@ -1558,31 +1563,80 @@ describe("providers scope inheritance", () => {
   });
 });
 
-// Frame 5 (alarms U1): the page renders from props and saves nothing yet.
+// Frame 5: the page reads the window's alarms snapshot and writes through Rust.
 describe("Settings > Alarms", () => {
-  const alarmSettings = {
-    ...ALARM_SETTINGS_DEFAULTS,
-    gigas: ["Monocode General", "Fork Orchestrator"],
+  let feed: AlarmsFeed;
+  let answer: Record<string, unknown>;
+
+  const alarmsView = (settings: Record<string, unknown> = {}) => {
+    const wire = snapshotWire({ episodes: [], holds: [] });
+    return { ...wire, settings: { ...wire.settings, ...settings } };
   };
 
-  it("stays off the rail, out of search, and empty until it has data", async () => {
-    // Defect: the Alarms page shows in the app before row U2 wires it.
+  /** The page inside a provider whose feed has fetched `answer`. */
+  async function renderAlarms() {
+    feed = createAlarmsFeed({
+      invoke: (command, args) => invoke(command, args),
+      listen: async () => () => {},
+      openAgent: vi.fn(),
+      answerDialog: vi.fn(),
+      sendAsUser: vi.fn(),
+      refused: vi.fn(),
+    });
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "alarms_view" ? answer : undefined,
+    );
+    await feed.refresh();
+    await act(async () =>
+      root.render(
+        createElement(
+          AlarmsProvider,
+          { feed },
+          createElement(SettingsView, {
+            section: "alarms",
+            cwd: "/repo",
+            sessions: [],
+            onClose: vi.fn(),
+            onSelectSection,
+            onOpenSession: vi.fn(),
+            onArchiveSession: vi.fn(),
+            onDeleteSession: vi.fn(),
+            onOpenWhatsNew: vi.fn(),
+          }),
+        ),
+      ),
+    );
+  }
+
+  beforeEach(() => {
+    answer = alarmsView();
+  });
+
+  it("is on the rail and in search", () => {
+    // Defect: the Alarms page stays hidden after row U2 wires it.
     expect(
       settingsSectionsByGroup().flatMap((group) =>
         group.sections.map((section) => section.id),
       ),
-    ).not.toContain("alarms");
+    ).toContain("alarms");
     expect(
       searchSettings("alarms").some((result) => result.section === "alarms"),
-    ).toBe(false);
-    expect(isSettingsSectionId("alarms")).toBe(false);
+    ).toBe(true);
+    expect(
+      searchSettings("stall").some((result) => result.section === "alarms"),
+    ).toBe(true);
+    expect(isSettingsSectionId("alarms")).toBe(true);
+  });
+
+  it("stays empty until this window has the alarms snapshot", async () => {
+    // Defect: the page shows made-up defaults before Rust has said anything.
     await render("alarms");
     expect(container.textContent).not.toContain("Stall after");
   });
 
-  it("shows the frame's rows with Tyler's defaults", async () => {
-    // Defect: a default differs from the approved one (Tyler's sleeps held, 10 s skip), or short sleeps still read as pending.
-    await render("alarms", { alarmSettings });
+  it("shows the frame's rows with the snapshot's values", async () => {
+    // Defect: a default differs from the approved one (Tyler's sleeps held, 10 s skip), or the Giga shows by id.
+    await renderAlarms();
     const text = container.textContent ?? "";
     for (const line of [
       "Stall alarm",
@@ -1614,26 +1668,53 @@ describe("Settings > Alarms", () => {
 
   it("shows a stall time set between the presets", async () => {
     // Defect: 20 min (alarms.set) shows nothing selected, and cannot be picked back once changed.
-    await render("alarms", {
-      alarmSettings: { ...alarmSettings, stallMinutes: 20 },
-    });
+    answer = alarmsView({ stallMinutes: 20 });
+    await renderAlarms();
     expect(
       container.querySelector('button[aria-label="Stall after: 20 min"]')
         ?.textContent,
     ).toContain("20 min");
   });
 
-  it("flips a switch on the page without saving it", async () => {
-    // Defect: the page writes a setting before alarm_settings exists to hold it.
-    await render("alarms", { alarmSettings });
+  it("shows None, not raw text, for a root Giga that is no real Giga", async () => {
+    // Defect (#543): a deleted Giga's id shows in the Root Giga select with an empty menu.
+    answer = alarmsView({ rootGiga: { id: "gone", name: "Old Giga" } });
+    await renderAlarms();
+    const select = container.querySelector('button[aria-label^="Root Giga"]');
+    expect(select?.textContent).toContain("None");
+    expect(container.textContent).not.toContain("gone");
+  });
+
+  it("writes a switch to Rust, and shows it once the next snapshot does", async () => {
+    // Defect: a change stays on the page only, or flips before Rust has it.
+    await renderAlarms();
     vi.mocked(invoke).mockClear();
-    const before = { ...localStorage };
-    const hold = container.querySelector<HTMLElement>(
-      '[role="switch"][aria-label="Hold Tyler\'s agents\' sleeps"]',
-    )!;
-    await act(async () => hold.click());
-    expect(hold.getAttribute("aria-checked")).toBe("false");
-    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
-    expect({ ...localStorage }).toEqual(before);
+    const hold = () =>
+      container.querySelector<HTMLElement>(
+        '[role="switch"][aria-label="Hold Tyler\'s agents\' sleeps"]',
+      )!;
+    answer = alarmsView({ tylerSleepHold: false });
+    await act(async () => hold().click());
+    expect(vi.mocked(invoke).mock.calls[0]).toEqual([
+      "alarms_settings_set",
+      { key: "tyler_sleep_hold", value: "off" },
+    ]);
+    await act(async () => feed.refresh());
+    expect(hold().getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("writes the stall time and the root Giga by its id", async () => {
+    // Defect: the root Giga is saved by its name, which Rust refuses.
+    await renderAlarms();
+    vi.mocked(invoke).mockClear();
+    feed.changeSettings({ stallMinutes: 30, rootGiga: "fork-orch" });
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "alarms_settings_set"),
+    ).toEqual([
+      ["alarms_settings_set", { key: "stall_minutes", value: "30" }],
+      ["alarms_settings_set", { key: "root_giga", value: "fork-orch" }],
+    ]);
   });
 });

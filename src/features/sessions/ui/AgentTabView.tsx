@@ -22,6 +22,7 @@ import {
   type Session,
 } from "../model/session";
 import { createNote, noteTitle } from "../../notes";
+import { useTranscriptAlarms } from "../../alarms/ui/AlarmsProvider";
 import {
   loadNotesEnabled,
   subscribeNotesEnabled,
@@ -49,6 +50,7 @@ export function AgentTabView({
   onOpenFile?: (path: string) => void;
 }) {
   const session = useSessionSnapshot(initialSession, visible);
+  const alarms = useTranscriptAlarms(session?.id);
   const navigateBlockRef = useRef<
     ((blockId: string | null, query?: string) => boolean) | null
   >(null);
@@ -128,6 +130,7 @@ export function AgentTabView({
       <div className="relative min-h-0 flex-1">
         <AgentTranscript
           blocks={session.blocks}
+          alarms={alarms}
           busy={session.busy}
           cwd={sessionWorkCwd(session)}
           harness={session.harness}

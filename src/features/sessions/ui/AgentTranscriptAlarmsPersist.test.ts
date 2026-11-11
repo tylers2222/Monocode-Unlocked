@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { newSession, type Block } from "../model/session";
+import { newSession, type Block, type QueuedMessage } from "../model/session";
+import { queuedAppDelivery } from "../model/messageQueue";
 import type { AlarmCardView } from "../../alarms/model/alarmViews";
 import { createViewStore } from "../../alarms/model/viewStore";
 import type { SessionRecord } from "../data/sessionStore";
@@ -75,8 +76,8 @@ async function saveAndPageMono(blocks: Block[]) {
   return { blocks: page.blocks, queuedMessages: written.queuedMessages };
 }
 
-function boundCards(blocks: Block[]): string[] {
-  const shown = renderToStaticMarkup(
+function transcriptMarkup(blocks: Block[]): string {
+  return renderToStaticMarkup(
     createElement(AgentTranscript, {
       blocks,
       alarms: {
@@ -85,7 +86,10 @@ function boundCards(blocks: Block[]): string[] {
       },
     }),
   );
-  return shown.match(/data-alarm="[^"]*"/g) ?? [];
+}
+
+function boundCards(blocks: Block[]): string[] {
+  return transcriptMarkup(blocks).match(/data-alarm="[^"]*"/g) ?? [];
 }
 
 const DELIVERED: Block[] = KEYS.map((key) => ({
@@ -114,5 +118,38 @@ describe("alarm request ids through a save and a load", () => {
     expect(loaded.blocks.map((block) => block.appRequestId)).toEqual(KEYS);
     expect(loaded.queuedMessages?.map((message) => message.id)).toEqual(KEYS);
     expect(boundCards(loaded.blocks)).toEqual([`data-alarm="${EPISODE}"`]);
+  });
+
+  it("shows a delivered <mono_alarm> reminder as its card after reload, and keeps a nudge hidden", async () => {
+    // Defect: the outbox reminder for an alarm is sent as an internal turn, so its card never renders in the chat.
+    const reminder = (id: string, text: string): QueuedMessage => ({
+      id,
+      appRequestId: id,
+      text,
+      attachments: [],
+      monoReminder: true,
+      waitForIdle: true,
+    });
+    const sent = [
+      reminder(KEYS[0], DELIVERED[0].text),
+      reminder(KEYS[1], "PR S1 builder still has open work. Pick it up."),
+    ].map((item): Block => ({
+      id: `block-${item.id}`,
+      role: "user",
+      text: item.text,
+      ...queuedAppDelivery(item),
+    }));
+    expect(sent.map((block) => block.internal)).toEqual([undefined, true]);
+
+    const loaded = (await saveAndLoad(sent))?.blocks ?? [];
+
+    expect(loaded.map((block) => [block.appRequestId, block.internal])).toEqual(
+      [
+        [KEYS[0], undefined],
+        [KEYS[1], true],
+      ],
+    );
+    expect(boundCards(loaded)).toEqual([`data-alarm="${EPISODE}"`]);
+    expect(transcriptMarkup(loaded)).not.toContain("still has open work");
   });
 });

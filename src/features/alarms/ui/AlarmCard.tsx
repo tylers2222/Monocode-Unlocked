@@ -172,8 +172,10 @@ function alarmFacts(
       value: activity ? (
         <>
           {activity.at} {activity.tool}{" "}
-          <span className="font-mono text-[11.5px]">{activity.command}</span> (
-          {activity.state})
+          {activity.command ? (
+            <span className="font-mono text-[11.5px]">{activity.command}</span>
+          ) : null}
+          {activity.state ? <> ({activity.state})</> : null}
         </>
       ) : (
         "none"

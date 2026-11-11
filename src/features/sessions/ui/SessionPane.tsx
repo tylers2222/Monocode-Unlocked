@@ -138,6 +138,10 @@ import type { SessionFolderTarget } from "../model/sessionFolders";
 import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen";
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import {
+  useTranscriptAlarms,
+  useTylerLanding,
+} from "../../alarms/ui/AlarmsProvider";
 import type { HostSession } from "../../connections/model/protocol";
 
 export type SessionPaneProps = {
@@ -416,6 +420,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const recallLastTurnRef = useRef<(() => void) | null>(null);
   const remote = remoteSession;
+  // A remote session's alarms belong to the host it runs on.
+  const alarms = useTranscriptAlarms(remote ? undefined : session.id);
+  const alarmLanding = useTylerLanding(remote ? undefined : session.id);
   // A Mono's chat is a running conversation; what was said stays said.
   const editLastTurnSupported =
     !remote && !monoForSession(session.id) && canEditLastTurn(session);
@@ -835,6 +842,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onResumeQueue={() => onResumeQueue(session.id)}
       usageLimit={session.usageLimit}
+      alarm={alarmLanding}
       onUsageLimitResume={() => onUsageLimitResume(session.id)}
       onUsageLimitResumeAtReset={(enabled) =>
         onUsageLimitResumeAtReset(session.id, enabled)
@@ -1017,6 +1025,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           : monoTranscript.blocks
                       }
                       sessionId={remoteSession ? undefined : session.id}
+                      alarms={alarms}
                       historicalBlockIds={monoTranscript.historicalBlockIds}
                       initialTurns={agent ? MONO_PAGE_TURNS : undefined}
                       pageSize={agent ? MONO_PAGE_TURNS : undefined}
