@@ -187,3 +187,57 @@ it("drops an earlier refusal when the list opens again", async () => {
   expect(document.querySelector(ADD_FROM_SPACE_FLYOUT)).not.toBeNull();
   expect(document.querySelector('[role="alert"]')).toBeNull();
 });
+
+it("shows nothing until the Spaces are read", async () => {
+  __spacesTestReset();
+  const reading = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, input) =>
+    command === "spaces_list" ? new Promise(() => undefined) : reading(command, input),
+  );
+  // Before the read, the window's Space is Space 1: this would be addable.
+  known = [{ path: "/code/elsewhere", spaces: ["space-2"] }];
+  await loadKnownProjects();
+  await render();
+  expect(button("Add from another Space…")).toBeUndefined();
+});
+
+it("appears when another Space gets a project later", async () => {
+  known = [];
+  await loadKnownProjects();
+  await render();
+  expect(button("Add from another Space…")).toBeUndefined();
+  known = [{ path: "/code/example-app", spaces: ["space-1"] }];
+  await act(async () => loadKnownProjects());
+  expect(button("Add from another Space…")).toBeDefined();
+});
+
+it("tags each project with its own Space, or the id of a Space it cannot name", async () => {
+  known = [
+    { path: "/code/example-app", spaces: ["space-1"] },
+    { path: "/code/other-app", spaces: ["space-9"] },
+  ];
+  await loadKnownProjects();
+  await render();
+  await act(async () => button("Add from another Space…")!.click());
+  expect(button("example-app")!.textContent).toContain("Space 1");
+  expect(button("other-app")!.textContent).toContain("space-9");
+  expect(button("other-app")!.textContent).not.toContain("Space 1");
+});
+
+it("is a plain button in a footer, and a menu item in a menu", async () => {
+  await render();
+  expect(button("Add from another Space…")!.getAttribute("role")).toBeNull();
+  await act(async () =>
+    root.render(
+      createElement(AddFromSpaceEntry, {
+        className: "",
+        iconClassName: "",
+        menuItem: true,
+        onAdded,
+      }),
+    ),
+  );
+  expect(button("Add from another Space…")!.getAttribute("role")).toBe(
+    "menuitem",
+  );
+});

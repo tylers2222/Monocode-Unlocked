@@ -27,6 +27,8 @@ vi.mock("../../source-control/hooks/useProjectDiffStats", () => ({
   useProjectDiffStats: vi.fn(() => null),
 }));
 
+const EXPANDED = "aria-expanded:bg-content/8 aria-expanded:text-content";
+
 let root: Root;
 let container: HTMLDivElement;
 let adds: unknown[];
@@ -93,6 +95,15 @@ it("adds from the rail's + menu: a click in the list leaves the menu open", asyn
   await act(async () =>
     container.querySelector<HTMLButtonElement>('[aria-label="Open project"]')!.click(),
   );
+  // A row of the + menu like its siblings, with an open state of its own.
+  const entry = button("Add from another Space…")!;
+  expect(entry.getAttribute("role")).toBe("menuitem");
+  expect(entry.className).toBe(
+    `${button("Open folder…")!.className} ${EXPANDED}`,
+  );
+  expect(entry.querySelector("svg")!.getAttribute("class")).toContain(
+    "size-3.5 shrink-0",
+  );
   await pickFromFlyout();
   expect(adds).toEqual([
     { projectPath: "/code/example-app", knownToWindow: true },
@@ -116,6 +127,12 @@ it("adds from the sidebar picker's footer: a click in the list leaves the picker
   );
   await act(async () => container.querySelector("button")!.click());
   expect(document.querySelector('[aria-label="Project picker"]')).not.toBeNull();
+  // A footer row like "New project", with an open state of its own.
+  const entry = button("Add from another Space…")!;
+  expect(entry.className).toBe(`${button("New project")!.className} ${EXPANDED}`);
+  expect(entry.querySelector("svg")!.getAttribute("class")).toContain(
+    "size-4 shrink-0",
+  );
   await pickFromFlyout();
   expect(adds).toEqual([
     { projectPath: "/code/example-app", knownToWindow: true },

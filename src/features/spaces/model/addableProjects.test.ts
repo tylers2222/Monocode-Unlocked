@@ -75,6 +75,22 @@ describe("addableProjects", () => {
       expected: [],
     },
     {
+      name: "a project no Space holds any more is not listed",
+      input: { known: [{ path: "/lonely", spaces: [] }] },
+      expected: [],
+    },
+    {
+      name: "an archived project leaves the others listed",
+      input: {
+        known: [
+          { path: "/a", spaces: ["space-1"] },
+          { path: "/b", spaces: ["space-1"] },
+        ],
+        archived: [{ path: "/b" }],
+      },
+      expected: [{ path: "/a", spaceId: "space-1" }],
+    },
+    {
       name: "a remote project is addable",
       input: { known: [{ path: "remote://env/repo", spaces: ["space-1"] }] },
       expected: [{ path: "remote://env/repo", spaceId: "space-1" }],

@@ -269,7 +269,7 @@ type ProjectPickerPopoverProps = Pick<
 };
 
 /** An outside click in a flyout of the add list leaves its menu open. */
-export const ADD_FROM_SPACE_FLYOUT = "[data-add-from-space]";
+export const ADD_FROM_SPACE_FLYOUT = '[data-add-from-space="true"]';
 
 /** Shared searchable project menu for switching projects or adding them to a Mono. */
 export function ProjectPickerPopover({

@@ -168,12 +168,7 @@ const ADD_WORKSPACE_REFUSAL =
  * its code; every other reason is the backend's message.
  */
 export function addRefusalMessage(error: unknown, spaceName: string): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "workspace"
-  ) {
+  if ((error as { code?: unknown } | null | undefined)?.code === "workspace") {
     return ADD_WORKSPACE_REFUSAL;
   }
   const reason = refusalMessage(error).trim().replace(/\.+$/, "");

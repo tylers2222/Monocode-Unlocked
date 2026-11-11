@@ -241,3 +241,31 @@ it("adds nothing when the dialog closed while the folder opened", async () => {
   await act(async () => finish({ id: "late", cwd: "/home/me", name: "me" }));
   expect(add).not.toHaveBeenCalled();
 });
+
+it("drops an open that a newer folder browse replaced", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finish!: (value: unknown) => void;
+  vi.mocked(invoke).mockImplementation((command, input) => {
+    if ((input as { method?: string } | undefined)?.method === "projects.open")
+      return new Promise((resolve) => { finish = resolve; });
+    return original(command, input);
+  });
+  const add = vi.fn(async () => "linked");
+  addProject = add;
+  await render();
+  await act(async () => button("Open").click());
+  await act(async () => button("code").click());
+  await act(async () => finish({ id: "late", cwd: "/home/me", name: "me" }));
+  expect(add).not.toHaveBeenCalled();
+  expect(opened).toEqual([]);
+});
+
+it("drops a refusal that a newer folder browse replaced", async () => {
+  let refuse!: (reason: unknown) => void;
+  addProject = () => new Promise((_resolve, reject) => { refuse = reject; });
+  await render();
+  await act(async () => button("Open").click());
+  await act(async () => button("code").click());
+  await act(async () => refuse({ code: "failed", message: "Stale refusal." }));
+  expect(document.body.textContent).not.toContain("Stale refusal.");
+});
