@@ -114,7 +114,7 @@ jobs:
           # so its green does not prove this tree's baseline (#618 review r1 M1).
         run: |
           git diff "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
-          bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+          timeout 12m bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
           bash scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff" "$SHARD"
 
   ts:

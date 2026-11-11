@@ -105,6 +105,7 @@ jobs:
       # falls back to apt, which repairs the half-installed state. apt writes .deb files
       # as root, so hand them to the runner for the save.
       - name: Install Playwright browsers and system libraries
+        timeout-minutes: 15
         env:
           BROWSERS_HIT: ${{ steps.playwright-cache.outputs.cache-hit }}
           DEBS_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
@@ -126,8 +127,8 @@ jobs:
             tail -n 20 "$RUNNER_TEMP/dpkg.log"
           fi
           echo "Falling back to apt"
-          sudo apt-get update -qq
-          sudo apt-get -f install -y
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -f install -y
           npx playwright install-deps chromium webkit
           sudo chown -R "$USER" ~/apt-archives
       # Saved right after the download, so a failing test run still fills them.
@@ -263,6 +264,7 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 12
         run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
 
       - uses: actions/setup-node@v4
@@ -346,6 +348,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - name: Install Linux system dependencies
+        timeout-minutes: 12
         run: bash scripts/install-linux-deps-debian.sh
 
       - run: npm ci --prefer-offline --no-audit --no-fund

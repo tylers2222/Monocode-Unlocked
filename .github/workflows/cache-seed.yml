@@ -65,6 +65,7 @@ jobs:
           persist-credentials: false
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 12
         run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
       - id: rust-version
         shell: bash
@@ -108,9 +109,10 @@ jobs:
           components: clippy
       - name: Install Linux core dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install --no-install-recommends -y libdbus-1-dev pkg-config
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: "crates/monocode-gpui -> target"
