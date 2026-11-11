@@ -216,8 +216,8 @@ function heldOpen(rule) {
 }
 
 /** "$model:<harness>[:<part>]": the first model id models.list lists for that
- * harness, one containing <part> if any, since a probed catalog replaces the
- * fallback one. */
+ * harness that contains <part>, since a probed catalog replaces the fallback
+ * one. Throws when none does. */
 async function withModels(app, input) {
   const isModel = (value) => typeof value === "string" && value.startsWith("$model:");
   if (!Object.values(input).some(isModel)) return input;
@@ -225,7 +225,9 @@ async function withModels(app, input) {
   const pick = (raw) => {
     const [, harness, part = ""] = raw.split(":");
     const ids = harnesses.find((entry) => entry.id === harness)?.models.map((model) => model.id) ?? [];
-    return ids.find((id) => id.includes(part)) ?? ids[0] ?? raw;
+    const id = ids.find((candidate) => candidate.includes(part));
+    if (!id) throw new Error(`models.list has no ${harness} model with "${part}": ${ids.join(", ")}`);
+    return id;
   };
   return Object.fromEntries(
     Object.entries(input).map(([key, value]) => [key, isModel(value) ? pick(value) : value]),
@@ -246,11 +248,19 @@ async function runTurn(text, steer) {
   runExecs(rule?.exec ?? []);
   let prev;
   for (const call of rule?.calls ?? []) {
-    const input = await withModels(script.app, fill(withCardIds(call.arguments), text, prev));
+    const kind = call.action ? { action: call.action } : { tool: call.tool };
+    let input = fill(withCardIds(call.arguments), text, prev);
+    try {
+      input = await withModels(script.app, input);
+    } catch (error) {
+      prev = { ok: false, error: error.message };
+      log({ ...kind, input, result: prev });
+      continue;
+    }
     prev = call.action
       ? await act(script.app, call.action, input, call.request_id)
       : await server.call(call.tool, input);
-    log({ ...(call.action ? { action: call.action } : { tool: call.tool }), input, result: prev });
+    log({ ...kind, input, result: prev });
   }
   server.close();
   return rule?.reply ?? "";

@@ -54,7 +54,8 @@ def pick(body, openai):
         call = rule["tools"][n] if n < len(rule["tools"]) and rule["tools"][n]["name"] in tools else None
         call = call and {"id": f"toolu_{rule['match'].lower().replace('-', '_')}_{n}", **call}
         with LOG.open("a") as log:
-            log.write(json.dumps({"match": rule["match"], "results": returned, "call": call}) + "\n")
+            log.write(json.dumps({"match": rule["match"], "model": body.get("model"), "results": returned,
+                                  "call": call}) + "\n")
         return call
     return None
 

@@ -71,8 +71,11 @@ SH
 }
 
 # omp from PATH (e2e.yml installs it) under the temp HOME, with the local
-# model as provider `alarms` (models.yml, as the P2 probe ran it). A script,
-# not a link: the temp HOME refuses links that leave /tmp (ADE-112).
+# model as provider `alarms` (models.yml, as the P2 probe ran it) and as
+# omp's default model. models.list lists omp's own catalog only once the
+# app probed it, which it does for an omp tab, so a Mono gets omp:default:
+# omp's default model, pinned here. A script, not a link: the temp HOME
+# refuses links that leave /tmp (ADE-112).
 install_alarms_omp() {
   local omp
   omp="$(command -v omp)" || die "alarms omp needs omp on PATH"
@@ -93,6 +96,7 @@ providers:
         contextWindow: 128000
         maxTokens: 4096
 YML
+  printf 'modelRoles:\n  default: alarms/alarms-model\n' >"$EVAL_HOME/.omp/agent/config.yml"
 }
 
 # The session that the start_session message matching `$1` started.
@@ -218,6 +222,8 @@ run_alarms_stall() {
     "$(q "SELECT (closed_active_ms IS NULL) || ' ' || ifnull(acted_by, 'none') || ' ' || level FROM alarm_episodes WHERE id = '$ep'")" \
     "1 none 2"
   expect "lead's level-1 prompts after 30 min" "$(alarm_turns "$ALARMS_L1" "$ep")" "1 0"
+  advance 5000
+  expect "Mono's level-2 prompts one pass later" "$(alarm_turns "$ALARMS_L2" "$ep")" "1 0"
   expect "puppet calls that failed" "$(failed_calls)" 0
   alarms_readings
   "$INSTANCE" stop
@@ -260,7 +266,7 @@ run_alarms_dialog() {
   wait_until 90 "the worker runs its command" test -e "$file"
   wait_until 90 "the worker sends the model its result" has_returned "$call"
   expect "worker's Bash result: an error" "$(errored "$call")" no
-  advance 5000
+  advance_until 15000 "the dialog alarm closes" holds "SELECT close_reason IS NOT NULL FROM alarm_episodes WHERE id = '$ep'"
   expect "dialog alarm: closed as, acts" \
     "$(q "SELECT ifnull(close_reason, 'open') || ' ' || (SELECT group_concat(how || ' by ' || actor) FROM alarm_acts WHERE episode_id = '$ep') FROM alarm_episodes WHERE id = '$ep'")" \
     "progress answer by session:$lead"
@@ -298,10 +304,30 @@ hold_decision() {
   q "SELECT command || ' ' || ifnull(decision, 'open') || ' ' || ifnull(decided_by, '-') FROM sleep_holds WHERE tool_use_id = '$1'"
 }
 
+# advance_with_hold <tool call> <active ms>: the fake clock on toward that
+# active time while the call's hold is open, never past the end of the
+# hold client's current wait. The client's waits run in real time, so the
+# clock goes on only as the client sends each next wait; a clock ahead of
+# the client would close the hold as a stopped client (3 s idle), not at
+# the cut. It stops within 5 s of the time, as a shorter step is not stored.
+advance_with_hold() {
+  local open="SELECT decision IS NULL FROM sleep_holds WHERE tool_use_id = '$1'" until to
+  while (($2 - $(active_ms) >= 5000)) && holds "$open"; do
+    until="$(q "SELECT waiting_until_active_ms FROM sleep_holds WHERE tool_use_id = '$1'")"
+    to=$((until < $2 ? until : $2))
+    if ((to - $(active_ms) >= 5000)); then
+      advance $((to - $(active_ms)))
+    else
+      wait_until 40 "the hold client sends its next wait" \
+        holds "SELECT waiting_until_active_ms > $until OR decision IS NOT NULL FROM sleep_holds WHERE tool_use_id = '$1'"
+    fi
+  done
+}
+
 # check_holds <harness> <deny call>: the three holds of hold_rules, each
 # through the harness's real hook.
 check_holds() {
-  local harness="$1" deny="$2" allow=toolu_hold_two_0 timeout=toolu_hold_three_0 left
+  local harness="$1" deny="$2" allow=toolu_hold_two_0 timeout=toolu_hold_three_0 cut
   wait_until 180 "the denied wait reaches the agent" has_returned "$deny"
   expect "$harness deny: hold" "$(hold_decision "$deny")" "$(held 31) deny mono:alarms-mono"
   expect "$harness deny: the agent sees the refusal" \
@@ -309,17 +335,21 @@ check_holds() {
     "Refused: foreground wait \"$(held 31)\" was not allowed (denied: HOLD-DENIED run it in the background)"
   wait_until 180 "the allowed wait runs and returns" has_returned "$allow"
   expect "$harness allow: hold" "$(hold_decision "$allow")" "$(held 32) allow mono:alarms-mono"
-  expect "$harness allow: the wait ran: error, refusals" "$(errored "$allow") $(returned "$allow" | grep -c 'Refused:' || true)" "no 0"
+  expect "$harness allow: the wait ran: error, refusals, output" \
+    "$(errored "$allow") $(returned "$allow" | grep -c 'Refused:' || true) $(returned "$allow" | grep -qw hold && echo hold)" "no 0 hold"
   wait_until 120 "the third wait is held" holds "SELECT count(*) = 1 FROM sleep_holds WHERE tool_use_id = '$timeout'"
   wait_until 60 "the Mono gets the third hold and does not answer" saw "Command: $(held 33)"
-  left="$(q "SELECT deadline_active_ms - requested_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'")"
-  expect "$harness timeout: answer window" "$left" 120000
-  advance_to $(($(q "SELECT deadline_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'") - 15000))
+  cut="$(q "SELECT deadline_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'")"
+  expect "$harness timeout: answer window" "$(q "SELECT $cut - requested_active_ms FROM sleep_holds WHERE tool_use_id = '$timeout'")" 115000
+  advance_with_hold "$timeout" $((cut - 15000))
   expect "$harness timeout: hold 15 s before the cut" "$(hold_decision "$timeout")" "$(held 33) open -"
   expect "$harness timeout: the agent still waits 15 s before the cut" "$(has_returned "$timeout" && echo returned || echo waiting)" waiting
-  advance 20000
+  advance $((cut - $(active_ms)))
   wait_until 60 "the unanswered wait is refused at the cut" has_returned "$timeout"
   expect "$harness timeout: hold" "$(hold_decision "$timeout")" "$(held 33) timeout -"
+  expect "$harness timeout: closed for, at the cut" \
+    "$(q "SELECT decision_reason || ' ' || (decided_active_ms >= deadline_active_ms) FROM sleep_holds WHERE tool_use_id = '$timeout'")" \
+    "no answer in 2 min 1"
   expect "$harness timeout: the agent sees the refusal" \
     "$(returned "$timeout" | grep -oF "Refused: foreground wait \"$(held 33)\" was not allowed (no answer in 2 min)")" \
     "Refused: foreground wait \"$(held 33)\" was not allowed (no answer in 2 min)"
@@ -356,7 +386,7 @@ run_alarms_hold() {
 
 # Design 14 E2E 6: the same three holds on omp.
 run_alarms_omp() {
-  local start='{"harness": "omp", "model": "$model:omp:alarms-model", "notifyOnComplete": false}'
+  local start='{"harness": "omp", "model": "$model:omp:default", "notifyOnComplete": false}' sessions
   alarms_pair omp "$(hold_rules "$start")"
   sqlite3 "$DB" "UPDATE sessions SET runtime_mode = 'full-access'
     WHERE id = (SELECT json_extract(data_json, '\$.sessionId') FROM monos WHERE id = 'alarms-mono')"
@@ -369,9 +399,11 @@ run_alarms_omp() {
   echo "alarms hold readings (omp):"
   wait_until 120 "the Mono starts the first omp session" \
     holds "SELECT count(*) = 1 FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'alarms-mono'"
-  expect "omp session runs the local model" \
-    "$(q "SELECT model LIKE '%alarms-model%' FROM sessions WHERE id = '$(started "from_mono_id = 'alarms-mono'")'")" 1
   check_holds omp toolu_hold_one_0
+  sessions="$(q "SELECT group_concat(DISTINCT model) FROM sessions WHERE id IN
+    (SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'alarms-mono')")"
+  expect "omp sessions: model, the model omp asked for" \
+    "$sessions $(jq -rs 'map(.model) | unique | join(",")' "$ALARMS_MODEL")" "omp:default alarms-model"
   expect "omp hold harness" "$(q "SELECT group_concat(DISTINCT harness) FROM sleep_holds")" omp
   expect "puppet calls that failed" "$(failed_calls)" 0
   alarms_readings

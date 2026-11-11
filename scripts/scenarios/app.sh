@@ -101,12 +101,13 @@ advance() {
   local left="$1" step want
   want="$(active_ms)"
   while ((left > 0)); do
-    step=$((left < 20000 ? left : 20000))
+    step=$((left <= 20000 ? left : left < 25000 ? left - 5000 : 20000))
     UPTIME=$((UPTIME + step)); WALL=$((WALL + step)); left=$((left - step))
     want=$((want + step))
     clock_write "$UPTIME" "$WALL"
     # One write per tick: two writes in one tick read as one jump, which
-    # the app caps at 30 s. Each step is 5 s or more, so the app stores it.
+    # the app caps at 30 s. A step under 5 s is not stored, so none is
+    # shorter unless the whole advance is.
     wait_until 30 "the app stores active_ms $want" \
       holds "SELECT active_ms = $want FROM mono_clock WHERE id = 1"
   done
