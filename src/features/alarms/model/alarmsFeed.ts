@@ -187,16 +187,32 @@ function coalesced(fetch: () => Promise<void>): () => Promise<void> {
   };
 }
 
-/** A session's card and hold stores, set from each new set of surfaces. */
+/**
+ * A session's card and hold stores, set from each new set of surfaces. A row
+ * that reads a card names its alarm, so the read can serve it once closed.
+ */
 function transcriptStores(
   sessionId: string,
   surfaces: AlarmSurfaces | undefined,
-  actions: Required<AlarmCardActions>,
+  {
+    name,
+    ...actions
+  }: Required<AlarmCardActions> & { name: (alarmId: string) => void },
 ): Transcript {
   const cards = createViewStore(surfaces?.cards.get(sessionId) ?? NO_VIEWS);
   const holds = createViewStore(surfaces?.holds.get(sessionId) ?? NO_VIEWS);
   return {
-    view: { cards, holds, ...actions },
+    view: {
+      cards: {
+        get: cards.get,
+        subscribe(id, listener) {
+          name(id);
+          return cards.subscribe(id, listener);
+        },
+      },
+      holds,
+      ...actions,
+    },
     set: (next) => {
       cards.set(next.cards.get(sessionId) ?? NO_VIEWS);
       holds.set(next.holds.get(sessionId) ?? NO_VIEWS);
@@ -260,6 +276,48 @@ function settingsWriters(
   };
 }
 
+/**
+ * The alarm ids the transcripts hold, for the read to return even once
+ * closed. Rows mount together, so the ids they name share one read.
+ */
+function alarmNames(
+  open: (alarmId: string) => boolean,
+  refresh: () => Promise<void>,
+): { list: () => string[]; name: (alarmId: string) => void } {
+  const named = new Set<string>();
+  let pending = false;
+  return {
+    list: () => [...named],
+    name(alarmId) {
+      if (named.has(alarmId)) return;
+      named.add(alarmId);
+      if (open(alarmId) || pending) return;
+      pending = true;
+      queueMicrotask(() => {
+        pending = false;
+        void refresh();
+      });
+    },
+  };
+}
+
+/** Tyler's landing acts, each on the open episode it names. */
+function landingActions(
+  host: AlarmActHost,
+  episode: (alarmId: string) => EpisodeWire | undefined,
+  openLead: (lead: AlarmAgent) => void,
+): AlarmCardActions {
+  return {
+    onAct: (event) => {
+      if (event.kind !== "alarm") return;
+      const found = episode(event.alarmId);
+      if (found) void tylerAct(host, found, event);
+      else host.refused("alarms_tyler_act", event);
+    },
+    onOpenLead: openLead,
+  };
+}
+
 export function createAlarmsFeed(deps: AlarmsFeedDeps): AlarmsFeed {
   const now = deps.now ?? (() => Date.now());
   const host: AlarmActHost = {
@@ -272,6 +330,10 @@ export function createAlarmsFeed(deps: AlarmsFeedDeps): AlarmsFeed {
   const ticker = everySecondWhile(() => derive());
   const listeners = new Set<() => void>();
   const transcripts = new Map<string, Transcript>();
+  const names = alarmNames(
+    (alarmId) => episodes.has(alarmId),
+    () => refresh(),
+  );
 
   const derive = () => {
     if (!snapshot) return;
@@ -292,7 +354,9 @@ export function createAlarmsFeed(deps: AlarmsFeedDeps): AlarmsFeed {
 
   const fetchOnce = async () => {
     try {
-      snapshot = parseAlarmsSnapshot(await deps.invoke("alarms_view", {}));
+      snapshot = parseAlarmsSnapshot(
+        await deps.invoke("alarms_view", { alarms: names.list() }),
+      );
     } catch (error) {
       console.error("alarms_view failed", error);
       return;
@@ -315,6 +379,7 @@ export function createAlarmsFeed(deps: AlarmsFeedDeps): AlarmsFeed {
     const created = transcriptStores(sessionId, surfaces, {
       onAct: (event) => void transcriptAct(sessionId, event),
       onOpenLead: openLead,
+      name: names.name,
     });
     transcripts.set(sessionId, created);
     return created.view;
@@ -329,15 +394,11 @@ export function createAlarmsFeed(deps: AlarmsFeedDeps): AlarmsFeed {
     },
     surfaces: () => surfaces,
     transcript,
-    landingActions: {
-      onAct: (event) => {
-        if (event.kind !== "alarm") return;
-        const episode = episodes.get(event.alarmId);
-        if (episode) void tylerAct(host, episode, event);
-        else deps.refused("alarms_tyler_act", event);
-      },
-      onOpenLead: openLead,
-    },
+    landingActions: landingActions(
+      host,
+      (alarmId) => episodes.get(alarmId),
+      openLead,
+    ),
     ...settingsWriters(deps, refresh),
   };
 }

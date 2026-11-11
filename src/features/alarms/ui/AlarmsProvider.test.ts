@@ -161,6 +161,51 @@ describe("alarms feed", () => {
     expect(lead.cards.get("al_9KD")?.minutes).toBe(20);
   });
 
+  it("names a transcript's alarm in the read, and keeps its card once it closed", async () => {
+    // Defect: the read lists open episodes only, so a delivered alarm's card
+    // vanishes when its episode closes and the raw tag shows in its place.
+    const closed = {
+      ...IDLE_EPISODE,
+      nextMinutes: null,
+      closed: { reason: "progress", at: "14:30" },
+    };
+    tauri.invoke.mockImplementation(
+      async (command: string, args?: { alarms?: string[] }) =>
+        command === "alarms_view"
+          ? snapshotWire({
+              episodes: [],
+              closed: args?.alarms?.includes(closed.id) ? [closed] : [],
+              holds: [],
+            })
+          : null,
+    );
+    await changed();
+    const lead = feed!.transcript("51aa");
+    expect(lead.cards.get(closed.id)).toBeUndefined();
+    const reads = viewCalls();
+    const woke: string[] = [];
+    await act(async () => {
+      lead.cards.subscribe(closed.id, () => woke.push(closed.id));
+      lead.cards.subscribe("al_unknown", () => woke.push("al_unknown"));
+    });
+    expect(viewCalls()).toBe(reads + 1);
+    expect(tauri.invoke.mock.calls.at(-1)).toEqual([
+      "alarms_view",
+      { alarms: [closed.id, "al_unknown"] },
+    ]);
+    expect(woke).toEqual([closed.id]);
+    expect(lead.cards.get(closed.id)?.closed).toEqual({
+      reason: "progress",
+      at: "14:30",
+    });
+    expect(lead.cards.get("al_unknown")).toBeUndefined();
+
+    await act(async () => {
+      lead.cards.subscribe(closed.id, () => {});
+    });
+    expect(viewCalls()).toBe(reads + 1);
+  });
+
   it("ticks a waiting hold's countdown each second, and stops once none waits", async () => {
     // Defect: the countdown freezes between snapshots, or a timer runs with nothing to count.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });

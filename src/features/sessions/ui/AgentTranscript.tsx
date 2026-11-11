@@ -2433,9 +2433,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onEditLastTurn?: () => void;
   editing?: boolean;
 }) {
-  const alarm = useDeliveredAlarm(
-    block.role === "user" ? monoAlarmId(block) : undefined,
-  );
+  const alarmId = block.role === "user" ? monoAlarmId(block) : undefined;
+  const alarm = useDeliveredAlarm(alarmId);
   if (alarm) {
     return (
       <div className={`pt-1.5 pb-5 ${embedded ? "" : "px-4"}`}>
@@ -2443,6 +2442,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
       </div>
     );
   }
+  // Not read yet, no feed in this window, or an alarm the app does not know:
+  // hidden, as before alarms had a card; the tag is the agent's text.
+  if (alarmId) return null;
   const notice = block.role === "user" ? parseMonoNotice(block) : undefined;
   if (notice) {
     const sentence = noticeSentence(notice);

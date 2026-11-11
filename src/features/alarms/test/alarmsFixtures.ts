@@ -214,6 +214,7 @@ export function snapshotWire(overrides: Record<string, unknown> = {}) {
   return {
     readWallMs: READ_WALL_MS,
     episodes: [IDLE_EPISODE, DIALOG_EPISODE, MONO_EPISODE, TYLER_EPISODE],
+    closed: [],
     holds: [WAITING_HOLD, DECIDED_HOLD],
     settings: {
       stallMinutes: 15,

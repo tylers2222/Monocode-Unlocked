@@ -75,6 +75,13 @@ pub(crate) struct ActedWire {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ClosedWire {
+    pub reason: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct EpisodeWire {
     pub id: String,
     pub agent: AgentWire,
@@ -89,6 +96,7 @@ pub(crate) struct EpisodeWire {
     pub sends: Vec<SendWire>,
     pub next_minutes: Option<i64>,
     pub acted: Option<ActedWire>,
+    pub closed: Option<ClosedWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -155,6 +163,8 @@ pub(crate) struct StallMinutesWire {
 pub(crate) struct AlarmsSnapshot {
     pub read_wall_ms: i64,
     pub episodes: Vec<EpisodeWire>,
+    /// The closed episodes among those the front end named by id.
+    pub closed: Vec<EpisodeWire>,
     pub holds: Vec<HoldWire>,
     pub settings: SettingsWire,
     pub stall_minutes: Vec<StallMinutesWire>,
@@ -271,6 +281,7 @@ fn episode(
     settings: &Settings,
     episode: &EpisodeRow,
     active: i64,
+    closed: Option<ClosedWire>,
 ) -> rusqlite::Result<EpisodeWire> {
     let stall = route::stall(conn, episode, settings, active)?;
     let dialog = match stall.dialog {
@@ -294,9 +305,45 @@ fn episode(
         dialog,
         hold_missing: stall.hold_missing,
         sends: sends(conn, settings, episode)?,
-        next_minutes: episode.next_escalate.map(|due| minutes_until(due, active)),
+        next_minutes: episode
+            .next_escalate
+            .filter(|_| closed.is_none())
+            .map(|due| minutes_until(due, active)),
         acted: acted(conn, episode)?,
+        closed,
     })
+}
+
+/// The most episodes one read looks up by id: the last ones named.
+const NAMED_MAX: usize = 200;
+
+/// Of the episodes `named`, the closed ones, each as it stood when it closed.
+fn closed_episodes(
+    conn: &Connection,
+    settings: &Settings,
+    named: &[String],
+) -> rusqlite::Result<Vec<EpisodeWire>> {
+    let mut closed = Vec::new();
+    for id in named.iter().rev().take(NAMED_MAX) {
+        let Some(row) = route::episode(conn, id)?.filter(|row| !row.open) else {
+            continue;
+        };
+        let (active, wall, reason): (i64, i64, String) = conn.query_row(
+            "SELECT closed_active_ms, closed_wall_ms, close_reason FROM alarm_episodes
+              WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let at = route::clock(conn, wall)?;
+        closed.push(episode(
+            conn,
+            settings,
+            &row,
+            active,
+            Some(ClosedWire { reason, at }),
+        )?);
+    }
+    Ok(closed)
 }
 
 /// Tyler's holds the card lists: undecided ones, and those decided (not
@@ -438,16 +485,22 @@ fn stall_minutes(conn: &Connection) -> rusqlite::Result<Vec<StallMinutesWire>> {
         .collect()
 }
 
-/// What the front end shows of the alarms at `(active, wall)`.
-pub(crate) fn snapshot(conn: &Connection, now: (i64, i64)) -> rusqlite::Result<AlarmsSnapshot> {
+/// What the front end shows of the alarms at `(active, wall)`, with the
+/// closed episodes among `named` (the alarms its transcripts hold).
+pub(crate) fn snapshot(
+    conn: &Connection,
+    now: (i64, i64),
+    named: &[String],
+) -> rusqlite::Result<AlarmsSnapshot> {
     let settings = Settings::load(conn)?;
     let episodes = route::open_episodes(conn)?
         .iter()
-        .map(|row| episode(conn, &settings, row, now.0))
+        .map(|row| episode(conn, &settings, row, now.0, None))
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(AlarmsSnapshot {
         read_wall_ms: now.1,
         episodes,
+        closed: closed_episodes(conn, &settings, named)?,
         holds: holds(conn, &settings, now)?,
         settings: settings_wire(conn, &settings)?,
         stall_minutes: stall_minutes(conn)?,
@@ -681,12 +734,15 @@ pub(crate) fn set_stall_minutes(
 }
 
 #[tauri::command(async)]
-pub fn alarms_view(store: State<'_, SessionStore>) -> Result<AlarmsSnapshot, String> {
+pub fn alarms_view(
+    store: State<'_, SessionStore>,
+    alarms: Option<Vec<String>>,
+) -> Result<AlarmsSnapshot, String> {
     let conn = store.lock_conn()?;
     let now = hold_service::now(&store, &conn)
         .map_err(|error| error.to_string())?
         .closing();
-    snapshot(&conn, now).map_err(|error| error.to_string())
+    snapshot(&conn, now, alarms.as_deref().unwrap_or_default()).map_err(|error| error.to_string())
 }
 
 #[tauri::command(async)]

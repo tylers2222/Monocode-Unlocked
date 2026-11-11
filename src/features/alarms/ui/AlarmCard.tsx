@@ -5,6 +5,7 @@ import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import {
   actedLine,
   agentLabel,
+  closedLine,
   actTarget,
   countdownText,
   dialogLine,
@@ -56,22 +57,33 @@ export function AlarmCard({
         <AlarmHeader view={view} />
         <AlarmSentence view={view} escalation={escalation} />
         <AlarmFacts labelWidth="w-[92px]" rows={alarmFacts(view, escalation)} />
-        <AlarmActs
-          view={view}
-          open={open}
-          onToggle={(act) =>
-            setOpen((current) => (current === act ? null : act))
-          }
-          onSend={send}
-          onOpenLead={onOpenLead}
-        />
-        <OpenActRow view={view} open={open} onSend={send} />
+        {/* A closed alarm refuses every act, so its card offers none. */}
+        {view.closed ? null : (
+          <>
+            <AlarmActs
+              view={view}
+              open={open}
+              onToggle={(act) =>
+                setOpen((current) => (current === act ? null : act))
+              }
+              onSend={send}
+              onOpenLead={onOpenLead}
+            />
+            <OpenActRow view={view} open={open} onSend={send} />
+          </>
+        )}
       </AlarmCardFrame>
       {view.acted ? (
         <ActedLine
           acted={view.acted}
           target={actTarget(view, view.acted.how)}
         />
+      ) : null}
+      {view.closed ? (
+        <div className="flex items-center gap-1.5 text-[11px] text-content/50">
+          <AlarmChip tone="gray">Closed</AlarmChip>
+          <span>{closedLine(view.closed, view.stalled)}</span>
+        </div>
       ) : null}
     </div>
   );
@@ -86,8 +98,8 @@ function AlarmHeader({ view }: { view: AlarmCardView }) {
       <Bell className="size-[13px] shrink-0 text-amber-400" />
       <span>Alarm from the app{where}</span>
       {escalated ? <AlarmChip tone="red">level {view.level}</AlarmChip> : null}
-      {/* Someone acted, so it goes nowhere; the acted line says so. */}
-      {view.acted ? null : (
+      {/* Acted on or closed, it goes nowhere; the line under it says so. */}
+      {view.acted || view.closed ? null : (
         <span className="ml-auto flex items-center gap-1 tabular-nums">
           {tyler ? null : (
             <Clock className="size-[11px] shrink-0" strokeWidth={2} />

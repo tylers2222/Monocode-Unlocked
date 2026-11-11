@@ -13,8 +13,13 @@ use crate::sleep_hold::store::ANSWER_MS;
 use crate::sleep_hold::{classify, Harness, HoldRequest};
 
 fn snapshot(world: &World) -> Value {
+    snapshot_naming(world, &[])
+}
+
+fn snapshot_naming(world: &World, named: &[&str]) -> Value {
+    let named: Vec<String> = named.iter().map(|id| id.to_string()).collect();
     let read: AlarmsSnapshot =
-        view::snapshot(&world.conn(), (world.active_ms(), world.now())).unwrap();
+        view::snapshot(&world.conn(), (world.active_ms(), world.now()), &named).unwrap();
     serde_json::to_value(read).unwrap()
 }
 
@@ -138,6 +143,53 @@ fn the_snapshot_shows_a_stalled_worker_at_each_level_and_who_acted() {
     assert_eq!(
         read["episodes"][0]["acted"],
         json!({"how": "nudge", "by": chain.lead.as_str(), "at": hh_mm(&world, at)})
+    );
+}
+
+// Defect: once a delivered alarm's episode closes, the front end can no
+// longer read it, so the chat shows the raw `<mono_alarm>` tag where the
+// card was; or it reads a closed episode as still counting to a next level.
+#[test]
+fn the_snapshot_reads_a_closed_episode_the_front_end_names() {
+    let mut world = World::new("alarm-view-closed");
+    let chain = chain(&world, "avc");
+    let episode = stalled_worker(&mut world, &chain);
+    take(&world, &test_taps::outbox_key(&episode, 1));
+    assert_eq!(
+        snapshot_naming(&world, &[&episode])["closed"],
+        json!([]),
+        "an open episode is read once, as open"
+    );
+
+    ran_a_turn(&mut world, &chain.worker);
+    world.advance(PASS);
+    let closed_wall: i64 = world
+        .conn()
+        .query_row(
+            "SELECT closed_wall_ms FROM alarm_episodes WHERE id = ?1",
+            [&episode],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(snapshot(&world)["episodes"], json!([]));
+    assert_eq!(snapshot(&world)["closed"], json!([]), "not named, not read");
+
+    let read = snapshot_naming(&world, &[&episode, "al_unknown"]);
+    assert_eq!(read["episodes"], json!([]));
+    let [shown] = read["closed"].as_array().unwrap().as_slice() else {
+        panic!("one closed episode: {read}");
+    };
+    assert_eq!(shown["id"], episode.as_str());
+    assert_eq!(shown["agent"], worker_wire(&chain));
+    assert_eq!(
+        shown["closed"],
+        json!({"reason": "progress", "at": hh_mm(&world, closed_wall)})
+    );
+    assert_eq!(shown["nextMinutes"], Value::Null);
+    assert_eq!(
+        shown["sends"][0]["recipient"],
+        lead_wire(&chain),
+        "the card still finds the chat it went to"
     );
 }
 

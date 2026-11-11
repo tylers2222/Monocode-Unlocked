@@ -136,6 +136,7 @@ export function episodeView(
     }),
     sends: episode.sends.flatMap(sendView),
     ...(acted && { acted }),
+    ...(episode.closed && { closed: episode.closed }),
   };
   return episode.cause === "dialog"
     ? {
@@ -211,13 +212,16 @@ export function provisionerCard(
   };
 }
 
-/** Frame 2, for every chat a send went to: by session, then alarm id. */
+/**
+ * Frame 2, for every chat a send went to: by session, then alarm id. A
+ * closed episode the read named keeps its card, in its final state.
+ */
 export function transcriptCards(
   snapshot: AlarmsSnapshot,
   options: AlarmMapOptions,
 ): Map<string, Map<string, ProvisionerAlarmView>> {
   const bySession = new Map<string, Map<string, ProvisionerAlarmView>>();
-  for (const episode of snapshot.episodes)
+  for (const episode of [...snapshot.episodes, ...snapshot.closed])
     // By level, so a chat told twice shows the later level.
     for (const send of episode.sends) {
       const sessionId = send.recipient?.sessionId;

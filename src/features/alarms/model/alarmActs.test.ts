@@ -228,6 +228,20 @@ describe("provisioner card acts (control_alarm_act as the chat's owner)", () => 
     ]);
   });
 
+  it("opens nothing when Rust refuses a Read", async () => {
+    // Defect: a refused Read (not your alarm, closed) still opens the
+    // stalled session, as if the read had been logged.
+    result = { ok: false, error: { code: "not_your_alarm" } };
+    await provisionerAct(
+      host,
+      "51aa",
+      episode("al_7Q2"),
+      card("al_7Q2", WORKER, { act: "read" }),
+    );
+    expect(host.openAgent).not.toHaveBeenCalled();
+    expect(host.refused).toHaveBeenCalledWith("control_alarm_act", result);
+  });
+
   it("says when Rust refuses, and opens nothing for a refused act", async () => {
     // Defect: a refusal reads as done, with nothing said.
     result = { ok: false, error: { code: "not_your_alarm" } };

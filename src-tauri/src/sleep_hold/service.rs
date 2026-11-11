@@ -830,12 +830,12 @@ pub(crate) fn tyler_decides_in_app(
             && row.decided_by.as_deref() == Some("tyler")
             && row.decided_request_id.as_deref() == Some(request_id));
     }
-    let reason = reason.unwrap_or(DENIED_IN_APP);
+    let reason = (!allow).then(|| reason.unwrap_or(DENIED_IN_APP));
     Ok(tyler_decides(
         conn,
         hold,
         allow,
-        Some(reason),
+        reason,
         Some(request_id),
         now,
     )?)

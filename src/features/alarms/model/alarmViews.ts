@@ -60,7 +60,18 @@ export type AlarmActed = {
   at: string;
 };
 
-/** The open `alarm_episodes` row for one agent. Only a dialog wait has a dialog. */
+/** `alarm_episodes.close_reason`. */
+export type AlarmCloseReason =
+  "progress" | "work_cleared" | "agent_gone" | "act_no_effect" | "superseded";
+
+/** An episode that closed: its card shows how it ended, with no acts. */
+export type AlarmClosed = {
+  reason: AlarmCloseReason;
+  /** Wall clock, "14:30". */
+  at: string;
+};
+
+/** An `alarm_episodes` row for one agent. Only a dialog wait has a dialog. */
 export type AlarmEpisodeView = {
   /** `al_7Q2`. */
   id: string;
@@ -74,6 +85,7 @@ export type AlarmEpisodeView = {
   sends: AlarmSend[];
   /** The episode stays open after an act until the agent moves. */
   acted?: AlarmActed;
+  closed?: AlarmClosed;
 } & (
   | { cause: Exclude<AlarmCause, "dialog">; dialog?: undefined }
   | { cause: "dialog"; dialog: AlarmDialog }
@@ -344,6 +356,19 @@ export function actedLine(
     chip: word.chip,
     text: `${acted.by} ${word.verb} ${target.name} at ${acted.at} · escalation stopped`,
   };
+}
+
+const CLOSED_WORD: Record<AlarmCloseReason, (agent: string) => string> = {
+  progress: (agent) => `${agent} moved again`,
+  work_cleared: (agent) => `${agent}'s open work cleared`,
+  agent_gone: (agent) => `${agent} is gone`,
+  act_no_effect: (agent) => `${agent} stayed stalled after the act`,
+  superseded: () => "a new alarm replaced it",
+};
+
+/** The text beside a closed card's Closed chip: "14:30 · PR S1 reviewer moved again". */
+export function closedLine(closed: AlarmClosed, stalled: AlarmAgent): string {
+  return `${closed.at} · ${CLOSED_WORD[closed.reason](stalled.name)}`;
 }
 
 /** The sidebar hover card's Told row: who was told, then the act or "no act yet". */

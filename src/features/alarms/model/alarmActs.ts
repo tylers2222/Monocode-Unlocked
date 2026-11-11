@@ -104,7 +104,7 @@ function cardInput(
 
 /**
  * Frame 2: an act on the card in chat `sessionId`, as that chat's owner.
- * Read also opens the stalled agent.
+ * A Read Rust took also opens the stalled agent.
  */
 export async function provisionerAct(
   host: AlarmActHost,
@@ -117,13 +117,13 @@ export async function provisionerAct(
     host.refused(`alarms.${event.act}`, event);
     return;
   }
-  await call(host, "control_alarm_act", {
+  const done = await call(host, "control_alarm_act", {
     sessionId,
     action: `alarms.${event.act}`,
     input,
     requestId: host.requestId(),
   });
-  if (event.act === "read") host.openAgent(event.target.actor);
+  if (done && event.act === "read") host.openAgent(event.target.actor);
 }
 
 /** Answers the stalled agent's harness dialog here; the detail to log, or undefined. */

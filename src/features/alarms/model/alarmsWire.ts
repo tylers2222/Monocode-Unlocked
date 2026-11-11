@@ -4,7 +4,12 @@
  * types; a row that breaks them is dropped here, not drawn half right.
  */
 
-import type { AlarmAgentRole, AlarmCause, AlarmDialogKind } from "./alarmViews";
+import type {
+  AlarmAgentRole,
+  AlarmCause,
+  AlarmClosed,
+  AlarmDialogKind,
+} from "./alarmViews";
 
 export type AgentWire = {
   /** `session:<id>` or `mono:<id>`. */
@@ -39,7 +44,7 @@ export type DialogWire = {
 
 export type ActedHowWire = "answer" | "steer" | "nudge" | "dismiss" | "message";
 
-/** An open episode. Only a dialog wait has a dialog. */
+/** An episode, open unless `closed`. Only a dialog wait has a dialog. */
 export type EpisodeWire = {
   id: string;
   agent: AgentWire;
@@ -54,6 +59,7 @@ export type EpisodeWire = {
   sends: SendWire[];
   nextMinutes: number | null;
   acted: { how: ActedHowWire; by: string; at: string } | null;
+  closed: AlarmClosed | null;
 } & (
   | { cause: Exclude<AlarmCause, "dialog">; dialog: null }
   | { cause: "dialog"; dialog: DialogWire }
@@ -104,7 +110,10 @@ export type StallMinutesWire = {
 
 export type AlarmsSnapshot = {
   readWallMs: number;
+  /** Open episodes. */
   episodes: EpisodeWire[];
+  /** The closed episodes among the alarm ids the read named. */
+  closed: EpisodeWire[];
   holds: HoldWire[];
   settings: AlarmSettingsWire;
   stallMinutes: StallMinutesWire[];
@@ -188,6 +197,13 @@ const CAUSES = [
 ] as const;
 const DIALOG_KINDS = ["permission", "question", "plan"] as const;
 const ACTED = ["answer", "steer", "nudge", "dismiss", "message"] as const;
+const CLOSE_REASONS = [
+  "progress",
+  "work_cleared",
+  "agent_gone",
+  "act_no_effect",
+  "superseded",
+] as const;
 /** sessionStore keeps only these ids; any other would not bind after reload. */
 const ID = /^[A-Za-z0-9_-]+$/;
 
@@ -247,6 +263,15 @@ function acted(value: unknown): EpisodeWire["acted"] {
   };
 }
 
+function closed(value: unknown): EpisodeWire["closed"] {
+  if (value === null || value === undefined) return null;
+  const row = fields(value, "closed");
+  return {
+    reason: oneOf(row.reason, CLOSE_REASONS, "closed.reason"),
+    at: str(row.at, "closed.at"),
+  };
+}
+
 function episode(value: unknown): EpisodeWire {
   const row = fields(value, "episode");
   const base = {
@@ -265,6 +290,7 @@ function episode(value: unknown): EpisodeWire {
       .sort((a, b) => a.level - b.level),
     nextMinutes: nullable(row.nextMinutes, num, "episode.nextMinutes"),
     acted: acted(row.acted),
+    closed: closed(row.closed),
   };
   const cause = oneOf(row.cause, CAUSES, "episode.cause");
   const shown = nullable(row.dialog, dialog, "episode.dialog");
@@ -345,6 +371,7 @@ export function parseAlarmsSnapshot(value: unknown): AlarmsSnapshot {
     return {
       readWallMs: num(row.readWallMs, "readWallMs"),
       episodes: rows(row.episodes, episode, "episode"),
+      closed: rows(row.closed ?? [], episode, "closed episode"),
       holds: rows(row.holds, hold, "hold"),
       settings: settings(row.settings),
       stallMinutes: rows(row.stallMinutes, stallMinutesRow, "stallMinutes"),
