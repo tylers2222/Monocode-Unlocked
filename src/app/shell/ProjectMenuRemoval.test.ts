@@ -183,3 +183,11 @@ it("offers Remove on a row a Mono holds here, though no other Space has it", asy
   await openMenu("site");
   expect(menuItem("Remove from Space 2")).toBeDefined();
 });
+
+it("opens frame 22's dialog when Delete passes", async () => {
+  await openMenu("vibtra");
+  await pick("Delete");
+  const dialog = document.querySelector('[aria-label="Delete vibtra"]')!;
+  expect(dialog.textContent).toContain("Delete “vibtra” from Space 2?");
+  expect(dialog.textContent).toContain("Delete from Space 2");
+});

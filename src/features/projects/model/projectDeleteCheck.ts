@@ -18,7 +18,7 @@ import {
 import { isRemoteProjectPath, sameProjectPath } from "./recents";
 
 /**
- * Whether a project's Delete or Archive may go ahead, and what the dialog says.
+ * Whether a project's Delete or Archive may go ahead.
  * The backend owns every guard it can see (spec T7-T11); this adds what only the
  * window knows, its queued messages and busy remote sessions.
  */
@@ -146,34 +146,5 @@ export async function checkProjectArchive(path: string): Promise<string | null> 
     );
   } catch (error) {
     return refusalMessage(error);
-  }
-}
-
-export type ProjectDeletePrompt = {
-  /** This Space's chats, as its project list shows them. */
-  sessions: number;
-  /** The delete leaves chats or membership in another Space. */
-  scoped: boolean;
-  spaceName: string;
-};
-
-/** What the Delete dialog says. Unknown counts as scoped: it never overclaims. */
-export async function readProjectDeletePrompt(
-  path: string,
-): Promise<ProjectDeletePrompt> {
-  const { activeSpaceId } = spacesView();
-  const name = spaceName(activeSpaceId);
-  try {
-    const preview = await previewProjectDelete(path);
-    return {
-      sessions: preview.sessionCount,
-      scoped:
-        !preview.lastSpace ||
-        preview.otherSpaces.length > 0 ||
-        preview.hiddenSessionCount > 0,
-      spaceName: name,
-    };
-  } catch {
-    return { sessions: 0, scoped: true, spaceName: name };
   }
 }
