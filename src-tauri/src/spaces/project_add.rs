@@ -38,39 +38,40 @@ fn known_here(conn: &Connection, key: &str) -> Result<bool, ProjectRefusal> {
             .any(|session| session.project.as_deref() == Some(key)))
 }
 
-/// T1 and T2. A known project already assigned to the Space writes nothing.
+/// T1 and T2, and whether the add wrote a row or link. A known project already
+/// assigned to or linked in the Space writes nothing.
 pub(crate) fn add(
     store: &SessionStore,
     space: &str,
     path: &str,
     known_to_window: bool,
-) -> Result<Added, ProjectRefusal> {
+) -> Result<(Added, bool), ProjectRefusal> {
     let key = key_of(path)?;
     let conn = store.lock_conn()?;
     let tx = begin(&conn)?;
     let added = if known_to_window || known_here(&tx, &key)? {
-        if project_space_in(&tx, &key)? != space {
-            tx.execute(
+        let wrote = project_space_in(&tx, &key)? != space
+            && tx.execute(
                 "INSERT OR IGNORE INTO space_project_links (space_id, project_path)
                  VALUES (?1, ?2)",
                 params![space, key],
-            )?;
-        }
-        Added::Linked
+            )? > 0;
+        (Added::Linked, wrote)
     } else {
         tx.execute(
             "INSERT INTO space_projects (project_path, space_id) VALUES (?1, ?2)",
             params![key, space],
         )?;
-        Added::Assigned
+        (Added::Assigned, true)
     };
     tx.commit()?;
     Ok(added)
 }
 
 /// T3 and T4: links each of these Mono's listed paths in its Space, on the
-/// caller's transaction. A path that is no key, or at or under the workspace,
-/// gets no link; a Space gone from `spaces` could not take one.
+/// caller's transaction. A path that is no key, `~` (no project, as `key_of`
+/// refuses it), or at or under the workspace gets no link; a Space gone from
+/// `spaces` could not take one.
 pub(crate) fn link_listed(
     conn: &Connection,
     space: &str,
@@ -81,7 +82,7 @@ pub(crate) fn link_listed(
         let Ok(key) = project_key(path) else {
             continue;
         };
-        if in_workspace(&key, &roots) == InWorkspace::Outside {
+        if key != "~" && in_workspace(&key, &roots) == InWorkspace::Outside {
             conn.execute(
                 "INSERT OR IGNORE INTO space_project_links (space_id, project_path)
                  SELECT id, ?2 FROM spaces WHERE id = ?1",
@@ -112,7 +113,9 @@ pub fn spaces_project_add<R: Runtime>(
     known_to_window: bool,
 ) -> Result<Added, ProjectRefusal> {
     let space = shown_space(&store, window.label())?;
-    let added = add(&store, &space, &project_path, known_to_window)?;
-    emit_changed(&app);
+    let (added, wrote) = add(&store, &space, &project_path, known_to_window)?;
+    if wrote {
+        emit_changed(&app);
+    }
     Ok(added)
 }

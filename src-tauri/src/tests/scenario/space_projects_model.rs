@@ -538,7 +538,7 @@ fn window_event(store: &SessionStore, model: &mut Model, event: Event) -> (Reply
         Event::Add(window, project, known) => {
             let space = space_of(window);
             let real = project_add::add(store, SPACES[space], PROJECTS[project], known)
-                .map_or_else(refused, Reply::Added);
+                .map_or_else(refused, |(added, _)| Reply::Added(added));
             (real, model.add(space, project, known))
         }
         Event::Remove(window, project) => {
@@ -817,7 +817,10 @@ fn a_last_space_delete_keeps_the_chats_another_space_left_hidden() {
             .unwrap();
     }
     let none = || Some(Turns::new());
-    assert_eq!(project_add::add(&store, two, path, true), Ok(Added::Linked));
+    assert_eq!(
+        project_add::add(&store, two, path, true).map(|(added, _)| added),
+        Ok(Added::Linked)
+    );
     assert_eq!(removal::remove(&store, one, path, none), Ok(true), "T6");
     assert_eq!(spaces::project_spaces_in(&conn(), path).unwrap(), [two]);
 
@@ -842,7 +845,7 @@ fn a_last_space_delete_keeps_the_chats_another_space_left_hidden() {
     );
 
     assert_eq!(
-        project_add::add(&store, one, path, false),
+        project_add::add(&store, one, path, false).map(|(added, _)| added),
         Ok(Added::Linked)
     );
     assert!(
