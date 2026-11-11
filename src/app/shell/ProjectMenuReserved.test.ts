@@ -42,11 +42,16 @@ beforeEach(async () => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  await renderRail("/work/client");
+});
+
+/** The rail lists a path under the Giga workspace only while it is open. */
+async function renderRail(cwd: string) {
   await act(async () =>
     root.render(
       createElement(ProjectRail, {
         visible: true,
-        cwd: "/work/client",
+        cwd,
         recents: [
           { path: "/home/u/MonoCode", openedAt: 3 },
           { path: "/home/u/MonoCode/gigas/general", openedAt: 2 },
@@ -58,7 +63,7 @@ beforeEach(async () => {
       }),
     ),
   );
-});
+}
 
 afterEach(() => {
   act(() => root.unmount());
@@ -96,6 +101,7 @@ it("offers no Archive or Delete for the Giga workspace, and both for another pro
 });
 
 it("offers no Archive or Delete on a path under the Giga workspace (F1)", async () => {
+  await renderRail("/home/u/MonoCode/gigas/general");
   const under = await openMenu("general");
   expect(under).not.toContain("Archive");
   expect(under).not.toContain("Delete");
