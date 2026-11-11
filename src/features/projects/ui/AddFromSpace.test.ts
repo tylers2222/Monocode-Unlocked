@@ -140,17 +140,50 @@ it("keeps the picker's row ignored by the menu it hangs off", async () => {
   expect(document.querySelector(ADD_FROM_SPACE_FLYOUT)).not.toBeNull();
 });
 
-it("shows the backend's message on a refusal, and stays open", async () => {
-  add = () =>
-    Promise.reject({
+// One case per reason spaces_project_add can refuse with: key_of (workspace,
+// not a project), shown_space (no Space), and a failed read or write.
+it.each([
+  [
+    "the workspace",
+    {
       code: "workspace",
       project: "example-app",
       message: "This folder is part of the MonoCode workspace, so it stays.",
-    });
+    },
+    "This folder is part of the MonoCode workspace, so it can't be added to a Space.",
+  ],
+  [
+    "not a project",
+    { code: "failed", message: "Not a project: ~" },
+    "Not a project: ~, so it can't be added to Space 2.",
+  ],
+  [
+    "no Space",
+    { code: "failed", message: "This window has no Space yet." },
+    "This window has no Space yet, so it can't be added to Space 2.",
+  ],
+  [
+    "a failed write",
+    { code: "failed", message: "database is locked" },
+    "database is locked, so it can't be added to Space 2.",
+  ],
+])("words a refusal for %s as an Add, and stays open", async (_reason, refusal, text) => {
+  add = () => Promise.reject(refusal);
   await render();
   await openAndPick();
-  expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-    "This folder is part of the MonoCode workspace, so it stays.",
-  );
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe(text);
+  expect(document.querySelector(ADD_FROM_SPACE_FLYOUT)).not.toBeNull();
   expect(onAdded).not.toHaveBeenCalled();
+});
+
+it("drops an earlier refusal when the list opens again", async () => {
+  add = () => Promise.reject({ code: "failed", message: "database is locked" });
+  await render();
+  await openAndPick();
+  expect(document.querySelector('[role="alert"]')).not.toBeNull();
+  await act(async () => button("Add from another Space…")!.click());
+  expect(document.querySelector(ADD_FROM_SPACE_FLYOUT)).toBeNull();
+  await act(async () => button("Add from another Space…")!.click());
+  expect(document.querySelector(ADD_FROM_SPACE_FLYOUT)).not.toBeNull();
+  expect(document.querySelector('[role="alert"]')).toBeNull();
 });

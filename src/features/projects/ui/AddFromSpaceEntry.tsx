@@ -3,7 +3,7 @@ import { LAYER } from "../../../shared/lib/layers";
 import { ChevronRight, Layers } from "../../../shared/ui/icons";
 import { spacesView } from "../../spaces/model/activeSpace";
 import { useAddableProjects } from "../../spaces/model/addableProjects";
-import { addProjectToSpace, refusalMessage } from "../../spaces/model/spaces";
+import { addProjectToSpace, addRefusalMessage } from "../../spaces/model/spaces";
 import {
   ADD_FROM_SPACE_FLYOUT,
   ProjectPickerPopover,
@@ -14,7 +14,7 @@ export { ADD_FROM_SPACE_FLYOUT };
 /**
  * "Add from another Space…" with its flyout: T2 for the project picked. Hidden
  * when no other Space has anything to add. A refused add keeps the list open
- * with the backend's reason.
+ * with the reason in Add wording.
  */
 export function AddFromSpaceEntry({
   className,
@@ -40,7 +40,7 @@ export function AddFromSpaceEntry({
     setRefusal(null);
     // Every path here is another Space's or a recent, so it is never new (T2).
     void addProjectToSpace(path, { knownToWindow: true }).then(onAdded, (error: unknown) =>
-      setRefusal(refusalMessage(error)),
+      setRefusal(addRefusalMessage(error, spaceName(activeSpaceId))),
     );
   };
   return (
@@ -51,7 +51,11 @@ export function AddFromSpaceEntry({
         role={menuItem ? "menuitem" : undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          // A reopened list starts clean: no refusal from an earlier pick.
+          setRefusal(null);
+          setOpen((value) => !value);
+        }}
         className={className}
       >
         <Layers className={iconClassName} strokeWidth={1.75} />
@@ -93,3 +97,12 @@ export function AddFromSpaceEntry({
     </>
   );
 }
+
+/** "Add from another Space…" in a picker's footer, beside "New project". */
+export const addFromSpaceAction = (close: () => void) => (
+  <AddFromSpaceEntry
+    className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content"
+    iconClassName="size-4 shrink-0"
+    onAdded={close}
+  />
+);

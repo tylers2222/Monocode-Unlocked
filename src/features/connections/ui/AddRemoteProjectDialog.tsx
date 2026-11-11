@@ -13,7 +13,7 @@ import {
   remoteProjectKey,
 } from "../model/remoteProjects";
 import { reservedProjectNameError } from "../../projects/model/reservedProjectName";
-import { loadArchivedProjects, loadRecents, sameProjectPath } from "../../projects/model/recents";
+import { knownToWindow } from "../../spaces/model/spaceProjects";
 import { addProjectToSpace, refusalMessage } from "../../spaces/model/spaces";
 import { knownHomeDir } from "../../../shared/lib/paths";
 import type { HostDirectory, HostProject } from "../model/protocol";
@@ -117,11 +117,7 @@ export function AddRemoteProjectDialog({
       if (!alive.current || version !== requestVersion.current) return;
       // T1 or T2 first, so a refused add remembers nothing and opens nothing.
       const key = remoteProjectKey(machine.environmentId, project.cwd);
-      await addProjectToSpace(key, {
-        knownToWindow: [...loadRecents(), ...loadArchivedProjects()].some(
-          (known) => sameProjectPath(known.path, key),
-        ),
-      });
+      await addProjectToSpace(key, { knownToWindow: knownToWindow(key) });
       if (alive.current && version === requestVersion.current)
         onOpen(rememberRemoteProject(machine.environmentId, project).key);
     } catch (reason) {

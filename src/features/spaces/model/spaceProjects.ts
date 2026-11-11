@@ -96,6 +96,13 @@ export function projectAfterLeaving(
   );
 }
 
+/** T1's check: the window already has the path, in recents or the archive. */
+export function knownToWindow(path: string): boolean {
+  return [...loadRecents(), ...loadArchivedProjects()].some((item) =>
+    sameProjectPath(item.path, path),
+  );
+}
+
 /**
  * T1 and T2, for a path the user added on purpose: Open folder, the remote
  * dialog and restore. Selecting a project on the rail never lists it (H1), or
@@ -103,11 +110,8 @@ export function projectAfterLeaving(
  * `knownToWindow` asks whether the window had it already.
  */
 export async function listProjectInSpace(path: string): Promise<boolean> {
-  const known = [...loadRecents(), ...loadArchivedProjects()].some((item) =>
-    sameProjectPath(item.path, path),
-  );
   try {
-    await addProjectToSpace(path, { knownToWindow: known });
+    await addProjectToSpace(path, { knownToWindow: knownToWindow(path) });
     return true;
   } catch (error) {
     console.warn(`monocode: ${path} was not listed:`, error);

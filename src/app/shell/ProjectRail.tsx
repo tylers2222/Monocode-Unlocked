@@ -1275,7 +1275,7 @@ function projectCardAriaLabel(
 }
 
 /** Adds a folder on this computer, or one on a connected machine. */
-function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
+export function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const item =
