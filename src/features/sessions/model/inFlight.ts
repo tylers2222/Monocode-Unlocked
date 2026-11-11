@@ -79,6 +79,7 @@ export function markTurnInterrupted(session: Session): Session {
   if (lastBlockIsInterrupt(sealed)) return sealed;
   const requeued = requeueUnansweredNotice(sealed);
   if (requeued) return requeued;
+  if (noticeAlreadyRequeued(session)) return sealed;
   return {
     ...sealed,
     blocks: [
@@ -132,10 +133,27 @@ function requeueUnansweredNotice(session: Session): Session | undefined {
   };
   return {
     ...session,
-    blocks: blocks.slice(0, index),
+    // Only the opener leaves: a system note after it (a provider error, say)
+    // stays where it was.
+    blocks: [...blocks.slice(0, index), ...blocks.slice(index + 1)],
     queuedMessages: [notice, ...queued],
     queueStatus: "paused",
   };
+}
+
+/**
+ * The second pass over a requeued notice. A graceful quit marks the session
+ * when it saves it, and the relaunch marks the saved record again. That
+ * record is idle, needs no input, and holds the notice at its queue head
+ * instead of as an opener. No turn ran, so it gets no interrupt note and no
+ * Continue: the queue sends the notice.
+ */
+function noticeAlreadyRequeued(session: Session): boolean {
+  return (
+    !session.busy &&
+    !sessionNeedsInput(session) &&
+    !!session.queuedMessages?.[0]?.monoSessionCompletion
+  );
 }
 
 export function workspaceFromResumed(

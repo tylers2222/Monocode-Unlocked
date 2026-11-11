@@ -222,6 +222,87 @@ describe("markTurnInterrupted", () => {
     expect(canAutoContinue(answered)).toBe(true);
   });
 
+  // r1 M1: a graceful quit marks the session when it saves it, and the
+  // relaunch marks the saved record again.
+  it("requeues the notice once when the quit save and the relaunch both mark it", () => {
+    const twice = markTurnInterrupted(markTurnInterrupted(mono({})));
+    expect(twice.blocks.map((block) => block.id)).toEqual(["u0", "a0"]);
+    expect(twice.queuedMessages?.map((message) => message.id)).toEqual([
+      "mono-completion-r1",
+    ]);
+    expect(
+      twice.blocks.some((block) => block.text === INTERRUPT_MESSAGE),
+    ).toBe(false);
+    expect(canAutoContinue(twice)).toBe(false);
+  });
+
+  it("keeps a system note that follows the notice's opener", () => {
+    const error = {
+      id: "e1",
+      role: "system" as const,
+      text: "provider failed",
+      notice: "error" as const,
+    };
+    const restored = markTurnInterrupted(mono({ blocks: [notice, error] }));
+    expect(restored.blocks.map((block) => block.id)).toEqual([
+      "u0",
+      "a0",
+      "e1",
+    ]);
+    expect(restored.queuedMessages?.[0]?.id).toBe("mono-completion-r1");
+  });
+
+  it("marks the turn interrupted when the notice opener has no request id", () => {
+    const { appRequestId: _, ...bare } = notice;
+    const restored = markTurnInterrupted(mono({ blocks: [bare] }));
+    expect(restored.queuedMessages).toBeUndefined();
+    expect(restored.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+  });
+
+  it("wakes an empty paused queue with the requeued notice", () => {
+    const restored = markTurnInterrupted(
+      mono({ queuedMessages: [], queueStatus: "paused" }),
+    );
+    expect(restored.queuedMessages).toEqual([
+      expect.objectContaining({ id: "mono-completion-r1", pausedBy: "quit" }),
+    ]);
+  });
+
+  it("marks a busy, asking or idle turn with a waiting notice interrupted", () => {
+    const waiting = {
+      id: "mono-completion-r3",
+      text: notice.text,
+      attachments: [],
+      monoSessionCompletion: notice.monoSessionCompletion,
+    };
+    const busy = markTurnInterrupted(
+      mono({
+        blocks: [{ id: "u1", role: "user", text: "go on" }],
+        queuedMessages: [waiting],
+      }),
+    );
+    expect(busy.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+    const asking = markTurnInterrupted(
+      mono({
+        busy: false,
+        blocks: [{ id: "u1", role: "user", text: "go on" }],
+        pendingQuestion: { requestId: 1, questions: [], autoResolveAt: 1000 },
+        queuedMessages: [waiting],
+      }),
+    );
+    expect(asking.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+    expect(asking.queuedMessages).toEqual([waiting]);
+    const typed = { id: "q1", text: "wait", attachments: [] };
+    const idle = markTurnInterrupted(
+      mono({
+        busy: false,
+        blocks: [{ id: "u1", role: "user", text: "go on" }],
+        queuedMessages: [typed],
+      }),
+    );
+    expect(idle.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+  });
+
   it("does not append the interrupt note twice for the same turn", () => {
     const once = markTurnInterrupted(chat("/tmp/a", { busy: true }));
     const twice = markTurnInterrupted(once);
