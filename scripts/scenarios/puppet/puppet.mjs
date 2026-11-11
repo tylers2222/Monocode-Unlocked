@@ -234,6 +234,24 @@ async function withModels(app, input) {
   );
 }
 
+/** Runs and logs one scripted call; a `$model` with no match fails that call. */
+async function runCall(app, server, call, input) {
+  const kind = call.action ? { action: call.action } : { tool: call.tool };
+  let resolved;
+  try {
+    resolved = await withModels(app, input);
+  } catch (error) {
+    const result = { ok: false, error: error.message };
+    log({ ...kind, input, result });
+    return result;
+  }
+  const result = call.action
+    ? await act(app, call.action, resolved, call.request_id)
+    : await server.call(call.tool, resolved);
+  log({ ...kind, input: resolved, result });
+  return result;
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
@@ -248,19 +266,7 @@ async function runTurn(text, steer) {
   runExecs(rule?.exec ?? []);
   let prev;
   for (const call of rule?.calls ?? []) {
-    const kind = call.action ? { action: call.action } : { tool: call.tool };
-    let input = fill(withCardIds(call.arguments), text, prev);
-    try {
-      input = await withModels(script.app, input);
-    } catch (error) {
-      prev = { ok: false, error: error.message };
-      log({ ...kind, input, result: prev });
-      continue;
-    }
-    prev = call.action
-      ? await act(script.app, call.action, input, call.request_id)
-      : await server.call(call.tool, input);
-    log({ ...kind, input, result: prev });
+    prev = await runCall(script.app, server, call, fill(withCardIds(call.arguments), text, prev));
   }
   server.close();
   return rule?.reply ?? "";
