@@ -155,17 +155,6 @@ describe("the Delete dialog's text", () => {
       confirm: "Delete",
     });
   });
-
-  it("never overclaims when the preview cannot be read", () => {
-    expect(projectDeleteText({ ...base, others: [], preview: null })).toEqual({
-      title: "Delete “vibtra” from Space 2?",
-      summary: "All conversations for this project in Space 2 will be deleted.",
-      keeps: [],
-      count: null,
-      location: "/somewhere/vibtra",
-      confirm: "Delete from Space 2",
-    });
-  });
 });
 
 describe("readProjectDeleteText", () => {
@@ -176,19 +165,17 @@ describe("readProjectDeleteText", () => {
     });
     const text = await readProjectDeleteText("vibtra", "/somewhere/vibtra");
     expect(previewProjectDelete).toHaveBeenCalledWith("/somewhere/vibtra");
-    expect(text.title).toBe("Delete “vibtra” from Space 2?");
-    expect(text.keeps).toEqual([
+    expect(text?.title).toBe("Delete “vibtra” from Space 2?");
+    expect(text?.keeps).toEqual([
       "Space 1 and space-9 keep their conversations, and the project's milestones, logo and settings stay.",
     ]);
   });
 
-  it("says only what is always true when the preview fails", async () => {
+  it("has no text when the preview fails, so the dialog offers no Delete (decision 7)", async () => {
     vi.mocked(previewProjectDelete).mockRejectedValue(new Error("no database"));
-    const text = await readProjectDeleteText("vibtra", "/somewhere/vibtra");
-    expect(text.summary).toBe(
-      "All conversations for this project in Space 2 will be deleted.",
-    );
-    expect(text.keeps).toEqual([]);
+    await expect(
+      readProjectDeleteText("vibtra", "/somewhere/vibtra"),
+    ).resolves.toBeNull();
   });
 
   it("reads the machine's name only for a remote project", async () => {
@@ -196,9 +183,9 @@ describe("readProjectDeleteText", () => {
     vi.mocked(remoteMachineName).mockClear();
     const local = await readProjectDeleteText("vibtra", "/somewhere/vibtra");
     expect(remoteMachineName).not.toHaveBeenCalled();
-    expect(local.summary).not.toContain("example-machine");
+    expect(local?.summary).not.toContain("example-machine");
     const remote = await readProjectDeleteText("vibtra", "remote://env/code/vibtra");
     expect(remoteMachineName).toHaveBeenCalledWith("remote://env/code/vibtra");
-    expect(remote.summary).toContain("nothing on example-machine changes");
+    expect(remote?.summary).toContain("nothing on example-machine changes");
   });
 });

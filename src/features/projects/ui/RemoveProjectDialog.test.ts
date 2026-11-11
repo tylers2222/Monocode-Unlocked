@@ -22,10 +22,30 @@ const T10: ProjectDeleteText = {
   confirm: "Delete from Space 2",
 };
 
+const T11: ProjectDeleteText = {
+  title: "Delete “vibtra”?",
+  summary:
+    "Space 2 is the last Space with this project. Space 2's conversations and the project's milestones, logo and settings will be deleted. It also leaves the sidebar. The folder on disk stays put.",
+  keeps: [],
+  count: null,
+  location: "~/code/vibtra",
+  confirm: "Delete",
+};
+
 let root: Root;
 const onCancel = vi.fn();
 const onConfirm = vi.fn();
 const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
+const buttons = () =>
+  [...dialog()!.querySelectorAll<HTMLButtonElement>("button")].map(
+    (button) => button.textContent,
+  );
+const press = (label: string) =>
+  act(async () =>
+    [...dialog()!.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === label)!
+      .click(),
+  );
 
 const show = (path = LOCAL, name = "vibtra") =>
   act(async () =>
@@ -52,11 +72,51 @@ afterEach(() => {
 });
 
 describe("the Delete dialog (frame 22)", () => {
-  it("opens only once it has read what the delete would do", async () => {
+  it("is visible at once, reading, with no Delete until it has read (decision 8)", async () => {
     vi.mocked(readProjectDeleteText).mockReturnValue(new Promise(() => {}));
     await show();
     expect(readProjectDeleteText).toHaveBeenCalledWith("vibtra", LOCAL);
-    expect(dialog()).toBeNull();
+    expect(dialog()!.textContent).toContain("Delete “vibtra”");
+    expect(dialog()!.textContent).toContain("Checking what this delete would do…");
+    expect(buttons()).toEqual(["Cancel"]);
+    expect(document.activeElement?.textContent).toBe("Cancel");
+  });
+
+  it("offers no Delete on a failed read, only Retry (decision 7)", async () => {
+    vi.mocked(readProjectDeleteText).mockResolvedValue(null);
+    await show();
+    expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe(
+      "Could not read what this delete would do. Nothing was deleted.",
+    );
+    expect(buttons()).toEqual(["Cancel", "Retry"]);
+    expect(dialog()!.textContent).not.toContain("will be deleted");
+  });
+
+  it("reads again on Retry, and then shows the last-Space text and its Delete", async () => {
+    vi.mocked(readProjectDeleteText).mockResolvedValueOnce(null);
+    await show();
+    let answer: (text: ProjectDeleteText) => void = () => {};
+    vi.mocked(readProjectDeleteText).mockReturnValueOnce(
+      new Promise((done) => (answer = done)),
+    );
+    await press("Retry");
+    expect(readProjectDeleteText).toHaveBeenCalledTimes(2);
+    expect(buttons()).toEqual(["Cancel"]);
+    await act(async () => answer(T11));
+    expect(dialog()!.textContent).toContain(
+      "the project's milestones, logo and settings will be deleted",
+    );
+    expect(buttons()).toEqual(["Cancel", "Delete"]);
+    await press("Delete");
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels while it reads", async () => {
+    vi.mocked(readProjectDeleteText).mockReturnValue(new Promise(() => {}));
+    await show();
+    await press("Cancel");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it("shows the title, what goes, what stays, the count and where it is", async () => {
@@ -92,14 +152,26 @@ describe("the Delete dialog (frame 22)", () => {
 
   it("reads again for another project, and drops the old answer", async () => {
     let answerOld: (text: ProjectDeleteText) => void = () => {};
-    vi.mocked(readProjectDeleteText).mockReturnValueOnce(
-      new Promise((done) => (answerOld = done)),
-    );
+    let answerNew: (text: ProjectDeleteText) => void = () => {};
+    vi.mocked(readProjectDeleteText)
+      .mockReturnValueOnce(new Promise((done) => (answerOld = done)))
+      .mockReturnValueOnce(new Promise((done) => (answerNew = done)));
     await show("/code/old", "old");
     await show();
-    await act(async () => answerOld({ ...T10, title: "Stale" }));
     expect(readProjectDeleteText).toHaveBeenLastCalledWith("vibtra", LOCAL);
-    expect(dialog()!.textContent).toContain(T10.title);
+    await act(async () => answerOld({ ...T10, title: "Stale" }));
     expect(dialog()!.textContent).not.toContain("Stale");
+    expect(buttons()).toEqual(["Cancel"]);
+    await act(async () => answerNew(T10));
+    expect(dialog()!.textContent).toContain(T10.title);
+    expect(buttons()).toEqual(["Cancel", T10.confirm]);
+  });
+
+  it("shows a project it moved to as reading, never with the last one's Delete", async () => {
+    await show("/code/old", "old");
+    expect(buttons()).toEqual(["Cancel", T10.confirm]);
+    vi.mocked(readProjectDeleteText).mockReturnValueOnce(new Promise(() => {}));
+    await show();
+    expect(buttons()).toEqual(["Cancel"]);
   });
 });

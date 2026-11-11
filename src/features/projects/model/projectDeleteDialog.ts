@@ -38,15 +38,12 @@ function othersKeep(others: readonly string[]): string {
   return `${joined(others)} ${others.length > 1 ? "keep" : "keeps"}`;
 }
 
-/**
- * T10, T11 and T16. A `preview` of null means it could not be read: the dialog
- * then says only what is true in every case, and the backend still decides.
- */
+/** T10, T11 and T16, from what the backend said the delete would do. */
 export function projectDeleteText(input: {
   name: string;
   path: string;
   space: string;
-  preview: ProjectDeletePreview | null;
+  preview: ProjectDeletePreview;
   /** Other Spaces' names, for `preview.otherSpaces`. */
   others: readonly string[];
   /** Set on a remote project. */
@@ -56,21 +53,11 @@ export function projectDeleteText(input: {
   const location = machine
     ? `${prettyCwd(parseRemotePath(path)?.hostPath ?? path)} on ${machine}`
     : prettyCwd(path);
-  const last = preview?.lastSpace === true;
+  const last = preview.lastSpace === true;
   const title = last
     ? `Delete “${name}”?`
     : `Delete “${name}” from ${space}?`;
   const confirm = last ? "Delete" : `Delete from ${space}`;
-  if (!preview) {
-    return {
-      title,
-      summary: `All conversations for this project in ${space} will be deleted.`,
-      keeps: [],
-      count: null,
-      location,
-      confirm,
-    };
-  }
   if (machine) {
     return {
       title,
@@ -108,17 +95,21 @@ export function projectDeleteText(input: {
   };
 }
 
-/** Reads the facts behind the dialog. A failed read leaves `preview` null. */
+/**
+ * Reads the facts behind the dialog. Null when the preview cannot be read:
+ * the dialog then offers no Delete (decision 7), since it cannot say what goes.
+ */
 export async function readProjectDeleteText(
   name: string,
   path: string,
-): Promise<ProjectDeleteText> {
+): Promise<ProjectDeleteText | null> {
   const [preview, machine] = await Promise.all([
     previewProjectDelete(path).catch(() => null),
     isRemoteProjectPath(path) ? remoteMachineName(path) : undefined,
   ]);
+  if (!preview) return null;
   const { spaces } = spacesView();
-  const others = (preview?.otherSpaces ?? []).map(
+  const others = preview.otherSpaces.map(
     (id) => spaces.find((space) => space.id === id)?.name ?? id,
   );
   return projectDeleteText({
