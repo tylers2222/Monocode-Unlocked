@@ -58,6 +58,16 @@ pub(crate) fn in_workspace(key: &str, roots: &[String]) -> InWorkspace {
     InWorkspace::Outside
 }
 
+/// The three text columns of each row `sql` selects.
+pub(super) fn three_texts(
+    conn: &Connection,
+    sql: &str,
+) -> rusqlite::Result<Vec<(String, String, String)>> {
+    conn.prepare(sql)?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect()
+}
+
 /// A project a Mono lists, under the project's key.
 pub(super) struct Holder {
     pub(super) space: String,
@@ -68,22 +78,14 @@ pub(super) struct Holder {
 /// Every Mono's projects, in roster order. A listed path that is no project
 /// key is in no Space.
 pub(super) fn holders(conn: &Connection) -> rusqlite::Result<Vec<Holder>> {
-    let listed = conn
-        .prepare(
-            "SELECT m.space_id, m.name, j.value
+    let listed = three_texts(
+        conn,
+        "SELECT m.space_id, m.name, j.value
                FROM monos m,
                     json_each(CASE WHEN json_valid(m.data_json) THEN m.data_json END, '$.projects') j
               WHERE j.type = 'text'
               ORDER BY m.sort_order, m.created_at, m.id",
-        )?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    )?;
     Ok(listed
         .into_iter()
         .filter_map(|(space, mono, path)| {
