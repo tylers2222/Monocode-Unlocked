@@ -23,6 +23,12 @@ let root: Root;
 
 const onRemoveProject = vi.fn();
 
+// A row only in this Space: Archive and Delete, with no Remove (frame 20).
+vi.mock("../../features/projects/model/projectRowActions", async (original) => ({
+  ...(await original<object>()),
+  readProjectRowFacts: vi.fn(async () => ({ offersRemove: false })),
+}));
+
 vi.mock("../../features/projects/model/projectDeleteCheck", async (original) => ({
   ...(await original<object>()),
   checkProjectArchive: vi.fn(async () => null),

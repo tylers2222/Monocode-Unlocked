@@ -6,7 +6,17 @@ import {
   checkProjectArchive,
   checkProjectDelete,
 } from "../../features/projects/model/projectDeleteCheck";
+import {
+  readProjectRowFacts,
+  type ProjectRowFacts,
+} from "../../features/projects/model/projectRowActions";
+import { REMOVE_FROM_SPACE } from "../../features/projects/ui/projectRemovalItems";
 import { useProjectRemoval } from "./useProjectRemoval";
+
+vi.mock("../../features/projects/model/projectRowActions", () => ({
+  activeSpaceName: () => "Space 2",
+  readProjectRowFacts: vi.fn(),
+}));
 
 vi.mock("../../features/projects/model/projectDeleteCheck", () => ({
   checkProjectArchive: vi.fn(),
@@ -23,6 +33,7 @@ const TARGET = { x: 4, y: 8, path: P, projectKey: P, name: "vibtra" };
 
 let root: Root;
 let removal: ReturnType<typeof useProjectRemoval>;
+let menuPath: string | undefined;
 const spies = {
   closeMenu: vi.fn(),
   reopenMenu: vi.fn(),
@@ -32,7 +43,7 @@ const spies = {
 };
 
 function Harness() {
-  removal = useProjectRemoval(spies);
+  removal = useProjectRemoval({ ...spies, menuPath });
   return removal.dialog;
 }
 
@@ -47,6 +58,8 @@ const press = (label: string) =>
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   for (const spy of Object.values(spies)) spy.mockReset();
+  menuPath = undefined;
+  vi.mocked(readProjectRowFacts).mockReset();
   vi.mocked(checkProjectArchive).mockResolvedValue(null);
   vi.mocked(checkProjectDelete).mockResolvedValue(null);
   const host = document.createElement("div");
@@ -249,5 +262,100 @@ describe("Delete", () => {
     await act(async () => removal.dismiss());
     expect(dialog()).toBeNull();
     expect(removal.isRemoving).toBe(false);
+  });
+});
+
+describe("Remove from this Space (T5, T6)", () => {
+  const remove = () => act(async () => removal.leaveSpace(P));
+
+  it("asks the window to leave the Space, then closes the menu and gives focus back", async () => {
+    spies.onRemoveProject.mockResolvedValue(null);
+    await remove();
+    expect(spies.onRemoveProject).toHaveBeenCalledWith(P, {
+      purgeData: false,
+      leaveSpace: true,
+    });
+    expect(spies.closeMenu).toHaveBeenCalledWith(P);
+    expect(spies.restoreFocus).toHaveBeenCalled();
+    expect(spies.showRefusal).not.toHaveBeenCalled();
+  });
+
+  it("closes the menu when the handler answers nothing", async () => {
+    await remove();
+    expect(spies.closeMenu).toHaveBeenCalledWith(P);
+  });
+
+  it("keeps the menu open with the refusal in its footer", async () => {
+    spies.onRemoveProject.mockResolvedValue("Stop it first.");
+    await remove();
+    expect(spies.showRefusal).toHaveBeenCalledWith(P, "Stop it first.");
+    expect(spies.closeMenu).not.toHaveBeenCalled();
+    expect(spies.restoreFocus).not.toHaveBeenCalled();
+  });
+
+  it("shows the message when the handler rejects", async () => {
+    spies.onRemoveProject.mockRejectedValue({ code: "failed", message: "database is locked" });
+    await remove();
+    expect(spies.showRefusal).toHaveBeenCalledWith(P, "database is locked");
+    expect(spies.closeMenu).not.toHaveBeenCalled();
+  });
+
+  it("drops the answer for a menu that closed while it ran", async () => {
+    let answer: (refusal: string | null) => void = () => {};
+    spies.onRemoveProject.mockReturnValue(
+      new Promise<string | null>((done) => (answer = done)),
+    );
+    await remove();
+    removal.cancelCheck();
+    await act(async () => answer("Stop it first."));
+    expect(spies.showRefusal).not.toHaveBeenCalled();
+    expect(spies.closeMenu).not.toHaveBeenCalled();
+  });
+});
+
+describe("the menu's rows (frame 20)", () => {
+  const ids = (path: string) => removal.menuItems(path).map((item) => item.id);
+  const facts = (offersRemove: boolean): Promise<ProjectRowFacts> =>
+    Promise.resolve({ offersRemove });
+
+  it("offers Remove once the open menu's row reads as shared", async () => {
+    vi.mocked(readProjectRowFacts).mockReturnValue(facts(true));
+    menuPath = P;
+    await act(async () => root.render(createElement(Harness)));
+    expect(readProjectRowFacts).toHaveBeenCalledWith(P);
+    expect(ids(P)).toEqual([REMOVE_FROM_SPACE, "archive", "delete"]);
+  });
+
+  it("has today's two before any read, and for a row only in this Space", async () => {
+    expect(ids(P)).toEqual(["archive", "delete"]);
+    vi.mocked(readProjectRowFacts).mockReturnValue(facts(false));
+    menuPath = P;
+    await act(async () => root.render(createElement(Harness)));
+    expect(ids(P)).toEqual(["archive", "delete"]);
+  });
+
+  it("never uses the last menu's answer for another row", async () => {
+    vi.mocked(readProjectRowFacts).mockReturnValueOnce(facts(true));
+    menuPath = P;
+    await act(async () => root.render(createElement(Harness)));
+    vi.mocked(readProjectRowFacts).mockReturnValueOnce(new Promise(() => {}));
+    menuPath = "/code/other";
+    await act(async () => root.render(createElement(Harness)));
+    expect(ids("/code/other")).toEqual(["archive", "delete"]);
+  });
+
+  it("drops an answer that comes after the menu moved on", async () => {
+    let answer: (read: ProjectRowFacts) => void = () => {};
+    vi.mocked(readProjectRowFacts).mockReturnValueOnce(
+      new Promise((done) => (answer = done)),
+    );
+    menuPath = P;
+    await act(async () => root.render(createElement(Harness)));
+    vi.mocked(readProjectRowFacts).mockReturnValueOnce(facts(false));
+    menuPath = "/code/other";
+    await act(async () => root.render(createElement(Harness)));
+    await act(async () => answer({ offersRemove: true }));
+    expect(ids("/code/other")).toEqual(["archive", "delete"]);
+    expect(ids(P)).toEqual(["archive", "delete"]);
   });
 });
