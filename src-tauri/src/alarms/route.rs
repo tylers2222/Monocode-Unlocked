@@ -342,6 +342,13 @@ pub(crate) fn stall(
     } else {
         None
     };
+    let idle = matches!(episode.cause.as_str(), "wake_missed" | "idle_open_work");
+    let turning = match session_of(conn, &episode.actor)? {
+        Some(session) if idle => {
+            super::wake_retry::turned_since(conn, &session, episode.stalled_since_active)?
+        }
+        _ => false,
+    };
     Ok(Stall {
         episode: episode.id.clone(),
         cause: episode.cause.clone(),
@@ -357,6 +364,7 @@ pub(crate) fn stall(
         stuck: stuck::read(conn, episode, active),
         escalate_minutes: settings.escalate_minutes,
         held: 0,
+        turning,
     })
 }
 

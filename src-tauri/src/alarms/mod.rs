@@ -20,6 +20,7 @@ pub(crate) mod taps;
 mod text;
 mod tree;
 mod unseen;
+pub(crate) mod wake_retry;
 
 use rusqlite::Connection;
 use tauri::{Manager, Runtime};

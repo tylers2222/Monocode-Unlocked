@@ -14,10 +14,21 @@ use super::state::{
 };
 use super::tree::{self, Edge, Edges};
 use super::unseen;
+use super::wake_retry;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
 
 pub(super) const MINUTE_MS: i64 = 60_000;
+
+/// SQL on session `s`: its queue waits by the user's choice. A queue the window
+/// paused because a turn failed or an item could not be sent, or because the
+/// worktree went, waits on nobody's choice, and with no alarm it would wait for
+/// ever (ADE-276).
+pub(super) const PAUSED_ON_PURPOSE: &str = "s.queue_status IS 'paused'
+    AND s.queue_pause IS NOT 'error' AND s.worktree_removed IS NOT 1
+    AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(s.queued_messages_json)
+                      THEN s.queued_messages_json ELSE '[]' END) q
+                     WHERE json_type(q.value, '$.error') = 'text')";
 
 /// The per-agent stall threshold's bounds (section 9).
 pub(crate) const STALL_MINUTES: std::ops::RangeInclusive<i64> = 5..=240;
@@ -73,7 +84,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            actor         TEXT PRIMARY KEY,
            stall_minutes INTEGER NOT NULL CHECK (stall_minutes BETWEEN 5 AND 240)
          );",
-    )
+    )?;
+    wake_retry::ensure_table(conn)
 }
 
 /// The indexes the pass's queries on other modules' tables use, so a pass
@@ -204,8 +216,8 @@ struct Rows {
     asks: Vec<(String, String, String)>,
     /// Whom each agent started or asked.
     edges: Edges,
-    /// The watched sessions whose queue the user paused: nothing waits for
-    /// their provider (review F1).
+    /// The watched sessions paused on purpose (`PAUSED_ON_PURPOSE`): nothing
+    /// waits for their provider (review F1).
     paused: HashSet<String>,
     /// The sessions a message waits for that no provider took.
     untaken: HashSet<String>,
@@ -340,8 +352,10 @@ impl Rows {
         let edges = edges(conn, &asks)?;
         let paused = strings(
             conn,
-            "SELECT s.id FROM agent_activity a JOIN sessions s ON s.id = a.session_id
-              WHERE s.queue_status = 'paused'",
+            &format!(
+                "SELECT s.id FROM agent_activity a JOIN sessions s ON s.id = a.session_id
+                  WHERE {PAUSED_ON_PURPOSE}"
+            ),
             [],
         )?
         .into_iter()
@@ -477,6 +491,7 @@ pub(crate) fn outbox_key(episode: &str, level: i64) -> String {
 struct Pass<'a> {
     tx: &'a Connection,
     rows: &'a Rows,
+    live: &'a Live,
     counted: HashSet<(String, String)>,
     settings: Settings,
     active: i64,
@@ -553,9 +568,6 @@ impl Pass<'_> {
     /// A notice or queue item an earlier episode listed counts no more.
     fn wakes(&self, actor: &Actor, session: &SessionId, gone: bool) -> Vec<Wake> {
         let rows = self.rows;
-        if rows.paused.contains(session.as_str()) {
-            return Vec::new();
-        }
         let own = Actor::Session(session.clone()).to_string();
         let actor_text = actor.to_string();
         let message = rows
@@ -575,6 +587,11 @@ impl Pass<'_> {
             .flatten()
             .filter(fresh)
             .map(|id| Wake::Notice { id: id.clone() });
+        // A user Stop holds the agent's queue, not a result owed to it
+        // (ADE-271): only the result still wakes a queue paused on purpose.
+        if rows.paused.contains(session.as_str()) {
+            return notices.collect();
+        }
         let queued = rows
             .queued
             .get(session.as_str())
@@ -652,12 +669,35 @@ impl Pass<'_> {
         let actor_text = actor.to_string();
         let episode = self.rows.episodes.get(&actor_text);
         if facts.gone && episode.is_none() {
+            wake_retry::items_since(tx, actor, (&[], &[]), self.active);
             return activity::forget(tx, &row.session);
         }
         if facts.wake_pending_since != row.wake_pending_since {
             activity::set_wake_pending(tx, &row.session, facts.wake_pending_since)?;
         }
+        let wakes = self.wakes(actor, &row.session, facts.gone);
+        // An agent that waits on a running child or a background task is not
+        // stuck, however long its open work stays open: its open work is
+        // first seen again when the wait ends.
+        let waits = state::status(facts, self.active, limits) == state::Status::Waiting;
+        let open = if waits {
+            Vec::new()
+        } else {
+            state::open_work(facts)
+        };
+        let waiting = wake_retry::items_since(tx, actor, (&wakes, &open), self.active);
+        let quick = if waits {
+            None
+        } else {
+            wake_retry::items_past_ceiling(waiting, facts.turn, self.active)
+        };
         match (state::next_state(facts, self.active, limits), episode) {
+            // Turns under the wake threshold apart never make a stall due, so
+            // an item they leave waiting opens at the ceiling (ADE-276).
+            (Transition::Stay, None) => match quick {
+                Some(since) => self.open(actor, facts, row, &wakes, (Cause::IdleOpenWork, since)),
+                None => Ok(()),
+            },
             (Transition::Stay, _) | (Transition::Close(_), None) => Ok(()),
             (
                 Transition::Open {
@@ -666,8 +706,39 @@ impl Pass<'_> {
                 },
                 _,
             ) => {
-                let wakes = self.wakes(actor, &row.session, facts.gone);
-                self.open(actor, facts, row, &wakes, (cause, stalled_since))
+                let now = (self.active, self.wall);
+                let stall = (cause, stalled_since);
+                let seen = facts.wake_pending_since.unwrap_or(stalled_since);
+                let ceiling =
+                    wake_retry::past_ceiling(tx, actor, stall, (seen, waiting, self.active));
+                // Under the ceiling, neither writes an episode: the next pass
+                // judges the agent again, so a stall that lasts still opens.
+                if ceiling.is_none()
+                    && (wake_retry::moved_on(tx, self.live, &row.session, stall, now)
+                        || (cause == Cause::WakeMissed
+                            && wake_retry::held(
+                                tx,
+                                &mut self.notices,
+                                (actor, &row.session),
+                                (stalled_since, seen),
+                                (self.active, limits.wake_ms),
+                            )))
+                {
+                    return Ok(());
+                }
+                let since = ceiling.unwrap_or(stalled_since);
+                self.open(actor, facts, row, &wakes, (cause, since))
+            }
+            // The ceiling's alarm stays open while its wake still waits.
+            (Transition::Close(CloseReason::Progress), Some((id, episode)))
+                if wake_retry::still_stuck(
+                    tx,
+                    (id.as_str(), actor, &row.session),
+                    episode,
+                    facts,
+                ) =>
+            {
+                Ok(())
             }
             (Transition::Close(reason), Some((id, _))) => self.close(id, reason),
         }
@@ -698,6 +769,18 @@ pub(crate) fn run(
         sources.live.put_back(taken);
     }
     passed
+}
+
+/// A pass that took the hub just before a record landed: the record waits in
+/// the hub while the pass runs. Only a thread race reaches this in the app.
+#[cfg(test)]
+pub(crate) fn pass_before_record(
+    conn: &Connection,
+    active_ms: i64,
+    wall_ms: i64,
+    sources: &Sources,
+) -> rusqlite::Result<Notices> {
+    pass(conn, active_ms, wall_ms, &Taken::default(), sources)
 }
 
 fn pass(
@@ -746,6 +829,7 @@ fn pass(
     let mut pass = Pass {
         tx: &tx,
         rows: &rows,
+        live: sources.live,
         counted: counted(&tx, &waiting_on)?,
         settings: Settings::load(&tx)?,
         active: active_ms,

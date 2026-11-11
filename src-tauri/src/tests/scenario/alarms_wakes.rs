@@ -201,7 +201,7 @@ fn a_mono_monitoring_a_running_session_misses_no_wake() {
     turn(&mut world, &lead, "lead-turn", true);
     hold(&world, &[watching(&mono, "req-1", &lead)]);
     ran_a_turn(&mut world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "first hand-off");
 
     hold(
@@ -212,7 +212,7 @@ fn a_mono_monitoring_a_running_session_misses_no_wake() {
         ],
     );
     ran_a_turn(&mut world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "second hand-off");
 }
 
@@ -247,7 +247,8 @@ fn a_finished_result_no_turn_took_is_wake_missed() {
         world.advance(2 * MINUTE - PASS);
         assert_eq!(episodes(&world), Vec::new(), "{stage}: under two minutes");
 
-        world.advance(3 * PASS);
+        // Past the threshold and the wait of its one retry (ADE-276).
+        world.advance(2 * MINUTE + 3 * PASS);
         let [episode] = <[_; 1]>::try_from(episodes(&world)).unwrap();
         assert_eq!(
             (
@@ -260,6 +261,32 @@ fn a_finished_result_no_turn_took_is_wake_missed() {
         );
         assert_eq!(listed_notices(&world), [listed], "{stage}");
     }
+}
+
+// Defect (review r1b M2): the user stopped the Mono's queue, and the paused
+// rule hid the result a finished session owes it with the rest of the queue,
+// so no turn and no alarm ever takes it (ADE-271).
+#[test]
+fn a_result_owed_to_a_mono_the_user_stopped_still_alarms() {
+    let mut world = World::new("alarm-finished-user-stop");
+    world.add_mono_in("als-general", MonoRole::Giga, &[P]);
+    let mono = world.add_mono_in("als-mono", MonoRole::Mono, &[P]);
+    let lead = start_lead(&world, &mono, "als-lead");
+    align(&mut world);
+    turn(&mut world, &lead, "lead-turn", true);
+    hold(&world, &[watching(&mono, "req-1", &lead)]);
+    ran_a_turn(&mut world, &mono.chat);
+    save_queue(&world, &mono.chat, json!([{"id": "left-1"}]), "paused");
+
+    turn(&mut world, &lead, "lead-turn", false);
+    hold(&world, &[finished(&mono, "req-1", &lead)]);
+    world.advance(4 * MINUTE + 3 * PASS);
+    let [episode] = <[_; 1]>::try_from(episodes(&world)).unwrap();
+    assert_eq!(
+        (episode.actor.as_str(), episode.cause.as_str()),
+        ("mono:als-mono", "wake_missed")
+    );
+    assert_eq!(listed_notices(&world), ["req-1"], "the result only");
 }
 
 /// Mono `alb-mono` handed work to `alb-lead`, whose turn runs, and ended its
@@ -276,11 +303,11 @@ fn monitoring_a_running_session(name: &str) -> (World, Mono, SessionId) {
     (world, mono, lead)
 }
 
-/// The Mono's own wake_missed opens two minutes after the first pass that saw
-/// the stop, not before, and lists the request.
-fn alarms_two_minutes_after_the_stop(world: &mut World, stage: &str) {
-    world.advance(2 * MINUTE - PASS);
-    assert_eq!(episodes(world), Vec::new(), "{stage}: under two minutes");
+/// The Mono's own wake_missed opens four minutes (the threshold and its retry)
+/// after the first pass that saw the stop, not before, and lists the request.
+fn alarms_after_the_stop_and_its_retry(world: &mut World, stage: &str) {
+    world.advance(4 * MINUTE - PASS);
+    assert_eq!(episodes(world), Vec::new(), "{stage}: under four minutes");
     world.advance(3 * PASS);
     let [episode] = <[_; 1]>::try_from(episodes(world)).unwrap();
     assert_eq!(
@@ -299,7 +326,7 @@ fn alarms_two_minutes_after_the_stop(world: &mut World, stage: &str) {
 /// opens another.
 fn does_not_alarm_again(world: &mut World, mono: &Mono, stage: &str) {
     ran_a_turn(world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     let causes: Vec<String> = episodes(world)
         .into_iter()
         .map(|episode| episode.cause)
@@ -343,7 +370,7 @@ fn a_session_that_stops_after_its_watcher_closed_alarms_once() {
         .unwrap();
 
     turn(&mut world, &lead, "lead-turn", false);
-    alarms_two_minutes_after_the_stop(&mut world, "closed window");
+    alarms_after_the_stop_and_its_retry(&mut world, "closed window");
     does_not_alarm_again(&mut world, &mono, "closed window");
 }
 
@@ -372,7 +399,7 @@ fn relaunched(world: &mut World) {
 fn a_refused_continue_alarms_once() {
     let (mut world, mono, _lead) = monitoring_a_running_session("alarm-refused-continue");
     relaunched(&mut world);
-    alarms_two_minutes_after_the_stop(&mut world, "refused Continue");
+    alarms_after_the_stop_and_its_retry(&mut world, "refused Continue");
     does_not_alarm_again(&mut world, &mono, "refused Continue");
 }
 
@@ -391,7 +418,7 @@ fn a_continue_that_opens_its_turn_does_not_alarm() {
     turn(&mut world, &lead, "continue-turn", false);
     world.advance(2 * PASS);
     window_delivers(&mut world, NEXT_RUN, &mono, &lead);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "the window delivered");
 }
 
@@ -402,7 +429,7 @@ fn a_continue_that_opens_its_turn_does_not_alarm() {
 fn a_stop_its_live_watcher_delivers_does_not_alarm() {
     for (stage, wait) in [
         ("the next pass", PASS),
-        ("just under two minutes", 2 * MINUTE - 2 * PASS),
+        ("just under four minutes", 4 * MINUTE - 2 * PASS),
     ] {
         let name = format!("alarm-live-watcher-{}", wait / PASS);
         let (mut world, mono, lead) = monitoring_a_running_session(&name);
@@ -410,7 +437,7 @@ fn a_stop_its_live_watcher_delivers_does_not_alarm() {
         world.advance(wait);
         assert_eq!(episodes(&world), Vec::new(), "{stage}: bare");
         window_delivers(&mut world, WINDOW, &mono, &lead);
-        world.advance(2 * MINUTE + 2 * PASS);
+        world.advance(4 * MINUTE + 2 * PASS);
         assert_eq!(episodes(&world), Vec::new(), "{stage}: delivered");
     }
 }
@@ -429,18 +456,18 @@ fn a_request_no_turn_took_yet_is_not_a_stop() {
     let _child = claude_tap(&world, &lead);
     hold(&world, &[watching(&mono, "req-1", &lead)]);
     ran_a_turn(&mut world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "no turn yet");
 
     ran_a_turn(&mut world, &lead);
     let own = json!({"id": "q-1", "text": "..", "appRequestId": "req-1"});
     save_queue(&world, &lead, json!([own]), "paused");
-    world.advance(2 * MINUTE + 2 * PASS);
+    world.advance(4 * MINUTE + 2 * PASS);
     assert_eq!(episodes(&world), Vec::new(), "queued");
 
     let other = json!({"id": "q-2", "text": "..", "appRequestId": "req-9"});
     save_queue(&world, &lead, json!([other]), "paused");
-    alarms_two_minutes_after_the_stop(&mut world, "another item queued");
+    alarms_after_the_stop_and_its_retry(&mut world, "another item queued");
 }
 
 // Defect: a queue that does not parse fails the whole pass, so no agent alarms.
@@ -456,7 +483,7 @@ fn a_queue_that_does_not_parse_hides_no_stop() {
         )
         .unwrap();
     turn(&mut world, &lead, "lead-turn", false);
-    alarms_two_minutes_after_the_stop(&mut world, "bad queue");
+    alarms_after_the_stop_and_its_retry(&mut world, "bad queue");
 }
 
 /// A closed episode as a build before #559 wrote it: every bare row counted, so
@@ -476,6 +503,15 @@ fn counted_before_this_build(world: &World, request: &str) {
         .unwrap();
 }
 
+/// The Mono's own episodes. The waits here take the lead's open ask past N, and
+/// that lead's correct `idle_open_work` alarm is not what these scenarios count.
+fn monos_episodes(world: &World) -> Vec<super::alarms_stall::Episode> {
+    episodes(world)
+        .into_iter()
+        .filter(|episode| episode.actor == "mono:alb-mono")
+        .collect()
+}
+
 fn listed_sorted(world: &World) -> Vec<String> {
     let mut listed = listed_notices(world);
     listed.sort();
@@ -491,8 +527,12 @@ fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() 
     let (mut world, mono, lead) = monitoring_a_running_session("alarm-counted-before");
     counted_before_this_build(&world, "req-1");
     turn(&mut world, &lead, "lead-turn", false);
-    world.advance(2 * MINUTE + 2 * PASS);
-    assert_eq!(episodes(&world).len(), 1, "the counted row stays silent");
+    world.advance(4 * MINUTE + 2 * PASS);
+    assert_eq!(
+        monos_episodes(&world).len(),
+        1,
+        "the counted row stays silent"
+    );
 
     let new_session = start_lead(&world, &mono, "alb-new");
     let still_running = start_lead(&world, &mono, "alb-running");
@@ -507,8 +547,8 @@ fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() 
     ran_a_turn(&mut world, &mono.chat);
     world.advance(2 * PASS);
     turn(&mut world, &new_session, "new-turn", false);
-    world.advance(2 * MINUTE + 2 * PASS);
-    let all = episodes(&world);
+    world.advance(4 * MINUTE + 2 * PASS);
+    let all = monos_episodes(&world);
     assert_eq!(all.len(), 2, "the new request alarms");
     assert!(all[1].open && all[1].cause == "wake_missed", "{all:?}");
     assert_eq!(
@@ -518,12 +558,20 @@ fn a_row_counted_before_this_build_stays_silent_and_a_new_request_alarms_once() 
     );
 
     ran_a_turn(&mut world, &mono.chat);
-    world.advance(2 * MINUTE + 2 * PASS);
-    assert_eq!(episodes(&world).len(), 2, "the new request alarms once");
+    world.advance(4 * MINUTE + 2 * PASS);
+    assert_eq!(
+        monos_episodes(&world).len(),
+        2,
+        "the new request alarms once"
+    );
 
     turn(&mut world, &still_running, "running-turn", false);
-    world.advance(2 * MINUTE + 2 * PASS);
-    assert_eq!(episodes(&world).len(), 3, "the running row was not counted");
+    world.advance(4 * MINUTE + 2 * PASS);
+    assert_eq!(
+        monos_episodes(&world).len(),
+        3,
+        "the running row was not counted"
+    );
     assert_eq!(
         listed_sorted(&world),
         ["req-1", "req-2", "req-3"],

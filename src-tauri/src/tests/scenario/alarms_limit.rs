@@ -11,6 +11,7 @@ use super::agents::{mono_caller, session_caller, Mono};
 use super::alarms_stall::{
     align, claude_tap, ran_a_turn, save_queue, turn, MINUTE, P, PASS, PERMISSION,
 };
+use super::asks::written;
 use super::world::World;
 use crate::alarms::act::{self, Outcome};
 use crate::alarms::taps::Pipe;
@@ -23,7 +24,7 @@ const WINDOW: i64 = 15 * MINUTE;
 const ESCALATE: i64 = 15 * MINUTE;
 const HOUR: i64 = 60 * MINUTE;
 /// A queued item waits two minutes from the pass that first sees it.
-const WAKE_STALL: i64 = 2 * MINUTE + 2 * PASS;
+const WAKE_STALL: i64 = 4 * MINUTE + 2 * PASS;
 
 /// A Giga, its Mono, the Mono's lead and two workers of the lead, each with
 /// the longest deadline on its ask.
@@ -59,6 +60,25 @@ fn chain(world: &World, name: &str) -> Chain {
         worker,
         other,
     }
+}
+
+/// `chain`'s worker acks the ask its lead started it with.
+fn acks_its_ask(world: &World, chain: &Chain) {
+    let ask: String = world
+        .conn()
+        .query_row(
+            "SELECT id FROM mono_asks WHERE child_actor = ?1 AND state = 'open'",
+            [actor(&chain.worker)],
+            |row| row.get(0),
+        )
+        .unwrap();
+    written(world.tool(
+        &session_caller(&chain.worker, P),
+        "worker-ack",
+        "ack",
+        json!({"ask_id": ask, "message": "Done"}),
+        &[&chain.lead, &chain.worker],
+    ));
 }
 
 fn actor(session: &SessionId) -> String {
@@ -167,6 +187,10 @@ fn repeats_with_the_same_cause_send_once_and_the_next_alarm_carries_the_count() 
     let (who, worker) = (actor(&chain.worker), chain.worker.clone());
     align(&mut world);
     ran_a_turn(&mut world, &worker);
+    // Held through 30 min of turns, the worker's ask would open its own
+    // idle_open_work alarm by the ceiling (General's r3 GO, term 2). This test
+    // is about wake_missed repeats, so the worker acks its ask first.
+    acks_its_ask(&world, &chain);
 
     let first = wake_stall(&mut world, &who, &worker, "q1");
     let first_text = message(&world, &first).expect("the first alarm goes at once");
@@ -203,7 +227,7 @@ fn repeats_with_the_same_cause_send_once_and_the_next_alarm_carries_the_count() 
     let fifth = wake_stall(&mut world, &who, &worker, "q5");
     assert_eq!(message(&world, &fifth), None, "the new window holds");
     recovers(&mut world, &who, &worker);
-    // A turn midway, so this quiet is not itself an idle stall on the worker's ask.
+    // A turn midway, as the window's last quiet stretch.
     world.advance(10 * MINUTE);
     ran_a_turn(&mut world, &worker);
     world.advance(5 * MINUTE);
@@ -288,6 +312,10 @@ fn an_open_stall_is_told_when_the_window_ends_and_escalates_on_the_unheld_schedu
     let (who, worker) = (actor(&chain.worker), chain.worker.clone());
     align(&mut world);
     ran_a_turn(&mut world, &worker);
+    // Held through 30 min of turns, the worker's ask would open its own
+    // idle_open_work alarm by the ceiling (General's r3 GO, term 2). This test
+    // is about wake_missed repeats, so the worker acks its ask first.
+    acks_its_ask(&world, &chain);
 
     let first = wake_stall(&mut world, &who, &worker, "q1");
     let window_ends = one_i64(
@@ -644,6 +672,10 @@ fn an_item_held_and_closed_unsent_alarms_when_it_stays_stuck() {
     let (who, worker) = (actor(&chain.worker), chain.worker.clone());
     align(&mut world);
     ran_a_turn(&mut world, &worker);
+    // Held through 30 min of turns, the worker's ask would open its own
+    // idle_open_work alarm by the ceiling (General's r3 GO, term 2). This test
+    // is about wake_missed repeats, so the worker acks its ask first.
+    acks_its_ask(&world, &chain);
 
     let first = wake_stall(&mut world, &who, &worker, "q1");
     let window_ends = one_i64(

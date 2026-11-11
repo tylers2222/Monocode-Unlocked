@@ -15,6 +15,7 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection};
 
+use super::store::PAUSED_ON_PURPOSE;
 use crate::ask_gate::Actor;
 use crate::ask_scheduler;
 use crate::mono_messages::{self, MonoId, SessionId};
@@ -49,15 +50,15 @@ fn seed_waiting(tx: &Connection, active: i64, wall: i64) -> rusqlite::Result<()>
 }
 
 /// The chats of `chats` that a pass does not judge and could: live, not paused
-/// by the user (a paused queue waits on purpose, as in `Pass::wakes`), no row.
+/// on purpose (such a queue waits, as in `Pass::wakes`), no row.
 /// A chat `sessions` no longer holds is gone.
 fn unseen(tx: &Connection, chats: &[(MonoId, SessionId)]) -> rusqlite::Result<HashSet<String>> {
     let ids: Vec<&str> = chats.iter().map(|(_, chat)| chat.as_str()).collect();
-    tx.prepare(
+    tx.prepare(&format!(
         "SELECT s.id FROM json_each(?1) c JOIN sessions s ON s.id = c.value
-          WHERE s.archived = 0 AND s.queue_status IS NOT 'paused'
-            AND NOT EXISTS (SELECT 1 FROM agent_activity a WHERE a.session_id = s.id)",
-    )?
+          WHERE s.archived = 0 AND NOT ({PAUSED_ON_PURPOSE})
+            AND NOT EXISTS (SELECT 1 FROM agent_activity a WHERE a.session_id = s.id)"
+    ))?
     .query_map([serde_json::to_string(&ids).unwrap_or_default()], |row| {
         row.get(0)
     })?

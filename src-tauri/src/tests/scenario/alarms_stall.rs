@@ -22,6 +22,9 @@ const HOUR: i64 = 60 * MINUTE;
 pub(super) const N: i64 = 15 * MINUTE;
 /// The detector runs once per 5 s of active time.
 pub(super) const PASS: i64 = 5 * SECOND;
+/// The default wake threshold, which a missed wake's one retry also waits
+/// (ADE-276).
+const WAKE: i64 = 2 * MINUTE;
 
 /// `mono` starts lead `id` with the longest deadline, so no ask reminder
 /// waits for it during a scenario.
@@ -289,8 +292,9 @@ fn a_message_not_taken_for_two_minutes_is_wake_missed() {
         "wanting_reply": false, "intent": "new",
     });
     world.call(&giga, "g1", "wake-1", Tool::SendMessage, input, &mono);
-    // First seen at the next pass, one slice on.
-    world.advance(2 * MINUTE);
+    // First seen at the next pass, one slice on; then the threshold and the
+    // wait of its one retry (ADE-276).
+    world.advance(2 * WAKE);
     assert_eq!(episodes(&world), Vec::new());
     world.advance(PASS);
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
@@ -482,7 +486,7 @@ fn took_a_turn(world: &mut World, session: &SessionId) {
 }
 
 /// `from` asks `to` with the longest deadline, and `to`'s chat takes it.
-fn ask_and_take(world: &mut World, from: &Mono, to: &Mono, key: &str) {
+pub(super) fn ask_and_take(world: &mut World, from: &Mono, to: &Mono, key: &str) {
     let input =
         json!({"message": format!("Do {key}"), "send_to": to.id.as_str(), "due_minutes": 480});
     world.tool(&mono_caller(from, key), key, "ask", input, &[&to.chat]);
@@ -609,10 +613,14 @@ fn wake(world: &mut World, kind: &str, giga: &Mono, mono: &Mono) {
 }
 
 // Defect (S1 r2 F1): only a paused queue's own items are exempt, so a
-// paused chat's claimed reminder, untaken message or completion result
-// still alarms its Giga as wake_missed.
+// paused chat's claimed reminder or untaken message still alarms its Giga as
+// wake_missed.
+// Rule (General, ruling on #574 r1b M2a): M2a beats this pinned F1 for owed
+// completion results only. A user Stop holds the queue, not a result owed to
+// the chat (ADE-271), so a paused chat's completion result still alarms as
+// wake_missed; its message, reminder and queue item stay silent until resumed.
 #[test]
-fn a_paused_chat_misses_no_wake_on_any_path() {
+fn a_paused_chat_misses_no_wake_except_an_owed_completion_result() {
     for kind in ["message", "reminder", "notice", "queued"] {
         let mut world = World::new(&format!("alarm-paused-{kind}"));
         let giga = world.add_mono_in("alz-general", MonoRole::Giga, &[P]);
@@ -622,10 +630,18 @@ fn a_paused_chat_misses_no_wake_on_any_path() {
         wake(&mut world, kind, &giga, &mono);
         set_queue_status(&world, &mono.chat, "paused");
         world.advance(N);
+        if kind == "notice" {
+            let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
+            assert_eq!(
+                episode.cause, "wake_missed",
+                "{kind}: a result is owed (ADE-271)"
+            );
+            continue;
+        }
         assert_eq!(episodes(&world), Vec::new(), "{kind}: paused on purpose");
 
         set_queue_status(&world, &mono.chat, "active");
-        world.advance(2 * MINUTE + 2 * PASS);
+        world.advance(2 * WAKE + 2 * PASS);
         let causes: Vec<String> = episodes(&world)
             .into_iter()
             .map(|episode| episode.cause)
@@ -705,7 +721,7 @@ fn a_queued_item_no_turn_took_is_wake_missed_once() {
         json!([{"id": "notice-1", "text": "The lead finished"}]),
         "active",
     );
-    world.advance(2 * MINUTE);
+    world.advance(2 * WAKE);
     assert_eq!(episodes(&world), Vec::new());
     world.advance(PASS);
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
@@ -757,7 +773,7 @@ fn a_completion_result_alarms_once_and_only_for_a_live_mono_chat() {
             )
             .unwrap();
     }
-    world.advance(2 * MINUTE + PASS);
+    world.advance(2 * WAKE + PASS);
     let [episode] = <[Episode; 1]>::try_from(episodes(&world)).unwrap();
     assert_eq!(
         (episode.actor.as_str(), episode.cause.as_str()),
