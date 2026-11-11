@@ -104,16 +104,18 @@ YML
   printf 'modelRoles:\n  default: alarms/alarms-model\n' >"$EVAL_HOME/.omp/agent/config.yml"
 }
 
-# The session that the start_session message matching `$1` started.
-started() { q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND $1 ORDER BY created_at LIMIT 1"; }
+# The session that the start_session message matching `$1` started. app.sh
+# sources every scenario file into one shell, so the name keeps clear of
+# ade89.sh's `started`.
+alarms_started() { q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND $1 ORDER BY created_at LIMIT 1"; }
 # Sets lead and worker once the Mono started the lead and the lead its worker.
 alarms_lead_and_worker() {
   wait_until 120 "the Mono starts the lead" \
     holds "SELECT count(*) = 1 FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'alarms-mono'"
-  lead="$(started "from_mono_id = 'alarms-mono'")"
+  lead="$(alarms_started "from_mono_id = 'alarms-mono'")"
   wait_until 120 "the lead starts its worker" \
     holds "SELECT count(*) = 1 FROM mono_messages WHERE tool = 'start_session' AND from_session_id = '$lead'"
-  worker="$(started "from_session_id = '$lead'")"
+  worker="$(alarms_started "from_session_id = '$lead'")"
 }
 failed_calls() { jq -s '[.[] | select((.tool or .action) and .result.ok != true)] | length' "$PUPPET/log.jsonl"; }
 episode_of() { q "SELECT id FROM alarm_episodes WHERE actor = 'session:$1' ORDER BY opened_active_ms DESC LIMIT 1"; }
