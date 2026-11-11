@@ -82,7 +82,7 @@ fn names(all: &[String]) -> String {
 
 /// A project's key. `~` is the key of no project, and a path at or under the
 /// Giga workspace has no Remove, Archive or Delete.
-fn key_of(path: &str) -> Result<String, ProjectRefusal> {
+pub(super) fn key_of(path: &str) -> Result<String, ProjectRefusal> {
     let key = project_key(path)?;
     if key == "~" {
         return Err(format!("Not a project: {path}").into());
@@ -176,7 +176,10 @@ pub(crate) struct SessionFacts {
     pub(crate) project: Option<String>,
 }
 
-fn session_facts(conn: &Connection, condition: &str) -> rusqlite::Result<Vec<SessionFacts>> {
+pub(super) fn session_facts(
+    conn: &Connection,
+    condition: &str,
+) -> rusqlite::Result<Vec<SessionFacts>> {
     let rows = three_texts(
         conn,
         &format!("SELECT id, space_id, cwd FROM sessions WHERE {condition}"),
@@ -319,7 +322,7 @@ fn refuse_automation(conn: &Connection, key: &str) -> Result<(), ProjectRefusal>
     })
 }
 
-fn begin(conn: &Connection) -> rusqlite::Result<Transaction<'_>> {
+pub(super) fn begin(conn: &Connection) -> rusqlite::Result<Transaction<'_>> {
     Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
 }
 

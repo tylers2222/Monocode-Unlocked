@@ -153,6 +153,12 @@ impl Cast {
             move_to_work(&world, "monos", mono.id.as_str());
             move_to_work(&world, "sessions", mono.chat.as_str());
         }
+        // The Monos moved after their create linked their projects; no Mono
+        // moves in the app, so read `M` alone, as for an imported row.
+        world
+            .conn()
+            .execute("DELETE FROM space_project_links", [])
+            .unwrap();
         // lead2 is in a remote project, so the app never saved it.
         for session in ["s2", "s2-slash"] {
             move_to_work(&world, "sessions", session);

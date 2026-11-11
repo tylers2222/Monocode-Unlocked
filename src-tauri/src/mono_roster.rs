@@ -18,6 +18,8 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::mono_messages::Notices;
 use crate::session_store::{now_millis, SessionStore};
+use crate::spaces::project_add::{link_listed, listed_paths};
+use crate::spaces::projects::held_pairs;
 
 pub const CHANGED_EVENT: &str = "monos_changed";
 /// Refused updates start with this, so a window knows to reload the roster.
@@ -333,12 +335,15 @@ fn insert_rows(
                 space_id
             ])
             .map_err(|e| e.to_string())?;
+        link_listed(conn, &space_id, &listed_paths(&mono.data)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 pub fn create(conn: &Connection, mono: &ValidCreate, window: Option<&str>) -> Result<(), String> {
-    insert_rows(conn, std::slice::from_ref(mono), window)
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    insert_rows(&tx, std::slice::from_ref(mono), window)?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// RFC 7396: `null` removes a key, an object merges, anything else replaces.
@@ -368,24 +373,37 @@ pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<Notices
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let now = now_millis();
     for update in updates {
-        let stored: Option<String> = tx
+        let stored: Option<(String, String)> = tx
             .query_row(
-                "SELECT data_json FROM monos WHERE id = ?1",
+                "SELECT data_json, space_id FROM monos WHERE id = ?1",
                 params![update.id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some(stored) = stored else {
+        let Some((stored, space_id)) = stored else {
             return Err(format!("{UNKNOWN_MONO}: {}", update.id));
         };
         let mut data: Value = serde_json::from_str(&stored).map_err(|e| e.to_string())?;
+        let mut lists = match &data {
+            Value::Object(before) => listed_paths(before),
+            _ => Vec::new(),
+        };
         if let Some(patch) = &update.patch {
             merge_patch(&mut data, Value::Object(patch.clone()));
         }
         let Value::Object(data) = data else {
             return Err("Stored Mono data is not an object".into());
         };
+        // T3 and T4: a path it gains, and one it loses, stay in its Space.
+        if update
+            .patch
+            .as_ref()
+            .is_some_and(|patch| patch.contains_key("projects"))
+        {
+            lists.extend(listed_paths(&data));
+            link_listed(&tx, &space_id, &lists).map_err(|e| e.to_string())?;
+        }
         let name = display_name(&data)?;
         tx.execute(
             "UPDATE monos SET
@@ -411,9 +429,25 @@ pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<Notices
     Ok(notices)
 }
 
-/// Whether a Mono was deleted.
+/// Whether a Mono was deleted. Its projects stay in its Space until the user
+/// removes them (T4).
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    Ok(conn.execute("DELETE FROM monos WHERE id = ?1", params![id])? > 0)
+    let tx = conn.unchecked_transaction()?;
+    let stored: Option<(String, String)> = tx
+        .query_row(
+            "SELECT data_json, space_id FROM monos WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((stored, space_id)) = stored {
+        if let Ok(Value::Object(data)) = serde_json::from_str(&stored) {
+            link_listed(&tx, &space_id, &listed_paths(&data))?;
+        }
+    }
+    let deleted = tx.execute("DELETE FROM monos WHERE id = ?1", params![id])? > 0;
+    tx.commit()?;
+    Ok(deleted)
 }
 
 /// The one-time move from WebKit storage. Imports only into an empty table and
@@ -463,20 +497,25 @@ pub(crate) fn write<R: tauri::Runtime>(
     store: &SessionStore,
     apply: impl FnOnce(&Connection) -> Result<bool, String>,
 ) -> Result<Roster, String> {
-    let (roster, changed) = {
+    let (roster, changed, lists_changed) = {
         let conn = store.lock_conn()?;
+        let lists = held_pairs(&conn).map_err(|e| e.to_string())?;
         let changed = apply(&conn)?;
+        let lists_changed = held_pairs(&conn).map_err(|e| e.to_string())? != lists;
         let revision = if changed {
             REVISION.fetch_add(1, Ordering::SeqCst) + 1
         } else {
             REVISION.load(Ordering::SeqCst)
         };
-        (snapshot(&conn, revision)?, changed)
+        (snapshot(&conn, revision)?, changed, lists_changed)
     };
     if changed {
         if let Err(err) = app.emit(CHANGED_EVENT, &roster) {
             eprintln!("monocode: monos changed event: {err}");
         }
+    }
+    if lists_changed {
+        crate::spaces::projects::emit_changed(app);
     }
     Ok(roster)
 }

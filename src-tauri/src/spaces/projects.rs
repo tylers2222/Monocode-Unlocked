@@ -69,7 +69,7 @@ pub(super) fn three_texts(
 }
 
 /// A project a Mono lists, under the project's key.
-pub(super) struct Holder {
+pub(crate) struct Holder {
     pub(super) space: String,
     pub(super) mono: String,
     pub(super) project: String,
@@ -77,7 +77,7 @@ pub(super) struct Holder {
 
 /// Every Mono's projects, in roster order. A listed path that is no project
 /// key is in no Space.
-pub(super) fn holders(conn: &Connection) -> rusqlite::Result<Vec<Holder>> {
+pub(crate) fn holders(conn: &Connection) -> rusqlite::Result<Vec<Holder>> {
     let listed = three_texts(
         conn,
         "SELECT m.space_id, m.name, j.value
@@ -95,6 +95,15 @@ pub(super) fn holders(conn: &Connection) -> rusqlite::Result<Vec<Holder>> {
                 project: project_key(&path).ok()?,
             })
         })
+        .collect())
+}
+
+/// What the Monos list, by Space and key: it changes when a list does, not when
+/// a Mono is renamed.
+pub(crate) fn held_pairs(conn: &Connection) -> rusqlite::Result<BTreeSet<(String, String)>> {
+    Ok(holders(conn)?
+        .into_iter()
+        .map(|holder| (holder.space, holder.project))
         .collect())
 }
 
