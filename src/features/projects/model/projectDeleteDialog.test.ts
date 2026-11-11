@@ -52,6 +52,21 @@ describe("the Delete dialog's text", () => {
     });
   });
 
+  it("T10 names another Space when the preview names none", () => {
+    expect(
+      projectDeleteText({ ...base, preview: shared, others: [] }).keeps,
+    ).toEqual([
+      "another Space keeps its conversations, and the project's milestones, logo and settings stay.",
+    ]);
+  });
+
+  it("shows a machine's path as it is when it is not a remote path", () => {
+    expect(
+      projectDeleteText({ ...base, preview: shared, machine: "example-machine" })
+        .location,
+    ).toBe("/somewhere/vibtra on example-machine");
+  });
+
   it("T10 lists three other Spaces with commas", () => {
     expect(
       projectDeleteText({
@@ -175,6 +190,9 @@ describe("readProjectDeleteText", () => {
     vi.mocked(previewProjectDelete).mockRejectedValue(new Error("no database"));
     await expect(
       readProjectDeleteText("vibtra", "/somewhere/vibtra"),
+    ).resolves.toBeNull();
+    await expect(
+      readProjectDeleteText("vibtra", "remote://env/code/vibtra"),
     ).resolves.toBeNull();
   });
 

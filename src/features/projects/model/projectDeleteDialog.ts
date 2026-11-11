@@ -20,11 +20,14 @@ export type ProjectDeleteText = {
   confirm: string;
 };
 
-/** `A`, `A and B`, `A, B and C`. */
+/**
+ * `A`, `A and B`, `A, B and C`. A delete that is not on the last Space with no
+ * Space named (an older backend) still has one: `another Space`.
+ */
 function joined(names: readonly string[]): string {
   return names.length > 1
     ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
-    : (names[0] ?? "");
+    : (names[0] ?? "another Space");
 }
 
 function savedCount(count: number, space: string): string | null {
@@ -103,11 +106,15 @@ export async function readProjectDeleteText(
   name: string,
   path: string,
 ): Promise<ProjectDeleteText | null> {
-  const [preview, machine] = await Promise.all([
-    previewProjectDelete(path).catch(() => null),
-    isRemoteProjectPath(path) ? remoteMachineName(path) : undefined,
-  ]);
-  if (!preview) return null;
+  let preview: ProjectDeletePreview;
+  try {
+    preview = await previewProjectDelete(path);
+  } catch {
+    return null;
+  }
+  const machine = isRemoteProjectPath(path)
+    ? await remoteMachineName(path)
+    : undefined;
   const { spaces } = spacesView();
   const others = preview.otherSpaces.map(
     (id) => spaces.find((space) => space.id === id)?.name ?? id,
