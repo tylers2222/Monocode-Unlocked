@@ -23,6 +23,7 @@ import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
 import { loadProviderAccounts } from "./features/providers/model/providerAccounts";
 import { loadSpaces } from "./features/spaces/model/activeSpace";
+import { watchKnownProjects } from "./features/spaces/model/knownProjects";
 import { loadMonoRoster } from "./features/monos/model/mono";
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
@@ -96,6 +97,8 @@ void listen<number>("quit_commit", (event) => {
 void listen("quit_aborted", () => {
   abortQuit();
 });
+
+watchKnownProjects();
 
 void Promise.all([
   homeDirPrimed,
