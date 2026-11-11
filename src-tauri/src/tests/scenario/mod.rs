@@ -62,6 +62,8 @@ mod space_project_rename;
 #[cfg(not(windows))]
 mod space_projects;
 #[cfg(not(windows))]
+mod space_projects_model;
+#[cfg(not(windows))]
 mod space_rows;
 mod space_scope;
 #[cfg(unix)]

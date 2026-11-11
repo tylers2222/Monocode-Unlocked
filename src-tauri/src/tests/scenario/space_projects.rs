@@ -383,3 +383,35 @@ fn the_giga_workspace_never_becomes_a_row_and_a_path_under_it_is_never_listed() 
     assert_eq!(known.len(), 1, "only the neighbour: {known:?}");
     assert_eq!(known[0].path, neighbour);
 }
+
+/// F1, owed from #555's review. Defect: the workspace root is listed because a
+/// row or a link names it, with no Mono of that Space listing it.
+#[test]
+fn the_workspace_root_with_a_row_and_a_link_but_no_mono_is_listed_nowhere() {
+    let store = store_with_two_spaces();
+    let root = projects::workspace_roots()
+        .first()
+        .expect("a home folder")
+        .clone();
+    let conn = store.lock_conn().unwrap();
+    conn.execute(
+        "INSERT INTO space_projects (project_path, space_id) VALUES (?1, ?2)",
+        params![root, FIRST_SPACE],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO space_project_links (space_id, project_path) VALUES (?1, ?2)",
+        params![TWO, root],
+    )
+    .unwrap();
+    drop(conn);
+
+    for space in [FIRST_SPACE, TWO] {
+        let reply = projects::list(&store, space).unwrap();
+        assert_eq!(
+            visible(&reply).0,
+            Vec::<&str>::new(),
+            "{space} lists the root with no Mono there"
+        );
+    }
+}
