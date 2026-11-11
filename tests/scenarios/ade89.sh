@@ -224,7 +224,7 @@ each_reaches_the_agent() {
 # again; a Continue would not carry it. Either way the agent gets each report
 # exactly once.
 part_release_then_kill() {
-  local unread="$5" first="ade89-$2" second="ade89-$3" late="ade89-$4" group message
+  local unread="${5:-}" first="ade89-$2" second="ade89-$3" late="ade89-$4" group message
   group="mono-completion-batch-$(printf '%s\n' "$first" "$second" | sort | head -1)"
   message="json_object('id', '$group', 'attachments', json_array(),
     'monoSessionCompletion', json_object('sessionId', 's-$first', 'title', '2 session results', 'status', 'completed', 'sessionCount', 2),
