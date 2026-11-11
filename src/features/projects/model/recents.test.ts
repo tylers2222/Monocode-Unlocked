@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   archiveProject,
+  archivedProjectsSnapshot,
   forgetProject,
   loadArchivedProjects,
   loadPinnedProjects,
@@ -224,5 +225,20 @@ describe("archiveProject", () => {
     forgetProject("/tmp/gone");
     expect(loadArchivedProjects()).toEqual([]);
     expect(loadRecents()).toEqual([]);
+  });
+
+  it("the archive snapshot stays one array until the archive changes", () => {
+    const empty = archivedProjectsSnapshot();
+    expect(empty).toEqual([]);
+    expect(archivedProjectsSnapshot()).toBe(empty);
+
+    rememberProject("/tmp/gone");
+    archiveProject("/tmp/gone");
+    const filed = archivedProjectsSnapshot();
+    expect(filed.map((item) => item.path)).toEqual(["/tmp/gone"]);
+    expect(archivedProjectsSnapshot()).toBe(filed);
+
+    rememberProject("/tmp/gone");
+    expect(archivedProjectsSnapshot()).toEqual([]);
   });
 });

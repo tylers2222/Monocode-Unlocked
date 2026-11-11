@@ -168,6 +168,7 @@ import { useSortable } from "../../shared/hooks/useSortable";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { normalizeHex } from "../../shared/lib/colorUtils";
 import {
+  archivedProjectsSnapshot,
   collectRailProjects,
   loadProjectRailOrder,
   looksLikeProject,
@@ -175,6 +176,7 @@ import {
   saveProjectRailOrder,
   isRemoteProjectPath,
   sameProjectPath,
+  subscribeArchivedProjects,
   type RecentProject,
 } from "../../features/projects/model/recents";
 import {
@@ -242,10 +244,10 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { useRailMonosPinned } from "../../features/settings/model/displayPrefs";
 import {
   inActiveSpace,
-  projectInActiveSpace,
   spacesView,
   subscribeSpaces,
 } from "../../features/spaces/model/activeSpace";
+import { shownProjects } from "../../features/spaces/model/spaceProjects";
 import type { PickerMonos } from "../../features/projects/ui/SearchableProjectPicker";
 import {
   MonoRailSection,
@@ -813,8 +815,13 @@ function SidebarComponent({
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
-  const spaceRecents = recents.filter((project) =>
-    projectInActiveSpace(project.path, spaces),
+  const archivedProjects = useSyncExternalStore(
+    subscribeArchivedProjects,
+    archivedProjectsSnapshot,
+  );
+  const spaceRecents = useMemo(
+    () => shownProjects(recents, cwd, spaces.projectList, archivedProjects),
+    [recents, cwd, spaces.projectList, archivedProjects],
   );
   const listableSessions = mergeFolderSessionSummaries(
     projectSessions,

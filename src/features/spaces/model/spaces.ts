@@ -77,6 +77,12 @@ export type SpaceProjectList = {
   assignedElsewhere: string[];
 };
 
+export const SPACE_PROJECTS_CHANGED = "spaces:projects-changed";
+
+export function listSpaceProjects(): Promise<SpaceProjectList> {
+  return invoke<SpaceProjectList>("spaces_project_list");
+}
+
 /** T1 and T2: lists a project in the calling window's Space. */
 export function addProjectToSpace(
   projectPath: string,
@@ -87,7 +93,8 @@ export function addProjectToSpace(
 
 /** Archive and unarchive write only localStorage; this tells other windows. */
 export function notifySpaceProjectsChanged(): void {
-  // Only a courtesy to other windows: the write it reports has already landed.
+  // Only a courtesy to other windows. Open folder sends it before its adds
+  // answer; each add sends its own event, so other windows read again anyway.
   void invoke("spaces_project_notify_changed").catch(() => undefined);
 }
 
@@ -119,9 +126,4 @@ export function refusalMessage(error: unknown): string {
     return String(error.message);
   }
   return String(error);
-}
-
-/** The Space `projectPath` belongs to, by the backend's one rule. */
-export function projectSpace(projectPath: string): Promise<string> {
-  return invoke<string>("spaces_project_get", { projectPath });
 }

@@ -506,6 +506,15 @@ import {
   rebaseProjectData,
   removeProjectData,
 } from "../features/projects/model/projectData";
+import { spacesView } from "../features/spaces/model/activeSpace";
+import {
+  archiveProjectInSpace,
+  listProjectInSpace,
+  openListedProjects,
+  projectAfterLeaving,
+  restoreProjectInSpace,
+  shownProjects,
+} from "../features/spaces/model/spaceProjects";
 import * as milestones from "../features/milestones/model/milestones";
 import * as approvals from "../features/approvals/model/approvals";
 import {
@@ -514,7 +523,6 @@ import {
   synchronizeProjectLocation,
 } from "../features/projects/model/projectLocation";
 import {
-  archiveProject,
   forgetProject,
   lastProjectPath,
   loadRecents,
@@ -6786,7 +6794,7 @@ function Workspace({
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
     // the last one selected ends up focused.
-    await openPickedFolders(pickFolders, openProjects, (error) => {
+    await openPickedFolders(pickFolders, openListedProjects(openProjects), (error) => {
       void message(error, { title: "MonoCode", kind: "error" });
     });
   }, [openProjects]);
@@ -6824,7 +6832,7 @@ function Workspace({
       const wasCurrent = sameProjectPath(projectCwdRef.current, normalized);
       const remaining = options.purgeData
         ? forgetProject(normalized)
-        : archiveProject(normalized);
+        : archiveProjectInSpace(normalized);
       if (options.purgeData) {
         forgetProjectLocation(normalized);
         setSidebarTabSelection((current) =>
@@ -6936,7 +6944,11 @@ function Workspace({
       );
 
       if (wasCurrent) {
-        const next = remaining.find((item) => looksLikeProject(item.path));
+        const next = projectAfterLeaving(
+          remaining,
+          normalized,
+          spacesView().projectList,
+        );
         if (next) {
           onSelectProject(next.path);
           setProjectCwd(next.path);
@@ -6951,8 +6963,7 @@ function Workspace({
 
   const onRestoreProject = useCallback(
     (path: string) => {
-      setRecents(rememberProject(path));
-      onSelectProject(path);
+      void restoreProjectInSpace(path, setRecents, onSelectProject);
     },
     [onSelectProject],
   );
@@ -13310,7 +13321,7 @@ function Workspace({
   const onNavigateProjectList = useCallback(
     (delta: number) => {
       const current = normalizeProjectPath(projectCwdRef.current);
-      const ids = projectRailItems(loadRecents(), current).map(
+      const ids = projectRailItems(shownProjects(loadRecents(), current, spacesView().projectList), current).map(
         (project) => project.path,
       );
       const next = adjacentItemId(ids, current, delta);
@@ -15526,6 +15537,7 @@ function Workspace({
               onCancel={() => setRemoteProjectDialogOpen(false)}
               onOpen={(key) => {
                 setRemoteProjectDialogOpen(false);
+                void listProjectInSpace(key);
                 onSelectProject(key);
               }}
             />

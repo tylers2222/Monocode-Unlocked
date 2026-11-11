@@ -211,6 +211,31 @@ export function loadArchivedProjects(): ArchivedProject[] {
   }
 }
 
+let archivedSnapshot:
+  | { raw: string | null; items: ArchivedProject[] }
+  | undefined;
+
+/** The archive for useSyncExternalStore: one array until the stored text changes. */
+export function archivedProjectsSnapshot(): ArchivedProject[] {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(ARCHIVED_KEY);
+  } catch {
+    // private mode: read as an empty archive
+  }
+  if (archivedSnapshot?.raw !== raw) {
+    archivedSnapshot = { raw, items: loadArchivedProjects() };
+  }
+  return archivedSnapshot.items;
+}
+
+/** Another window may have changed the archive (T13). */
+export function notifyArchivedProjectsChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(ARCHIVED_CHANGED));
+  }
+}
+
 export function subscribeArchivedProjects(onChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
   window.addEventListener(ARCHIVED_CHANGED, onChange);
@@ -223,9 +248,7 @@ function saveArchived(next: ArchivedProject[]) {
   } catch {
     // private mode / quota
   }
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(ARCHIVED_CHANGED));
-  }
+  notifyArchivedProjectsChanged();
 }
 
 function dropArchived(path: string) {

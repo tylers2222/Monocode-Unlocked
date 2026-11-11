@@ -9,7 +9,10 @@ import {
   focusStallRow,
   hoverStallMarker,
 } from "../../features/alarms/test/stallProbe";
-import { saveProjectRailOrder } from "../../features/projects/model/recents";
+import {
+  loadProjectRailOrder,
+  saveProjectRailOrder,
+} from "../../features/projects/model/recents";
 import {
   loadSessionFolders,
   saveSessionFolders,
@@ -55,8 +58,17 @@ vi.mock("../../features/spaces/model/spaces", async (importOriginal) => {
       return settings();
     },
     listSpaceLogins: async () => [],
-    projectSpace: async (path: string) =>
-      spacesDb.projects.get(path) ?? "space-1",
+    listSpaceProjects: async () => ({
+      spaceId: spacesDb.active,
+      projects: [...spacesDb.projects]
+        .filter(([, space]) => space === spacesDb.active)
+        .map(([path]) => ({ path, assigned: true, linked: false, monos: [] })),
+      monoHeld: [],
+      noRowIsHere: spacesDb.active === "space-1",
+      assignedElsewhere: [...spacesDb.projects]
+        .filter(([, space]) => space !== spacesDb.active)
+        .map(([path]) => path),
+    }),
   };
 });
 
@@ -207,7 +219,7 @@ afterEach(() => {
 });
 
 describe("project swipe navigation", () => {
-  it("starts a short swipe transition immediately while the destination is loading", () => {
+  it("starts a short swipe transition immediately while the destination is loading", async () => {
     const animate = vi
       .spyOn(HTMLElement.prototype, "animate")
       .mockImplementation(
@@ -228,7 +240,10 @@ describe("project swipe navigation", () => {
         render();
       }),
     };
-    act(render);
+    await act(async () => {
+      render();
+      await new Promise((done) => setTimeout(done));
+    });
     animate.mockClear();
     act(() => {
       container.querySelector("aside")!.dispatchEvent(
@@ -251,7 +266,7 @@ describe("project swipe navigation", () => {
 
   it.each([true, false])(
     "enables swiping only in the inset sidebar (inset=%s)",
-    (inset) => {
+    async (inset) => {
       const paths = ["/workspace/project", "/workspace/other", "/workspace/last"];
       saveProjectRailOrder(paths);
       props = {
@@ -263,7 +278,10 @@ describe("project swipe navigation", () => {
           render();
         }),
       };
-      act(render);
+      await act(async () => {
+        render();
+        await new Promise((done) => setTimeout(done));
+      });
       const swipe = () => act(() => {
         container.querySelector("aside")!.dispatchEvent(new WheelEvent("wheel", {
           deltaX: 80,
@@ -537,6 +555,52 @@ describe("Spaces: the sidebar shows only the active Space", () => {
     expect(cards()).toEqual(["in-two", "unsaved"]);
     expect(props.onSelectSession).not.toHaveBeenCalled();
   });
+
+  it("the rail saves a shared project of the Space into the rail order once the list answers", async () => {
+    // Space 2 lists /code/shared, which this window never opened.
+    spacesDb.active = "space-2";
+    spacesDb.projects.set("/code/shared", "space-2");
+    saveProjectRailOrder(["/workspace/project"]);
+    props = {
+      ...props,
+      recents: [{ path: "/workspace/project", openedAt: 1 }],
+      projectRailOpen: true,
+      compactProjectRail: false,
+      onSelectProject: vi.fn(),
+      // The rail mounts only with both handlers.
+      onOpenProject: vi.fn(),
+    };
+    await act(async () => render());
+    await settle();
+    expect(loadProjectRailOrder()).toContain("/code/shared");
+  });
+
+  it.each([true, false])(
+    "saving the rail order in Space 2 keeps a Space 1 project's place (inset=%s)",
+    async (inset) => {
+      spacesDb.active = "space-2";
+      spacesDb.projects.set("/code/shared", "space-2");
+      spacesDb.projects.set("/workspace/project", "space-2");
+      spacesDb.projects.set("/code/one", "space-1");
+      saveProjectRailOrder(["/code/one", "/workspace/project"]);
+      props = {
+        ...props,
+        inset,
+        recents: [
+          { path: "/code/one", openedAt: 2 },
+          { path: "/workspace/project", openedAt: 1 },
+        ],
+        projectRailOpen: true,
+        compactProjectRail: false,
+        onSelectProject: vi.fn(),
+        // Without the rail (no onOpenProject) the inset sidebar saves the order.
+        onOpenProject: inset ? undefined : vi.fn(),
+      };
+      await act(async () => render());
+      await settle();
+      expect(loadProjectRailOrder()).toContain("/code/one");
+    },
+  );
 
   it("shows the rail's projects and Monos of the active Space, and switches from the rail", async () => {
     spacesDb.projects.set("/code/beta-proj", "space-2");

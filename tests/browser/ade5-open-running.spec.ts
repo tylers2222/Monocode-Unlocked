@@ -345,6 +345,14 @@ async function mountRealDb(
     {
       handlers: {
         ...handlers,
+        // These tests are not about Spaces. The Giga root needs a Mono's listing.
+        spaces_project_list: (store) => ({
+          spaceId: store.activeSpaceId,
+          projects: [],
+          monoHeld: [`${store.home}/MonoCode`],
+          noRowIsHere: true,
+          assignedElsewhere: [],
+        }),
         ...(excludedRunning ? excludedRunningHandlers : {}),
         ...(runningWorker ? workerHandlers : {}),
       },
