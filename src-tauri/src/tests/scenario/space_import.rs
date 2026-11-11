@@ -285,8 +285,8 @@ fn space_two(data: &Path) {
              INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms) VALUES ('o2', 'k2', 't5', 'mono:m2', 1400);
              INSERT INTO agent_activity (session_id, harness, turn_started_active_ms, turn_ended_active_ms,
                last_progress_active_ms, last_progress_wall_ms, background_ended_active_ms, dialog_kind,
-               dialog_since_active_ms, wake_pending_since_active_ms, updated_wall_ms)
-               VALUES ('s2-b', 'claude', 700, 900, 800, 7, 850, 'plan', 870, 950, 1);
+               dialog_since_active_ms, wake_pending_since_active_ms, hold_ping_due_active_ms, updated_wall_ms)
+               VALUES ('s2-b', 'claude', 700, 900, 800, 7, 850, 'plan', 870, 950, 960, 1);
              INSERT INTO alarm_episodes (id, actor, mono_id, provisioner, cause, open_work_json, stalled_since_active_ms,
                stalled_since_wall_ms, opened_active_ms, opened_wall_ms, next_escalate_active_ms)
                VALUES ('al_2', 'session:s2-b', 'm2', 'mono:m2', 'idle_open_work', '[]', 900, 1, 1300, 1, 2200);
