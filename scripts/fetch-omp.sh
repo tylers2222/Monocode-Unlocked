@@ -5,11 +5,14 @@
 #
 # Anonymous release downloads (curl on github.com/.../releases/download) returned 504
 # for hours: tyler/main run 42580086493, job 129036771058 (browser 2/6) failed after
-# curl's 4 tries in 90 s. This goes through the API with the job token (GH_TOKEN), and
-# spreads OMP_TRIES tries (default 6) OMP_RETRY_DELAY seconds apart (default 60).
+# curl's 4 tries in 90 s. The cache in front of this step is the main fix; on a miss,
+# this spreads OMP_TRIES tries (default 6) OMP_RETRY_DELAY seconds apart (default 60),
+# about 5 minutes, so a CDN outage that short no longer fails setup. gh uses GH_TOKEN,
+# but its asset download ends on the same release CDN, so the token is not the fix.
 # A 5xx, a 429 or a network error is retried. Another 4xx, or gh's "release not found"
 # or "no assets match", fails at once: a wrong tag or asset name never heals.
-# The caller checks the sha256. Runs on bash 3.2 (macOS runner).
+# The caller checks the sha256. Runs on bash 3.2 (macOS runner). No -e: the loop reads
+# each gh exit status itself.
 set -uo pipefail
 
 if [ "$#" -ne 3 ]; then
@@ -21,7 +24,7 @@ asset=$2
 dest=$3
 tries=${OMP_TRIES:-6}
 delay=${OMP_RETRY_DELAY:-60}
-err=$(mktemp)
+err=$(mktemp) || exit 1
 trap 'rm -f "$err"' EXIT
 
 i=1

@@ -130,6 +130,17 @@ class OmpCacheWiringTest(unittest.TestCase):
                 save = block[block.index("- name: Save omp"):]
                 self.assertIn("steps.omp-cache.outputs.cache-hit != 'true'", save)
 
+    def test_a_cache_hit_still_runs_the_sha256_check(self):
+        # The Install step must run on a hit too, so a cached binary is never used unchecked.
+        for name in WORKFLOWS:
+            with self.subTest(workflow=name):
+                block = steps_around_omp((ROOT / ".github" / "workflows" / name).read_text())
+                start = block.index("      - name: Install omp")
+                end = block.index("      - ", start + 1)
+                install = block[start:end]
+                self.assertNotRegex(install, r"(?m)^        if:", "Install omp must have no if:")
+                self.assertRegex(install, r'echo "[0-9a-f]{64}  \$RUNNER_TEMP/omp" \| (sha256sum|shasum -a 256) -c -')
+
     def test_the_key_names_the_checked_sha256(self):
         for name in WORKFLOWS:
             with self.subTest(workflow=name):

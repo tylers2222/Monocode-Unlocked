@@ -225,10 +225,10 @@ jobs:
       # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
       # Anonymous release downloads returned 504 for hours, and curl's own retries rescued
       # none (tyler/main run 42580086493, job 129036771058). So: cache first, keyed on the
-      # version and sha256. A miss downloads through scripts/fetch-omp.sh (job token, 6 tries
-      # 60 s apart) and saves right after the sha256 check, so a run cancelled later still
-      # fills it. Any ref saves on a miss: once tyler/main holds the key, every run hits
-      # and none saves.
+      # version and sha256. A miss downloads through scripts/fetch-omp.sh, which retries a
+      # 5xx over about 5 minutes (6 tries 60 s apart) where curl gave up after 90 s, and
+      # saves right after the sha256 check, so a run cancelled later still fills it. Any
+      # ref saves on a miss: once tyler/main holds the key, every run hits and none saves.
       - id: omp-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
