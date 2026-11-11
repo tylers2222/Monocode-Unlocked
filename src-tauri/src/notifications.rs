@@ -20,6 +20,10 @@ pub const CLICK_EVENT: &str = "monocode:notification-click";
 /// stalled agent's session.
 const ALARM_PREFIX: &str = "alarm:";
 
+/// Tyler's sleep hold banners (`hold:<id>`, approved frame 3): Allow and
+/// Deny answer the hold; a click opens the held agent's session.
+const HOLD_PREFIX: &str = "hold:";
+
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn handle_click(app: &AppHandle, identifier: &str) {
     use tauri::Emitter;
@@ -31,6 +35,13 @@ fn handle_click(app: &AppHandle, identifier: &str) {
         let (app, episode) = (app.clone(), episode.to_string());
         std::thread::spawn(move || {
             if let Some(session) = crate::alarms::alarm_session(&app, &episode) {
+                let _ = app.emit(CLICK_EVENT, session);
+            }
+        });
+    } else if let Some(hold) = identifier.strip_prefix(HOLD_PREFIX) {
+        let (app, hold) = (app.clone(), hold.to_string());
+        std::thread::spawn(move || {
+            if let Some(session) = crate::sleep_hold::service::hold_session(&app, &hold) {
                 let _ = app.emit(CLICK_EVENT, session);
             }
         });
@@ -57,6 +68,42 @@ pub(crate) async fn show_alarm(
         true,
     )
     .await
+}
+
+/// Tyler's banner for sleep hold `hold`, whatever the app's own
+/// notification setting says, as his alarms. macOS gives it Allow and Deny;
+/// elsewhere a click opens the session.
+pub(crate) async fn show_hold(
+    app: &AppHandle,
+    hold: &str,
+    subtitle: &str,
+    body: &str,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        platform::show_hold(hold, subtitle, body).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        platform::show(
+            app,
+            &format!("{HOLD_PREFIX}{hold}"),
+            "MonoCode",
+            subtitle,
+            body,
+            true,
+        )
+        .await
+    }
+}
+
+/// Takes down hold `hold`'s banner once it is decided or expired.
+pub(crate) fn withdraw_hold(hold: &str) {
+    #[cfg(target_os = "macos")]
+    platform::withdraw(&format!("{HOLD_PREFIX}{hold}"));
+    #[cfg(not(target_os = "macos"))]
+    let _ = hold;
 }
 
 #[cfg(target_os = "macos")]
@@ -156,6 +203,10 @@ mod platform {
     /// explicitly instead of relying on a click on the body.
     const CATEGORY: &str = "monocode.session";
     const SHOW_ACTION: &str = "monocode.session.show";
+    /// A sleep hold banner's category, with Allow and Deny.
+    const HOLD_CATEGORY: &str = "monocode.hold";
+    const HOLD_ALLOW: &str = "monocode.hold.allow";
+    const HOLD_DENY: &str = "monocode.hold.deny";
 
     fn options() -> UNAuthorizationOptions {
         UNAuthorizationOptions::Alert
@@ -248,7 +299,8 @@ mod platform {
     /// handler says. Authorization is settled before this runs, so an
     /// undetermined status never turns a finished turn into a system prompt.
     fn start_show(
-        session_id: &str,
+        identifier: &str,
+        category: &str,
         title: &str,
         subtitle: &str,
         body: &str,
@@ -258,11 +310,11 @@ mod platform {
         content.setTitle(&NSString::from_str(title));
         content.setSubtitle(&NSString::from_str(subtitle));
         content.setBody(&NSString::from_str(body));
-        content.setCategoryIdentifier(&NSString::from_str(CATEGORY));
+        content.setCategoryIdentifier(&NSString::from_str(category));
         if sound {
             content.setSound(Some(&UNNotificationSound::defaultSound()));
         }
-        let identifier = NSString::from_str(&request_identifier(session_id));
+        let identifier = NSString::from_str(identifier);
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &identifier,
             &content,
@@ -298,11 +350,54 @@ mod platform {
             return Err("notifications are not authorized".into());
         }
         wait(
-            start_show(session_id, title, subtitle, body, sound),
+            start_show(
+                &request_identifier(session_id),
+                CATEGORY,
+                title,
+                subtitle,
+                body,
+                sound,
+            ),
             Some(DISPATCH_TIMEOUT),
         )
         .await
         .unwrap_or_else(|| Err("notification dispatch timed out".into()))
+    }
+
+    /// One banner per hold, so its identifier is exactly `hold:<id>` and
+    /// [`withdraw`] can take it down.
+    pub(super) async fn show_hold(hold: &str, subtitle: &str, body: &str) -> Result<(), String> {
+        if wait(query_permission(), Some(DISPATCH_TIMEOUT)).await != Some(Permission::Granted) {
+            return Err("notifications are not authorized".into());
+        }
+        let identifier = format!("{}{hold}", super::HOLD_PREFIX);
+        wait(
+            start_show(&identifier, HOLD_CATEGORY, "MonoCode", subtitle, body, true),
+            Some(DISPATCH_TIMEOUT),
+        )
+        .await
+        .unwrap_or_else(|| Err("notification dispatch timed out".into()))
+    }
+
+    pub(super) fn withdraw(identifier: &str) {
+        let identifiers = NSArray::from_retained_slice(&[NSString::from_str(identifier)]);
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        center.removeDeliveredNotificationsWithIdentifiers(&identifiers);
+        center.removePendingNotificationRequestsWithIdentifiers(&identifiers);
+    }
+
+    /// Allow or Deny on a hold banner answers it off the main thread; a
+    /// click on the body opens the session.
+    fn hold_response(app: &AppHandle, identifier: &str, hold: &str, action: &str) {
+        let allow = match action {
+            HOLD_ALLOW => true,
+            HOLD_DENY => false,
+            _ => return super::handle_click(app, identifier),
+        };
+        let (app, hold) = (app.clone(), hold.to_string());
+        std::thread::spawn(move || {
+            crate::sleep_hold::service::banner_answer(&app, &hold, allow);
+        });
     }
 
     pub(super) fn open_settings(app: &AppHandle) -> Result<(), String> {
@@ -352,7 +447,10 @@ mod platform {
                 completion: &block2::DynBlock<dyn Fn()>,
             ) {
                 let identifier = response.notification().request().identifier().to_string();
-                if let Some(session_id) = session_from_identifier(&identifier) {
+                if let Some(hold) = identifier.strip_prefix(super::HOLD_PREFIX) {
+                    let action = response.actionIdentifier().to_string();
+                    hold_response(&self.ivars().app, &identifier, hold, &action);
+                } else if let Some(session_id) = session_from_identifier(&identifier) {
                     super::handle_click(&self.ivars().app, session_id);
                 }
                 completion.call(());
@@ -388,7 +486,23 @@ mod platform {
                 &NSArray::new(),
                 UNNotificationCategoryOptions::empty(),
             );
-        center.setNotificationCategories(&NSSet::from_retained_slice(&[category]));
+        let action = |id: &str, title: &str, options: UNNotificationActionOptions| {
+            UNNotificationAction::actionWithIdentifier_title_options(
+                &NSString::from_str(id),
+                &NSString::from_str(title),
+                options,
+            )
+        };
+        let hold = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+            &NSString::from_str(HOLD_CATEGORY),
+            &NSArray::from_retained_slice(&[
+                action(HOLD_ALLOW, "Allow", UNNotificationActionOptions::empty()),
+                action(HOLD_DENY, "Deny", UNNotificationActionOptions::Destructive),
+            ]),
+            &NSArray::new(),
+            UNNotificationCategoryOptions::empty(),
+        );
+        center.setNotificationCategories(&NSSet::from_retained_slice(&[category, hold]));
     }
 
     #[cfg(test)]

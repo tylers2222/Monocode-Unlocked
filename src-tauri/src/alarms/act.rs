@@ -16,11 +16,12 @@ use super::store::{Settings, MINUTE_MS, STALL_MINUTES};
 use super::text;
 use crate::ask_gate::Actor;
 use crate::mono_messages::{self, MonoId, Notices, SessionId};
+use crate::sleep_hold::store::Decision;
 
 const TRANSCRIPT_BLOCKS: usize = 20;
 
-/// Why an `alarms.*` call was refused: a code and a hint, as every other
-/// app refusal.
+/// Why an `alarms.*`, `holds.*` or `hold` call was refused: a code and a
+/// hint, as every other app refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Refusal {
     InvalidInput(String),
@@ -40,6 +41,13 @@ pub(crate) enum Refusal {
     DialogGone,
     NotTheParent,
     MonoOnly,
+    UnknownHold,
+    /// The caller is not the hold's provisioner or above it.
+    NotYourHold,
+    /// The first decision stands.
+    HoldDecided(Decision),
+    /// No process ticks the active clock, so no hold can be timed.
+    ClockStale,
     UnknownCaller,
     /// The store failed; the error goes to the log, not to the agent.
     Failed,
@@ -47,6 +55,13 @@ pub(crate) enum Refusal {
 
 impl From<rusqlite::Error> for Refusal {
     fn from(error: rusqlite::Error) -> Self {
+        eprintln!("An alarms call failed: {error}");
+        Refusal::Failed
+    }
+}
+
+impl From<String> for Refusal {
+    fn from(error: String) -> Self {
         eprintln!("An alarms call failed: {error}");
         Refusal::Failed
     }
@@ -64,6 +79,10 @@ impl Refusal {
             Refusal::DialogGone => "dialog_gone",
             Refusal::NotTheParent => "not_the_parent",
             Refusal::MonoOnly => "mono_only",
+            Refusal::UnknownHold => "unknown_hold",
+            Refusal::NotYourHold => "not_your_hold",
+            Refusal::HoldDecided(_) => "hold_decided",
+            Refusal::ClockStale => "clock_stale",
             Refusal::UnknownCaller => "unknown_caller",
             Refusal::Failed => "failed",
         }
@@ -80,6 +99,11 @@ impl Refusal {
             Refusal::DialogGone => "The dialog is no longer pending: it was answered or withdrawn. Read the alarm again with alarms.read.".into(),
             Refusal::NotTheParent => "Only the agent's own provisioner (its lead, its Mono, its Giga) may set its stall minutes.".into(),
             Refusal::MonoOnly => "Only a Mono or a Giga runs alarms.report.".into(),
+            Refusal::UnknownHold => "No sleep hold has this id.".into(),
+            Refusal::NotYourHold => "This sleep hold is not yours: only the agent's provisioner or one above it may answer it.".into(),
+            Refusal::HoldDecided(Decision::Timeout) => "This sleep hold timed out: no answer came in 2 min, so the agent was refused. It was told to run the wait in the background.".into(),
+            Refusal::HoldDecided(decision) => format!("This sleep hold is decided already ({}). The first answer stands.", decision.as_str()),
+            Refusal::ClockStale => "No MonoCode process is running the active clock, so sleep holds cannot be timed: the hold timed out and the agent was refused.".into(),
             Refusal::UnknownCaller => "MonoCode has no saved session for this caller.".into(),
             Refusal::Failed => "MonoCode could not read or write its alarm rows. Try again.".into(),
         }

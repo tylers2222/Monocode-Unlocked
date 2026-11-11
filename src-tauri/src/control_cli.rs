@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 69] = [
+const APP_ACTIONS: [&str; 71] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -133,6 +133,8 @@ const APP_ACTIONS: [&str; 69] = [
     "ci.watch",
     "ci.list",
     "ci.cancel",
+    "holds.allow",
+    "holds.deny",
     "notes.list",
     "notes.read",
     "notes.write",
@@ -622,6 +624,17 @@ Actions:
   ci.list        {}  Your open watches: those you registered or that wake you.
   ci.cancel      {"id":"cw_..."}  End a watch with no wake. Codes:
                   unknown_watch, not_your_watch, watch_ended.
+  holds.allow    {"hold":"sh_..."}  Let the agent of a <mono_sleep_hold>
+                  wait in the foreground. Short form: app holds.allow sh_x.
+                  Only the agent's provisioner or one above it answers; the
+                  first answer stands. No answer in 2 min refuses the wait.
+                  Codes for both: unknown_hold, not_your_hold, hold_decided
+                  (answered or timed out already), clock_stale (no MonoCode
+                  process times holds; the hold timed out), invalid_input,
+                  unknown_caller, failed.
+  holds.deny     {"hold":"sh_...","reason":"..."}  Refuse the wait; the
+                  agent sees the reason. Short form: app holds.deny sh_x
+                  --reason "...".
   notes.list     {"limit":30,"offset":0}  Titles and short previews only.
   notes.read     {"id":"..."}  Full body of one note.
   notes.write    {"title":"Plan","body":"Markdown","tags":["work"]}
@@ -1552,7 +1565,8 @@ fn one_input(input: Option<Value>, alarm: Map<String, Value>) -> Result<Value, P
     }
 }
 
-/// Splits the short form of an `alarms.*` act (`al_x --text ...`) from an
+/// Splits the short form of an `alarms.*` or `holds.*` act (`al_x --text
+/// ...`, `sh_x --reason ...`) from an
 /// app call's args (action first): its input fields, and the args left
 /// for the usual options.
 fn alarm_short_form(
@@ -1563,14 +1577,19 @@ fn alarm_short_form(
     if !app_mode
         || !args
             .first()
-            .is_some_and(|action| action.starts_with("alarms."))
+            .is_some_and(|action| action.starts_with("alarms.") || action.starts_with("holds."))
     {
         return Ok((alarm, args.to_vec()));
     }
+    let id_field = if args[0].starts_with("holds.") {
+        "hold"
+    } else {
+        "alarm"
+    };
     let mut rest = args[..1].to_vec();
     let mut args = args[1..].iter().peekable();
     if let Some(id) = args.next_if(|arg| !arg.starts_with("--")) {
-        alarm.insert("alarm".into(), json!(id));
+        alarm.insert(id_field.into(), json!(id));
     }
     while let Some(flag) = args.next() {
         if let Some(field) = alarm_switch(flag) {
@@ -1949,7 +1968,8 @@ mod tests {
     }
 
     // Defect: the act line of a <mono_alarm> (`alarms.answer al_x --text
-    // ...`) is not a call the CLI takes, a flag lands in the wrong field, or
+    // ...`) or a <mono_sleep_hold> (`holds.deny sh_x --reason ...`) is not
+    // a call the CLI takes, a flag lands in the wrong field, or
     // the short form and --json mix into one input.
     #[test]
     fn app_mode_takes_the_short_form_of_each_alarms_act() {
@@ -1991,6 +2011,11 @@ mod tests {
                 &["alarms.nudge", "--json", r#"{"alarm":"al_7Q2"}"#][..],
                 json!({"alarm": "al_7Q2"}),
             ),
+            (&["holds.allow", "sh_K1"][..], json!({"hold": "sh_K1"})),
+            (
+                &["holds.deny", "sh_K1", "--reason", "use CI"][..],
+                json!({"hold": "sh_K1", "reason": "use CI"}),
+            ),
         ] {
             assert_eq!(
                 parsed(values),
@@ -2013,6 +2038,8 @@ mod tests {
             "alarms.dismiss",
             "alarms.report",
             "alarms.set",
+            "holds.allow",
+            "holds.deny",
         ] {
             assert!(
                 app_help().contains(&format!("\n  {action} ")),
