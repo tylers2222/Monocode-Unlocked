@@ -114,6 +114,7 @@ use_build() {
   fi
 }
 
+WARMED=""
 suite_scenarios() {
   local code=0 entry command build shard skip i slug args matched=""
   for entry in "${SCENARIOS[@]}"; do
@@ -134,6 +135,13 @@ suite_scenarios() {
       row scenarios "$command" skipped 0 "app.sh $build failed"
       code=1
       continue
+    fi
+    # Once, before the job's first scenario: the first fx the app spawns
+    # can take over 30 s to exec (ADE-273), which timed out r9 and s0.
+    if [[ -z $WARMED ]] && has warm; then
+      WARMED=1
+      run scenarios "warm-up" "$OUT/warm.log" bash "$APP" warm || true
+      bash "$ROOT/scripts/giga-eval/instance.sh" stop
     fi
     read -ra args <<<"$command"
     for i in $(seq 1 "$REPEAT"); do
