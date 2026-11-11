@@ -178,6 +178,15 @@ impl Live {
         std::mem::take(&mut lock(&self.0.pending).writes)
     }
 
+    /// What `session` recorded since the last take, left for the next take.
+    pub(crate) fn pending(&self, session: &SessionId) -> Vec<Write> {
+        lock(&self.0.pending)
+            .writes
+            .get(session)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// A take whose writes did not commit goes back before what came since.
     pub(crate) fn put_back(&self, taken: Taken) {
         let pending = &mut lock(&self.0.pending).writes;

@@ -331,6 +331,16 @@ fn no_act_for_fifteen_minutes_goes_one_level_up_and_ends_at_tyler_once() {
 fn a_nudge_stops_escalation_wakes_the_agent_and_no_progress_opens_a_new_episode() {
     let mut world = World::new("alarm-nudge");
     let chain = chain(&world, "aln");
+    // Past its due, the worker's ask counts for the ceiling (review r3 M1), so
+    // the nudged first turn below shows open work holds no alarm before a turn.
+    let moved = world
+        .conn()
+        .execute(
+            "UPDATE mono_asks SET due_active_ms = 0 WHERE child_actor = ?1",
+            [format!("session:{}", chain.worker.as_str())],
+        )
+        .unwrap();
+    assert_eq!(moved, 1);
     let set = result(call(
         &world,
         chain.lead.as_str(),

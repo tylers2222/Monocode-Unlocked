@@ -90,6 +90,9 @@ pub(crate) struct Stall {
     pub escalate_minutes: i64,
     /// The alarms for this agent held back since its last one (`limit`).
     pub held: i64,
+    /// The agent took a turn after its idle-type stall began: it is alive,
+    /// and only the item has not moved (ADE-276's ceiling).
+    pub turning: bool,
 }
 
 /// The level-k recipient that did not act, and how the stalled agent
@@ -101,8 +104,11 @@ pub(crate) struct Missed {
     pub what: String,
 }
 
-fn state_words(cause: &str) -> &'static str {
-    match cause {
+fn state_words(stall: &Stall) -> &'static str {
+    if stall.turning {
+        return "taking turns, but the item has not moved";
+    }
+    match stall.cause.as_str() {
         "dialog" => "waiting on a dialog",
         "hung" => "turn running, no output",
         "wake_missed" => "a wake not taken",
@@ -214,7 +220,7 @@ pub(crate) fn alarm(stall: &Stall, level: i64, missed: Option<&Missed>, next: &N
         stall.agent.named(),
         stall.since,
         stall.minutes,
-        state_words(&stall.cause)
+        state_words(stall)
     );
     let (head, acts) = match missed {
         None => (
@@ -335,7 +341,7 @@ pub(crate) fn notification(stall: &Stall) -> (String, String) {
         None => format!(
             "Stalled {} min ({}). Open work: {}.",
             stall.minutes,
-            state_words(&stall.cause),
+            state_words(stall),
             joined(&stall.open_work)
         ),
     };
@@ -374,6 +380,7 @@ mod tests {
             },
             escalate_minutes: 15,
             held: 0,
+            turning: false,
         }
     }
 
@@ -661,7 +668,12 @@ Your provisioner nudged you: PR S1 builder (session:9f3c) is stalled since 14:05
     // others' count hides how many there are.
     #[test]
     fn the_reply_line_and_the_count_say_what_the_rows_say() {
-        assert_eq!(state_words("asleep"), "state unknown");
+        let asleep = Stall {
+            cause: "asleep".into(),
+            turning: false,
+            ..stall()
+        };
+        assert_eq!(state_words(&asleep), "state unknown");
         assert_eq!(
             replied_line(&Replied::Yes("m_a, by m_b".into())),
             "Last turn replied to its last message: yes (m_a, by m_b)."
