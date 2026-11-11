@@ -21,6 +21,11 @@ import {
   watchSystemColorScheme,
 } from "../settings/model/appearance";
 import { FloatingMonoChat } from "./ui/FloatingMonoChat";
+import {
+  AlarmsProvider,
+  useAlarmsFeed,
+  type AlarmsWindowHost,
+} from "../alarms/ui/AlarmsProvider";
 import { homeDir } from "../../platform/tauri/fs";
 import { setHomeDir } from "../../shared/lib/paths";
 import { installNativeContextMenuGuard } from "../../shared/lib/nativeContextMenu";
@@ -61,8 +66,32 @@ window.addEventListener("storage", applyFloatingAppearance);
 void homeDir()
   .then(setHomeDir)
   .catch(() => undefined);
+/**
+ * This window shows one Mono's chat: its alarm cards act through Rust as the
+ * chat's owner. It holds no other session, so it opens, answers and sends
+ * nothing itself (no Tyler landing docks here: its composer is MonoComposer).
+ */
+const FLOATING_ALARMS: AlarmsWindowHost = {
+  openAgent: () => {},
+  answerDialog: () => {
+    throw new Error("The floating chat holds no other session's dialog");
+  },
+  sendAsUser: (sessionId) =>
+    console.error(`The floating chat sends nothing into ${sessionId}`),
+  refused: (what, detail) => console.error(`${what} refused`, detail),
+};
+
+function FloatingRoot() {
+  const alarms = useAlarmsFeed(FLOATING_ALARMS);
+  return (
+    <AlarmsProvider feed={alarms}>
+      <FloatingMonoChat onShown={applyFloatingAppearance} />
+    </AlarmsProvider>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <FloatingMonoChat onShown={applyFloatingAppearance} />
+    <FloatingRoot />
   </React.StrictMode>,
 );

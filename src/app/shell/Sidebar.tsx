@@ -222,6 +222,10 @@ import type {
   StallMinutesView,
 } from "../../features/alarms/model/alarmViews";
 import {
+  useSessionStallMinutes,
+  useSessionStalls,
+} from "../../features/alarms/ui/AlarmsProvider";
+import {
   formatReminderTime,
   reminderTime,
   type SessionReminder,
@@ -480,9 +484,9 @@ function SidebarComponent({
   reminders = [],
   onSetReminders,
   onCancelReminders,
-  sessionStalls,
-  sessionStallMinutes,
-  onSetStallMinutes,
+  sessionStalls: givenSessionStalls,
+  sessionStallMinutes: givenSessionStallMinutes,
+  onSetStallMinutes: givenSetStallMinutes,
   onDeleteSession: onDeleteLocalSession,
   onDeleteSessions: onDeleteLocalSessions,
   onOpenFile,
@@ -550,6 +554,12 @@ function SidebarComponent({
   monos,
   monoViewActive = false,
 }: Props) {
+  const feedStalls = useSessionStalls();
+  const feedStallMinutes = useSessionStallMinutes();
+  const sessionStalls = givenSessionStalls ?? feedStalls;
+  const sessionStallMinutes =
+    givenSessionStallMinutes ?? feedStallMinutes?.bySession;
+  const onSetStallMinutes = givenSetStallMinutes ?? feedStallMinutes?.set;
   const trafficLightsVisible = useTrafficLightsVisible();
   const remoteProject = isRemoteProjectPath(cwd);
   const tab: SidebarTabId = requestedTab;
@@ -1532,7 +1542,8 @@ function SidebarComponent({
   ];
   const menuStallMinutes =
     !multipleMenuSessions && onSetStallMinutes && sessionMenu
-      ? sessionStallMinutes?.get(sessionMenu.sessionId)
+      ? (sessionStallMinutes?.get(sessionMenu.sessionId) ??
+        (givenSessionStallMinutes ? undefined : feedStallMinutes?.fallback))
       : undefined;
   const sessionMenuItems: ExplorerMenuItem[] = [
     ...(onCancelReminders && menuReminderTimes.length > 0

@@ -4,6 +4,7 @@ import {
   mockIPC,
   mockWindows,
 } from "@tauri-apps/api/mocks";
+import { emptyAlarmsView } from "../emptyAlarmsView";
 import type { Approval } from "../../../src/features/approvals/model/approvals";
 import type { Verdict } from "../../../src/features/approvals/model/boardDecision";
 import type { Automation } from "../../../src/features/automations/model/automations";
@@ -405,6 +406,7 @@ const HANDLERS: Record<string, Handler> = {
   // only to answer the child's protocol.
   harness_spawn: (_store, { cwd }) => spawned(4242, cwd),
   default_cwd: (store) => store.home,
+  alarms_view: emptyAlarmsView,
   // The page is one window, so its own row is the only one.
   workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
   // session_store.rs snapshot_supersedes: a snapshot read before the stored

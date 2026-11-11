@@ -7,6 +7,7 @@ import {
 } from "../../src/features/sessions/model/session";
 import { SessionStateStore } from "../../src/features/sessions/model/sessionStateStore";
 import { newTab } from "../../src/features/workspace/model/layout";
+import { emptyAlarmsView } from "./emptyAlarmsView";
 import "../../src/styles/index.css";
 
 // Exercise the real workspace and its shortcut handler. Native services are
@@ -238,6 +239,7 @@ const fixtureInvoke = async (
   )
     return [];
   if (command === "approvals_open_counts") return { total: 0, byProject: {} };
+  if (command === "alarms_view") return emptyAlarmsView();
   throw new Error(`Unavailable fixture service: ${command}`);
 };
 Object.assign(window, {

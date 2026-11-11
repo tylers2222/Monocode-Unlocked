@@ -20,14 +20,17 @@ export type AlarmAgent = {
   role: AlarmAgentRole;
 };
 
-/** `alarm_episodes.last_activity`: "13:48 Bash `cargo test` (completed)". */
+/**
+ * `alarm_episodes.last_activity`: "13:48 Bash `cargo test` (completed)". Rust
+ * sends one line, so a line without a command or a state has none.
+ */
 export type AlarmLastActivity = {
-  /** Wall clock, "13:48". */
+  /** Wall clock, "13:48"; empty when Rust had no progress time. */
   at: string;
   tool: string;
-  command: string;
+  command?: string;
   /** "completed", "waiting for permission". */
-  state: string;
+  state?: string;
 };
 
 export type AlarmDialog = {
@@ -57,7 +60,18 @@ export type AlarmActed = {
   at: string;
 };
 
-/** The open `alarm_episodes` row for one agent. Only a dialog wait has a dialog. */
+/** `alarm_episodes.close_reason`. */
+export type AlarmCloseReason =
+  "progress" | "work_cleared" | "agent_gone" | "act_no_effect" | "superseded";
+
+/** An episode that closed: its card shows how it ended, with no acts. */
+export type AlarmClosed = {
+  reason: AlarmCloseReason;
+  /** Wall clock, "14:30". */
+  at: string;
+};
+
+/** An `alarm_episodes` row for one agent. Only a dialog wait has a dialog. */
 export type AlarmEpisodeView = {
   /** `al_7Q2`. */
   id: string;
@@ -71,6 +85,7 @@ export type AlarmEpisodeView = {
   sends: AlarmSend[];
   /** The episode stays open after an act until the agent moves. */
   acted?: AlarmActed;
+  closed?: AlarmClosed;
 } & (
   | { cause: Exclude<AlarmCause, "dialog">; dialog?: undefined }
   | { cause: "dialog"; dialog: AlarmDialog }
@@ -188,19 +203,24 @@ export type SleepHoldView = {
   decision?: SleepHoldDecision;
 };
 
+export type AlarmGiga = { id: string; name: string };
+
 /** `alarm_settings` and the per-agent `agent_alarm_settings.stall_minutes`. */
 export type AlarmSettingsView = {
   stallMinutes: number;
-  rootGiga: string;
-  gigas: string[];
+  /** A Giga in `gigas`, by id; none when there is no real Giga to name. */
+  rootGiga?: string;
+  gigas: AlarmGiga[];
   holdForegroundWaits: boolean;
   holdTylerSleeps: boolean;
   shortSleepSkipSeconds: number;
 };
 
-export const ALARM_SETTINGS_DEFAULTS: Omit<AlarmSettingsView, "gigas"> = {
+export const ALARM_SETTINGS_DEFAULTS: Omit<
+  AlarmSettingsView,
+  "gigas" | "rootGiga"
+> = {
   stallMinutes: 15,
-  rootGiga: "Monocode General",
   holdForegroundWaits: true,
   holdTylerSleeps: true,
   shortSleepSkipSeconds: 10,
@@ -299,7 +319,14 @@ export function dialogLine(dialog: AlarmDialog | undefined): string {
 }
 
 export function lastActivityText(activity: AlarmLastActivity): string {
-  return `${activity.at} ${activity.tool} ${activity.command} (${activity.state})`;
+  return [
+    activity.at,
+    activity.tool,
+    activity.command,
+    activity.state && `(${activity.state})`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function countdownText(view: AlarmCardView): string {
@@ -329,6 +356,19 @@ export function actedLine(
     chip: word.chip,
     text: `${acted.by} ${word.verb} ${target.name} at ${acted.at} · escalation stopped`,
   };
+}
+
+const CLOSED_WORD: Record<AlarmCloseReason, (agent: string) => string> = {
+  progress: (agent) => `${agent} moved again`,
+  work_cleared: (agent) => `${agent}'s open work cleared`,
+  agent_gone: (agent) => `${agent} is gone`,
+  act_no_effect: (agent) => `${agent} stayed stalled after the act`,
+  superseded: () => "a new alarm replaced it",
+};
+
+/** The text beside a closed card's Closed chip: "14:30 · PR S1 reviewer moved again". */
+export function closedLine(closed: AlarmClosed, stalled: AlarmAgent): string {
+  return `${closed.at} · ${CLOSED_WORD[closed.reason](stalled.name)}`;
 }
 
 /** The sidebar hover card's Told row: who was told, then the act or "no act yet". */

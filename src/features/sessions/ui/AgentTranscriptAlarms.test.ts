@@ -113,6 +113,39 @@ describe("AgentTranscript alarm host spots", () => {
     expect(plain).toBe(markup(BLOCKS, views().alarms));
   });
 
+  it("hides a delivered alarm it has no view for", () => {
+    // Defect: with no card to draw (no feed in this window, before the first
+    // read, or an alarm the app does not know), the app's `<mono_alarm>`
+    // shows as a raw message the user seems to have sent.
+    for (const [why, alarms] of [
+      ["no feed", undefined],
+      ["before the first read", views().alarms],
+      ["an unknown alarm", views([{ ...CARD, id: "al_OTHER" }]).alarms],
+    ] as const) {
+      const shown = markup(BLOCKS, alarms);
+      expect(shown, why).not.toContain("mono_alarm");
+      expect(shown, why).not.toContain('data-alarm="al_7Q2"');
+      expect(shown, why).toContain("Watch CI");
+    }
+  });
+
+  it("shows a closed alarm as its card in its final state, not a message", () => {
+    // Defect: once the episode closed, the card drops and the raw tag shows,
+    // or the closed card still counts down and offers acts the app refuses.
+    const closed: AlarmCardView = {
+      ...CARD,
+      acted: { how: "nudge", by: "Fork Orchestrator", at: "14:21" },
+      closed: { reason: "progress", at: "14:30" },
+    };
+    const shown = markup([delivered("al_7Q2")], views([closed]).alarms);
+    expect(shown).toContain('data-alarm="al_7Q2"');
+    expect(shown).not.toContain("mono_alarm");
+    expect(shown).toContain("14:30 · PR S1 reviewer moved again");
+    expect(shown).toContain("Nudged");
+    expect(shown).not.toContain("Goes to Fork Orchestrator");
+    expect(shown).not.toContain("<button");
+  });
+
   it("shows the alarm card in place of its tag, and the hold under its tool row", () => {
     // Defect: a delivered alarm stays a raw tag, or a hold card lands under the wrong row.
     const shown = markup(BLOCKS, views([CARD], [HOLD]).alarms);

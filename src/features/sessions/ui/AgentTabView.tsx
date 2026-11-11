@@ -1,11 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { AgentTranscript } from "./AgentTranscript";
+import { useBlockNavigator } from "./useBlockNavigator";
 import { useSessionSnapshot } from "../model/sessionStateStore";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -22,6 +17,7 @@ import {
   type Session,
 } from "../model/session";
 import { createNote, noteTitle } from "../../notes";
+import { useTranscriptAlarms } from "../../alarms/ui/AlarmsProvider";
 import {
   loadNotesEnabled,
   subscribeNotesEnabled,
@@ -49,17 +45,9 @@ export function AgentTabView({
   onOpenFile?: (path: string) => void;
 }) {
   const session = useSessionSnapshot(initialSession, visible);
-  const navigateBlockRef = useRef<
-    ((blockId: string | null, query?: string) => boolean) | null
-  >(null);
-  const [navigatorReady, setNavigatorReady] = useState(false);
-  const onNavigateReady = useCallback(
-    (navigate: (blockId: string | null, query?: string) => boolean) => {
-      navigateBlockRef.current = navigate;
-      setNavigatorReady(true);
-    },
-    [],
-  );
+  const alarms = useTranscriptAlarms(session?.id);
+  const { navigateBlockRef, navigatorReady, onNavigateReady } =
+    useBlockNavigator();
   const navigateBlock = useCallback(
     (blockId: string | null, query?: string) =>
       navigateBlockRef.current?.(blockId, query) ?? false,
@@ -128,6 +116,7 @@ export function AgentTabView({
       <div className="relative min-h-0 flex-1">
         <AgentTranscript
           blocks={session.blocks}
+          alarms={alarms}
           busy={session.busy}
           cwd={sessionWorkCwd(session)}
           harness={session.harness}

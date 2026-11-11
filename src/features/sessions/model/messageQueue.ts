@@ -2,6 +2,7 @@ import { isPreparingHandoff, switchingProviders } from "./handoff";
 import { consumeOperatorCommand } from "./operatorCommand";
 import type { TurnId } from "../../monos/model/monoMessages";
 import type { AppDelivery, QueuedMessage, Session } from "./session";
+import { monoAlarmId } from "../../alarms/model/alarmViews";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
   return session.queuedMessages?.[0];
@@ -272,7 +273,8 @@ export function queuedSteer(
 
 /**
  * Block fields for a user turn that sends queued item `message`. A reminder
- * (R9) is the app's prompt, not the user's, so its turn is hidden.
+ * (R9) is the app's prompt, not the user's, so its turn is hidden; a
+ * delivered `<mono_alarm>` stays visible, since its block is the alarm card.
  */
 export function queuedAppDelivery(message: QueuedMessage | undefined): {
   appRequestId?: string;
@@ -283,7 +285,13 @@ export function queuedAppDelivery(message: QueuedMessage | undefined): {
   return {
     appRequestId: message.appRequestId,
     appDelivery: { via: "queued", queuedMessageId: message.id },
-    ...(message.monoReminder && { internal: true }),
+    ...(message.monoReminder &&
+      !monoAlarmId({
+        appRequestId: message.appRequestId,
+        text: message.text,
+      }) && {
+        internal: true,
+      }),
   };
 }
 

@@ -26,29 +26,29 @@ pub(crate) fn nudge_key(episode: &str, seq: i64) -> String {
     format!("nudge-{episode}-{seq}")
 }
 
-/// A row an act writes: what it did, to whom, and the outbox prompt it
-/// sends that one, if any.
-struct Logged<'a> {
-    caller: &'a Actor,
-    target: &'a Actor,
-    how: &'a str,
-    detail: Option<&'a str>,
-    prompt: Option<String>,
-    request_id: &'a str,
+/// A row an act writes: who did it (an actor as stored, or `tyler`), what
+/// it did, to whom, and the outbox prompt it sends that one, if any.
+pub(super) struct Logged<'a> {
+    pub caller: &'a str,
+    pub target: &'a Actor,
+    pub how: &'a str,
+    pub detail: Option<&'a str>,
+    pub prompt: Option<String>,
+    pub request_id: &'a str,
 }
 
-/// The act `caller` logged on `episode` under `request_id` before, as its
-/// answer.
+/// The act `caller` (an actor as stored, or `tyler`) logged on `episode`
+/// under `request_id` before, as its answer.
 pub(super) fn logged_before(
     conn: &Connection,
     episode: &str,
-    caller: &Actor,
+    caller: &str,
     request_id: &str,
 ) -> rusqlite::Result<Option<Value>> {
     conn.query_row(
         "SELECT episode_id, seq, how, target FROM alarm_acts
           WHERE episode_id = ?1 AND actor = ?2 AND request_id = ?3",
-        params![episode, caller.to_string(), request_id],
+        params![episode, caller, request_id],
         |row| {
             Ok(json!({
                 "alarm": row.get::<_, String>(0)?,
@@ -84,7 +84,7 @@ fn log(
             episode.id,
             seq,
             episode.level,
-            act.caller.to_string(),
+            act.caller,
             act.target.to_string(),
             act.how,
             act.detail,
@@ -97,7 +97,7 @@ fn log(
     tx.execute(
         "UPDATE alarm_episodes SET acted_by = ?2, acted_how = ?3, acted_active_ms = ?4
           WHERE id = ?1",
-        params![episode.id, act.caller.to_string(), act.how, active],
+        params![episode.id, act.caller, act.how, active],
     )?;
     if let (Some(key), Some(prompt)) = (&key, &act.prompt) {
         let target = act.target.to_string();
@@ -120,7 +120,7 @@ fn log(
     }))
 }
 
-fn logged_in_tx(
+pub(super) fn logged_in_tx(
     conn: &Connection,
     episode: &EpisodeRow,
     act: &Logged,
@@ -197,11 +197,12 @@ pub(super) fn deliver(
             answered_plan,
         }));
     }
+    let caller = by.actor.to_string();
     let (result, notices) = logged_in_tx(
         conn,
         episode,
         &Logged {
-            caller: by.actor,
+            caller: &caller,
             target,
             how,
             detail,
@@ -224,11 +225,12 @@ pub(crate) fn forwarded(
     now: (i64, i64),
 ) -> Result<Value, Refusal> {
     let episode = route::episode(conn, &plan.episode)?.ok_or(Refusal::UnknownAlarm)?;
+    let caller = plan.caller.to_string();
     let logged = logged_in_tx(
         conn,
         &episode,
         &Logged {
-            caller: &plan.caller,
+            caller: &caller,
             target: &plan.target,
             how: plan.how,
             detail: (!plan.detail.is_empty()).then_some(plan.detail.as_str()),
@@ -268,8 +270,9 @@ pub(crate) fn message(
         if !told || target_of(&chain, index) != Some(&to) {
             continue;
         }
+        let stored = caller.to_string();
         let act = Logged {
-            caller: &caller,
+            caller: &stored,
             target: &to,
             how: "message",
             detail: None,

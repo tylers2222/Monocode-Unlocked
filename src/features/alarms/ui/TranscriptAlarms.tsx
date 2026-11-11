@@ -1,4 +1,9 @@
-import { createContext, useContext, useSyncExternalStore } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useSyncExternalStore,
+} from "react";
 import type { AlarmCardView, SleepHoldView } from "../model/alarmViews";
 import type { ViewStore } from "../model/viewStore";
 import { AlarmCard, type AlarmCardActions } from "./AlarmCard";
@@ -20,19 +25,19 @@ export const TranscriptAlarms = createContext<TranscriptAlarmsView | undefined>(
   undefined,
 );
 
-const NOTHING = () => () => {};
 const NONE = () => undefined;
 
 function useView<V>(
   store: ViewStore<V> | undefined,
   id: string | undefined,
 ): V | undefined {
-  const read = store && id ? () => store.get(id) : NONE;
-  return useSyncExternalStore(
-    store && id ? store.subscribe : NOTHING,
-    read,
-    read,
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      store && id ? store.subscribe(id, listener) : () => {},
+    [store, id],
   );
+  const read = store && id ? () => store.get(id) : NONE;
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** The card for a delivered `<mono_alarm>`, once the alarm has a view. */

@@ -53,6 +53,7 @@ import {
   stallChipLabel,
   type StallMarkerView,
 } from "../../features/alarms/model/alarmViews";
+import { useMonoStalls } from "../../features/alarms/ui/AlarmsProvider";
 
 export type MonoRailProps = {
   /** The Mono open in the main area, if any. */
@@ -85,7 +86,7 @@ export function MonoRailSection({
   activeId,
   states,
   unseenCounts,
-  stalls,
+  stalls: givenStalls,
   onOpen,
   onCreate,
   onDelete,
@@ -99,6 +100,8 @@ export function MonoRailSection({
 }) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const feedStalls = useMonoStalls();
+  const stalls = givenStalls ?? feedStalls;
   const monos = useMemo(
     () =>
       listMonos().filter(

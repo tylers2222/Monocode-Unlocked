@@ -28,6 +28,7 @@ import {
   type FloatingMonoView,
 } from "../model/floatingMono";
 import { MonoComposer } from "./MonoComposer";
+import { useTranscriptAlarms } from "../../alarms/ui/AlarmsProvider";
 import { MonoStatusDot } from "./MonoRailMascot";
 import { MonoStatus } from "./MonoStatus";
 import { MONO_PAGE_TURNS } from "../../sessions/data/sessionStore";
@@ -383,6 +384,7 @@ function FloatingConversation({
   onOpenArtifact: (id: string) => void;
 }) {
   const transcript = useMonoTranscript(session, true);
+  const alarms = useTranscriptAlarms(session.id);
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
@@ -411,6 +413,7 @@ function FloatingConversation({
           </div>
         ) : null}
         <AgentTranscript
+          alarms={alarms}
           blocks={
             transcript.viewingOlderPage
               ? transcript.blocks

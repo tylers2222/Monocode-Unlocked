@@ -62,6 +62,7 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { useBlockNavigator } from "./useBlockNavigator";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -138,6 +139,10 @@ import type { SessionFolderTarget } from "../model/sessionFolders";
 import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen";
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import {
+  useTranscriptAlarms,
+  useTylerLanding,
+} from "../../alarms/ui/AlarmsProvider";
 import type { HostSession } from "../../connections/model/protocol";
 
 export type SessionPaneProps = {
@@ -416,6 +421,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const recallLastTurnRef = useRef<(() => void) | null>(null);
   const remote = remoteSession;
+  // A remote session's alarms belong to the host it runs on.
+  const alarms = useTranscriptAlarms(remote ? undefined : session.id);
+  const alarmLanding = useTylerLanding(remote ? undefined : session.id);
   // A Mono's chat is a running conversation; what was said stays said.
   const editLastTurnSupported =
     !remote && !monoForSession(session.id) && canEditLastTurn(session);
@@ -596,17 +604,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (blockId: string) => revealBlockRef.current?.(blockId) ?? false,
     [],
   );
-  const navigateBlockRef = useRef<
-    ((blockId: string | null, query?: string) => boolean) | null
-  >(null);
-  const [navigatorReady, setNavigatorReady] = useState(false);
-  const onNavigateReady = useCallback(
-    (navigate: (blockId: string | null, query?: string) => boolean) => {
-      navigateBlockRef.current = navigate;
-      setNavigatorReady(true);
-    },
-    [],
-  );
+  const { navigateBlockRef, navigatorReady, onNavigateReady } =
+    useBlockNavigator();
   const navigateBlock = useCallback(
     async (blockId: string | null, query?: string) => {
       if (navigateBlockRef.current?.(blockId, query)) return true;
@@ -835,6 +834,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onResumeQueue={() => onResumeQueue(session.id)}
       usageLimit={session.usageLimit}
+      alarm={alarmLanding}
       onUsageLimitResume={() => onUsageLimitResume(session.id)}
       onUsageLimitResumeAtReset={(enabled) =>
         onUsageLimitResumeAtReset(session.id, enabled)
@@ -1017,6 +1017,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           : monoTranscript.blocks
                       }
                       sessionId={remoteSession ? undefined : session.id}
+                      alarms={alarms}
                       historicalBlockIds={monoTranscript.historicalBlockIds}
                       initialTurns={agent ? MONO_PAGE_TURNS : undefined}
                       pageSize={agent ? MONO_PAGE_TURNS : undefined}

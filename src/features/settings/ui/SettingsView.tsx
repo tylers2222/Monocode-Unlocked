@@ -470,6 +470,8 @@ import {
   stallMinutesLabel,
   type AlarmSettingsView,
 } from "../../alarms/model/alarmViews";
+import type { AlarmSettingsChange } from "../../alarms/model/alarmsFeed";
+import { useAlarmSettings } from "../../alarms/ui/AlarmsProvider";
 
 /**
  * The `data-setting-id` Settings should reveal when it opens: one of the ids in
@@ -521,8 +523,6 @@ type Props = {
   monoStates?: ReadonlyMap<string, MonoState>;
   /** Unseen replies by Mono id, for the Spaces page's badges. */
   monoUnseenCounts?: ReadonlyMap<string, number>;
-  /** The Alarms page's starting values; without them the page shows nothing. */
-  alarmSettings?: AlarmSettingsView;
 };
 
 const NO_MONO_STATES: ReadonlyMap<string, MonoState> = new Map();
@@ -553,7 +553,6 @@ export function SettingsView({
   onCollapsedProjectRailModeChange,
   monoStates = NO_MONO_STATES,
   monoUnseenCounts,
-  alarmSettings,
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const [revealed, setRevealed] = useState<string | null>(anchor);
@@ -710,9 +709,7 @@ export function SettingsView({
                 />
               ) : null}
               {section === "monos" ? <MonosPage /> : null}
-              {section === "alarms" && alarmSettings ? (
-                <AlarmsPage initial={alarmSettings} />
-              ) : null}
+              {section === "alarms" ? <AlarmsSection /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
@@ -4715,14 +4712,26 @@ function formatDate(value: number): string {
   }
 }
 
+/** The page once this window has the alarms snapshot; empty before. */
+function AlarmsSection() {
+  const alarms = useAlarmSettings();
+  return alarms ? (
+    <AlarmsPage settings={alarms.settings} onChange={alarms.onChange} />
+  ) : null;
+}
+
 /**
- * Frame 5: who hears about a stalled or sleeping agent, and how fast. Changes
- * stay on the page until row U2 saves them to `alarm_settings`.
+ * Frame 5: who hears about a stalled or sleeping agent, and how fast. It
+ * shows `alarm_settings` as Rust has them; a change goes to Rust, and the
+ * page moves once the next snapshot says so.
  */
-function AlarmsPage({ initial }: { initial: AlarmSettingsView }) {
-  const [settings, setSettings] = useState(initial);
-  const set = (next: Partial<AlarmSettingsView>) =>
-    setSettings((current) => ({ ...current, ...next }));
+function AlarmsPage({
+  settings,
+  onChange: set,
+}: {
+  settings: AlarmSettingsView;
+  onChange: (change: AlarmSettingsChange) => void;
+}) {
   return (
     <>
       <Group
@@ -4751,12 +4760,19 @@ function AlarmsPage({ initial }: { initial: AlarmSettingsView }) {
         >
           <Select
             label="Root Giga"
-            value={settings.rootGiga}
-            options={settings.gigas.map((giga) => ({
-              value: giga,
-              label: giga,
-            }))}
-            onChange={(rootGiga) => set({ rootGiga })}
+            value={settings.rootGiga ?? ""}
+            options={[
+              ...(settings.rootGiga
+                ? []
+                : [{ value: "", label: "None", muted: true }]),
+              ...settings.gigas.map((giga) => ({
+                value: giga.id,
+                label: giga.name,
+              })),
+            ]}
+            onChange={(rootGiga) => {
+              if (rootGiga) set({ rootGiga });
+            }}
           />
         </Row>
       </Group>

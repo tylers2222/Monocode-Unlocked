@@ -80,7 +80,7 @@ pub(crate) fn root_giga(setting: Option<&str>, gigas: &[Giga]) -> Option<MonoId>
         .map(|giga| giga.id.clone())
 }
 
-fn gigas(conn: &Connection) -> rusqlite::Result<Vec<Giga>> {
+pub(crate) fn gigas(conn: &Connection) -> rusqlite::Result<Vec<Giga>> {
     conn.prepare(
         "SELECT id, name FROM monos WHERE role = 'giga' ORDER BY sort_order, created_at, id",
     )?
