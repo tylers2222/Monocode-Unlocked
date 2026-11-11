@@ -92,6 +92,7 @@ jobs:
       - name: Install Linux system dependencies (base-branch script)
         id: linux-deps
         if: ${{ !cancelled() }}
+        timeout-minutes: 12
         run: |
           git show "$BASE:scripts/install-linux-deps-debian.sh" > "$RUNNER_TEMP/install-linux-deps.sh"
           bash "$RUNNER_TEMP/install-linux-deps.sh" --sources /etc/apt/sources.list.d/ubuntu.sources

@@ -529,6 +529,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux system dependencies
+        timeout-minutes: 12
         run: bash scripts/install-linux-deps-debian.sh
 
       - run: npm ci
