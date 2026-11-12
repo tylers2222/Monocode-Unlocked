@@ -174,11 +174,23 @@ pub(crate) struct Facts {
     /// The last turn end below its settled children: open work it held
     /// while it waited on them counts from there (lead cascade rule 3).
     pub settled_at: Option<i64>,
+    /// The habit runs of a Mono's chat; none for any other agent.
+    pub runs: Runs,
     /// When a wake for the agent (message, reminder, notice) was first seen
     /// waiting for its provider.
     pub wake_pending_since: Option<i64>,
     pub hold: Hold,
     pub episode: Option<Episode>,
+}
+
+/// A Mono's habit runs, folded (ADE-306). A Mono that works in habit runs
+/// is not idle while one runs or just ended, though its chat takes no turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Runs {
+    /// A run's turn is running now.
+    pub running: bool,
+    /// The latest start of a running run's turn or end of an idle run's turn.
+    pub last_at: Option<i64>,
 }
 
 /// The session's sleep hold as its row holds it.
@@ -353,8 +365,11 @@ pub(crate) fn status(facts: &Facts, now: i64, limits: Thresholds) -> Status {
                 .map(|(_, at)| at)
                 .chain(facts.settled_at)
                 .chain(background_end)
+                .chain(facts.runs.last_at)
                 .fold(ended_at, i64::max);
-            if facts.background == Background::Running
+            // A running habit run is waited on as a background task is, and
+            // as long: a run that never ends must not hide the open work.
+            if (facts.background == Background::Running || facts.runs.running)
                 && now - since < BACKGROUND_STALLS * limits.stall_ms
             {
                 return Status::Waiting;
@@ -392,8 +407,9 @@ impl Status {
 }
 
 /// Whether the agent moved since its episode's stall began: a turn started
-/// or ended after it, a hung turn printed or ran a tool, or the dialog it
-/// was stuck on was answered or withdrawn.
+/// or ended after it, a hung turn printed or ran a tool, the dialog it was
+/// stuck on was answered or withdrawn, or for idle open work, one of its
+/// habit runs started or ended (ADE-306).
 pub(crate) fn progressed(facts: &Facts, episode: &Episode) -> bool {
     let since = episode.stalled_since;
     let boundary = match facts.turn {
@@ -413,7 +429,8 @@ pub(crate) fn progressed(facts: &Facts, episode: &Episode) -> bool {
                 } if tool_running || last_at > since
             ),
             Ok(Cause::Dialog) => blocking_dialog(facts).is_none_or(|dialog| dialog.since != since),
-            Ok(Cause::IdleOpenWork | Cause::WakeMissed | Cause::HoldMissing) | Err(_) => false,
+            Ok(Cause::IdleOpenWork) => facts.runs.last_at.is_some_and(|at| at > since),
+            Ok(Cause::WakeMissed | Cause::HoldMissing) | Err(_) => false,
         }
 }
 
@@ -492,6 +509,7 @@ mod tests {
             open_work: Vec::new(),
             children: Vec::new(),
             settled_at: None,
+            runs: Runs::default(),
             wake_pending_since: None,
             hold: Hold::Held,
             episode: None,

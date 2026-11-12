@@ -223,6 +223,7 @@ mod tests {
             open_work: Vec::new(),
             children: Vec::new(),
             settled_at: None,
+            runs: Default::default(),
             wake_pending_since: None,
             hold: Hold::Held,
             episode: None,
