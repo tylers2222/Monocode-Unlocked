@@ -1,4 +1,3 @@
-import { removeProject as removeProjectMilestones } from "../../milestones/model/milestones";
 import { projectKey } from "../../../shared/lib/paths";
 import { clearProjectLogo } from "./projectLogos";
 import { clearProjectChatBackground } from "./chatBackground";
@@ -7,7 +6,6 @@ import {
   rebaseProjectChatBackgroundSetting,
 } from "./projectChatBackground";
 import { normalizeProjectPath } from "./recents";
-import { deleteSession, listSessionsByProject } from "../../sessions/data/sessionStore";
 import {
   clearTabGroupSettings,
   rebaseProjectTabGroupSettings,
@@ -23,26 +21,10 @@ import {
   rebaseProjectSidebarTab,
 } from "../../settings/model/projectSidebarTab";
 
-/** Saved chats filed under this project, so the confirm prompt can count them. */
-export async function projectSessionCount(path: string): Promise<number> {
-  const sessions = await listSessionsByProject(path).catch(() => []);
-  return sessions.length;
-}
-
-/** Everything we persist for a project: saved chats plus its rail appearance. */
-export async function removeProjectData(path: string): Promise<void> {
-  const normalized = normalizeProjectPath(path);
-  const sessions = await listSessionsByProject(normalized).catch(() => []);
-  for (const session of sessions) {
-    await deleteSession(session.id).catch(() => undefined);
-  }
-  await removeProjectMilestones(normalized).catch(() => undefined);
-  await clearProjectSettings(normalized);
-}
-
 /**
  * What this window stores for a project once its last Space deleted it (T11):
- * its rail appearance and settings.
+ * its rail appearance and settings. The backend deleted the chats and milestones
+ * in its own transaction.
  */
 export async function clearProjectSettings(path: string): Promise<void> {
   const normalized = normalizeProjectPath(path);

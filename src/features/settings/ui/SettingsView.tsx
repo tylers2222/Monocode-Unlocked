@@ -214,7 +214,8 @@ import {
   projectKey,
   projectName,
 } from "../../../shared/lib/paths";
-import { isGigaWorkspaceProject } from "../../projects/model/reservedProjectName";
+import { checkProjectDelete } from "../../projects/model/projectDeleteCheck";
+import { isInGigaWorkspace } from "../../projects/model/reservedProjectName";
 import { revealPath } from "../../../platform/tauri/fs";
 import { IS_LINUX, IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import {
@@ -515,7 +516,7 @@ type Props = {
   onArchiveSession: (sessionId: string, archived: boolean) => void;
   onDeleteSession: (sessionId: string) => void;
   onRestoreProject?: (path: string) => void;
-  onDeleteProject?: (path: string) => void;
+  onDeleteProject?: (path: string) => void | Promise<string | null>;
   onOpenWhatsNew: (version: string) => void;
   collapsedProjectRailMode?: CollapsedProjectRailMode;
   onCollapsedProjectRailModeChange?: (mode: CollapsedProjectRailMode) => void;
@@ -4564,10 +4565,11 @@ function ArchivePage({
   onArchiveSession: (sessionId: string, archived: boolean) => void;
   onDeleteSession: (sessionId: string) => void;
   onRestoreProject?: (path: string) => void;
-  onDeleteProject?: (path: string) => void;
+  onDeleteProject?: (path: string) => void | Promise<string | null>;
 }) {
   const [filters, setFilters] = useState(loadSessionSidebarFilters);
   const [deleting, setDeleting] = useState<ArchivedProject | null>(null);
+  const [deleteRefusal, setDeleteRefusal] = useState<string | null>(null);
   const archivedProjects = useArchivedProjects();
   const archived = useMemo(
     () =>
@@ -4613,14 +4615,28 @@ function ArchivePage({
                 </SecondaryButton>
               ) : null}
               {onDeleteProject &&
-              !isGigaWorkspaceProject(project.path, knownHomeDir()) ? (
-                <SecondaryButton danger onClick={() => setDeleting(project)}>
+              !isInGigaWorkspace(project.path, knownHomeDir()) ? (
+                <SecondaryButton
+                  danger
+                  onClick={() => {
+                    setDeleteRefusal(null);
+                    void checkProjectDelete(project.path).then((refusal) => {
+                      if (refusal) setDeleteRefusal(refusal);
+                      else setDeleting(project);
+                    });
+                  }}
+                >
                   Delete
                 </SecondaryButton>
               ) : null}
             </div>
           ))
         )}
+        {deleteRefusal ? (
+          <p role="alert" className="px-4 py-2 text-xs text-red-400">
+            {deleteRefusal}
+          </p>
+        ) : null}
       </Group>
 
       <Group
@@ -4685,14 +4701,17 @@ function ArchivePage({
         )}
       </Group>
 
-      {deleting ? (
+      {deleting && onDeleteProject ? (
         <RemoveProjectDialog
           name={archivedProjectLabel(deleting.path)}
           path={deleting.path}
           onCancel={() => setDeleting(null)}
           onConfirm={() => {
-            onDeleteProject?.(deleting.path);
+            const purge = onDeleteProject(deleting.path);
             setDeleting(null);
+            void Promise.resolve(purge).then((refusal) =>
+              setDeleteRefusal(refusal ?? null),
+            );
           }}
         />
       ) : null}

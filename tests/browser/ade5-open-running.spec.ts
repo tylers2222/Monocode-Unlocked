@@ -14,6 +14,8 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 const HOME = "/Users/test";
 const ACME = `${HOME}/acme`;
 const NOTES = `${HOME}/notes`;
+/** A project nothing runs in, so Archive may take it (T9). */
+const IDLE = `${HOME}/idle`;
 
 type Fixture = {
   snapshot: { sessions: { id: string }[] };
@@ -265,17 +267,22 @@ type RealDbOptions = {
   excludedRunning?: boolean;
   /** Only an orchestration worker of LEAD runs in acme. */
   runningWorker?: boolean;
+  idleProject?: boolean;
 };
 
 async function mountRealDb(
   app: AppShell,
-  { excludedRunning = false, runningWorker = false }: RealDbOptions = {},
+  {
+    excludedRunning = false,
+    runningWorker = false,
+    idleProject = false,
+  }: RealDbOptions = {},
 ) {
   const pipInAcme = (session: SessionSummary) =>
     excludedRunning && session.id === PIP_CHAT ? { ...session, cwd: ACME } : session;
   await app.mount(
     {
-      projects: [ACME, NOTES],
+      projects: idleProject ? [ACME, NOTES, IDLE] : [ACME, NOTES],
       sessions: [
         ...records.map(summary).map(pipInAcme),
         ...(runningWorker ? [workerRecord] : []),
@@ -384,17 +391,11 @@ async function runningWithNoTab(
   page: Page,
   {
     excludedRunning = false,
-    acmeAfterMonoCode = false,
-  }: { excludedRunning?: boolean; acmeAfterMonoCode?: boolean } = {},
+    idleProject = false,
+  }: { excludedRunning?: boolean; idleProject?: boolean } = {},
 ) {
-  await mountRealDb(app, { excludedRunning });
+  await mountRealDb(app, { excludedRunning, idleProject });
   await expect(page.getByText(`${running.length} working agents`)).toBeVisible();
-  if (acmeAfterMonoCode) {
-    // The Giga's resumed turn adds its MonoCode workspace to the projects;
-    // choosing acme while its sessions still have tabs puts acme after it.
-    await expect(railProject(page, "MonoCode")).toBeVisible();
-    await railProject(page, "acme").click();
-  }
   for (const title of runningIn(ACME)) await closeTab(page, title).click();
   await railProject(page, "notes").click();
   for (const title of runningIn(NOTES)) await closeTab(page, title).click();
@@ -637,13 +638,30 @@ test("the previous-project shortcut opens the running session that has no tab", 
 
 // Archiving notes moves to the most recent project left, acme, whose
 // Mono-started sessions run in worktrees with no tab.
+// Archiving an idle project moves to the most recent project left, acme, whose
+// Mono-started sessions run in worktrees with no tab.
 test("archiving the current project moves to the next project's running session", async ({
   app,
   page,
 }) => {
-  await runningWithNoTab(app, page, { acmeAfterMonoCode: true });
-  await archiveFromRail(page, "notes");
+  await runningWithNoTab(app, page, { idleProject: true });
+  await railProject(page, "acme").click();
+  await railProject(page, "idle").click();
+  await archiveFromRail(page, "idle");
   await expectOnRunningAcmeSession(page);
+});
+
+// T9, R14: Archive is global and closes tabs, so a running session refuses it.
+test("archiving a project with a running session is refused in the menu's footer", async ({
+  app,
+  page,
+}) => {
+  await runningWithNoTab(app, page);
+  await archiveFromRail(page, "acme");
+  await expect(page.getByRole("alert")).toHaveText(
+    "A session is running in acme here. Stop it first.",
+  );
+  await expect(railProject(page, "acme")).toHaveCount(1);
 });
 
 test("restoring an archived project in Settings opens its running session", async ({
@@ -651,8 +669,14 @@ test("restoring an archived project in Settings opens its running session", asyn
   page,
 }) => {
   await runningWithNoTab(app, page);
-  await archiveFromRail(page, "acme");
-  await expect(railProject(page, "acme")).toHaveCount(0);
+  // A running project cannot be archived (T9): a turn began after its archive.
+  await page.evaluate((path) => {
+    localStorage.setItem(
+      "monocode.archivedProjects",
+      JSON.stringify([{ path, archivedAt: 1 }]),
+    );
+    window.dispatchEvent(new Event("monocode:archived-projects-changed"));
+  }, ACME);
   await rail(page).getByRole("button", { name: /^Settings/ }).click();
   await rail(page).getByRole("button", { name: "Archive", exact: true }).click();
   await page
@@ -764,8 +788,10 @@ test("archiving the current project moves to the next project's running session 
   app,
   page,
 }) => {
-  await onIdleAcmeTab(app, page);
-  await archiveFromRail(page, "acme");
+  await mountRealDb(app, { idleProject: true });
+  await railProject(page, "notes").click();
+  await railProject(page, "idle").click();
+  await archiveFromRail(page, "idle");
   await expect(page.getByRole("main").getByRole("button", { name: "Stop" })).toBeVisible();
   await expect(closeTab(page, runningIn(NOTES)[0])).toBeVisible();
   await expect(switcher(page)).toHaveAttribute("title", "main");

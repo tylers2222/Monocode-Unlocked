@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   checkProjectArchive,
   checkProjectDelete,
@@ -33,16 +33,19 @@ export function useProjectRemoval({
   ) => void | Promise<string | null>;
 }) {
   const [removing, setRemoving] = useState<RemovalTarget | null>(null);
-  const [check, setCheck] = useState<AbortController | null>(null);
+  // The check still running. It is held in a ref, not state, so a close
+  // handler from an older render still cancels the latest check.
+  const running = useRef<AbortController | null>(null);
+  const cancelCheck = () => running.current?.abort();
 
   const whenAllowed = (
     ask: (path: string) => Promise<string | null>,
     path: string,
     proceed: () => void,
   ) => {
-    check?.abort();
+    cancelCheck();
     const started = new AbortController();
-    setCheck(started);
+    running.current = started;
     void ask(path).then((refusal) => {
       // The user closed or moved the menu while the check ran.
       if (started.signal.aborted) return;
@@ -56,8 +59,11 @@ export function useProjectRemoval({
   };
 
   const confirmDelete = ({ x, y, path, projectKey }: RemovalTarget) => {
-    const reopen = (refusal: string) =>
+    // Reopening moves the menu, so a check started meanwhile is dropped.
+    const reopen = (refusal: string) => {
+      cancelCheck();
       reopenMenu({ x, y, path, projectKey }, refusal);
+    };
     const purge = onRemoveProject(path, { purgeData: true });
     setRemoving(null);
     restoreFocus();
@@ -71,7 +77,7 @@ export function useProjectRemoval({
 
   return {
     /** The menu closed or moved: an answer still on its way does nothing. */
-    cancelCheck: () => check?.abort(),
+    cancelCheck,
     archive: (path: string) =>
       whenAllowed(checkProjectArchive, path, () => {
         restoreFocus();

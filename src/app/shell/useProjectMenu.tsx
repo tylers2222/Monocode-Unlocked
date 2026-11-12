@@ -27,7 +27,7 @@ import {
   toggleProjectPin,
 } from "../../features/projects/model/recents";
 import {
-  isGigaWorkspaceProject,
+  isInGigaWorkspace,
   reservedProjectLabelError,
 } from "../../features/projects/model/reservedProjectName";
 import {
@@ -60,7 +60,7 @@ import {
 } from "../../features/projects/model/projectGroups";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
-import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
+import { useProjectRemoval } from "./useProjectRemoval";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -192,7 +192,11 @@ function projectMenuExtraItems(
 type Point = { x: number; y: number };
 
 type Options = {
-  onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
+  /** A purge answers with why it was refused, or null. */
+  onRemoveProject?: (
+    path: string,
+    options: { purgeData: boolean },
+  ) => void | Promise<string | null>;
   onOpenNotificationSettings?: (projectPath?: string) => void;
   /** Called when a project or group menu opens, so hosts can close sibling menus. */
   onOpen?: () => void;
@@ -222,10 +226,6 @@ export function useProjectMenu({
   const [notificationMenu, setNotificationMenu] = useState<
     (Point & { path: string; project: NotificationProject }) | null
   >(null);
-  const [removing, setRemoving] = useState<{
-    path: string;
-    name: string;
-  } | null>(null);
   const [backgroundProject, setBackgroundProject] = useState<{
     project: string;
     name: string;
@@ -258,10 +258,6 @@ export function useProjectMenu({
     : null;
 
   useEffect(() => {
-    setMenuError(null);
-  }, [menuPath]);
-
-  useEffect(() => {
     let active = true;
     void listExternalEditors()
       .then((installed) => {
@@ -286,6 +282,26 @@ export function useProjectMenu({
 
   const restoreFocus = () => trigger.current?.focus();
 
+  // Every close or move of the menu cancels the check, so an answer that
+  // arrives is always for the menu still open.
+  const removal = useProjectRemoval({
+    closeMenu: () => setProjectMenu(null),
+    reopenMenu: (menu, refusal) => {
+      setProjectMenu(menu);
+      setMenuError(refusal);
+    },
+    showRefusal: (_path, refusal) => setMenuError(refusal),
+    restoreFocus,
+    // The menu offers Archive and Delete only when there is a handler.
+    onRemoveProject: onRemoveProject ?? (() => undefined),
+  });
+
+  // Closing or moving the menu drops an Archive or Delete check still running.
+  const closeProjectMenu = () => {
+    removal.cancelCheck();
+    setProjectMenu(null);
+  };
+
   const closeNotificationMenu = () => {
     setNotificationMenu(null);
     restoreFocus();
@@ -299,15 +315,18 @@ export function useProjectMenu({
   ) => {
     captureTrigger(triggerElement);
     onOpen?.();
+    removal.cancelCheck();
     setGroupMenu(null);
     setNotificationMenu(null);
+    // A new menu starts with no error.
+    setMenuError(null);
     setProjectMenu({ x, y, path, projectKey: projectKey(path) });
   };
 
   const openGroupMenu = (id: string, x: number, y: number) => {
     captureTrigger();
     onOpen?.();
-    setProjectMenu(null);
+    closeProjectMenu();
     setNotificationMenu(null);
     setGroupMenu({ x, y, id });
   };
@@ -322,14 +341,14 @@ export function useProjectMenu({
   };
 
   const close = () => {
-    setProjectMenu(null);
+    closeProjectMenu();
     setGroupMenu(null);
     setNotificationMenu(null);
   };
 
   const dismiss = () => {
     close();
-    setRemoving(null);
+    removal.dismiss();
     setBackgroundProject(null);
   };
 
@@ -374,7 +393,7 @@ export function useProjectMenu({
         return false;
       void openInExternalEditor(editorId, path)
         .then(() => {
-          setProjectMenu(null);
+          closeProjectMenu();
           restoreFocus();
         })
         .catch((error: unknown) => {
@@ -392,12 +411,14 @@ export function useProjectMenu({
       });
     } else if (action === "reveal") void revealPath(path);
     else if (action === "archive") {
-      onRemoveProject?.(path, { purgeData: false });
+      removal.archive(path);
+      return false;
     } else if (action === "delete") {
-      setRemoving({
-        path,
+      removal.askToDelete({
+        ...projectMenu,
         name: resolveTabGroupLabel(key, groupLabels, basename(path)),
       });
+      return false;
     }
   };
 
@@ -447,7 +468,7 @@ export function useProjectMenu({
         onMascotChange={saveTabGroupMascot}
         onLogoChange={() => {}}
         onClose={() => {
-          setProjectMenu(null);
+          closeProjectMenu();
           restoreFocus();
         }}
         leadingAction={
@@ -466,7 +487,7 @@ export function useProjectMenu({
           ),
           // The Giga workspace stays on the rail: no Archive or Delete.
           Boolean(onRemoveProject) &&
-            !isGigaWorkspaceProject(projectMenu.path, home),
+            !isInGigaWorkspace(projectMenu.path, home),
           Boolean(onOpenNotificationSettings),
           Boolean(readyNotificationProject),
           externalEditors,
@@ -583,22 +604,7 @@ export function useProjectMenu({
           />
         </Popover>
       ) : null}
-      {removing ? (
-        <RemoveProjectDialog
-          name={removing.name}
-          path={removing.path}
-          onConfirm={() => {
-            setProjectGroupAssignment(removing.path, null);
-            onRemoveProject?.(removing.path, { purgeData: true });
-            setRemoving(null);
-            restoreFocus();
-          }}
-          onCancel={() => {
-            setRemoving(null);
-            restoreFocus();
-          }}
-        />
-      ) : null}
+      {removal.dialog}
       {backgroundProject ? (
         <ProjectBackgroundDialog
           project={backgroundProject.project}
@@ -624,7 +630,7 @@ export function useProjectMenu({
       projectMenu != null ||
       groupMenu != null ||
       notificationMenu != null ||
-      removing != null ||
+      removal.isRemoving ||
       backgroundProject != null,
     element,
   };

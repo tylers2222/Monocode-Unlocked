@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { SettingsView } from "./SettingsView";
+import { checkProjectDelete } from "../../projects/model/projectDeleteCheck";
+import { setHomeDir } from "../../../shared/lib/paths";
 import { rememberNotificationProjects } from "../../notifications/model/notificationProjects";
 import {
   loadRouteGrantDefault,
@@ -72,6 +74,16 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
   subscribeHarnessAvailability: () => () => {},
   probeHarnessAvailability: async () => {},
   harnessUnavailableHint: () => "",
+}));
+
+vi.mock("../../projects/model/projectDeleteCheck", async (original) => ({
+  ...(await original<object>()),
+  checkProjectDelete: vi.fn(async () => null),
+  readProjectDeletePrompt: vi.fn(async () => ({
+    sessions: 0,
+    scoped: true,
+    spaceName: "Space 1",
+  })),
 }));
 
 let container: HTMLDivElement;
@@ -1716,5 +1728,87 @@ describe("Settings > Alarms", () => {
       ["alarms_settings_set", { key: "stall_minutes", value: "30" }],
       ["alarms_settings_set", { key: "root_giga", value: "fork-orch" }],
     ]);
+  });
+});
+
+describe("deleting an archived project", () => {
+  const OLD = "/code/old";
+  const UNDER = "/home/u/MonoCode/gigas/general";
+  const deleteButtons = () =>
+    [...container.querySelectorAll("button")].filter(
+      (button) => button.textContent === "Delete",
+    );
+  const dialog = () => document.querySelector('[role="dialog"][aria-label^="Delete"]');
+  const alert = () => container.querySelector('[role="alert"]');
+  const click = (button: HTMLElement) =>
+    act(async () => {
+      button.click();
+      await new Promise((done) => setTimeout(done));
+    });
+  const onDeleteProject = vi.fn();
+
+  beforeEach(async () => {
+    setHomeDir("/home/u");
+    onDeleteProject.mockReset();
+    vi.mocked(checkProjectDelete).mockReset();
+    vi.mocked(checkProjectDelete).mockResolvedValue(null);
+    localStorage.setItem(
+      "monocode.archivedProjects",
+      JSON.stringify([
+        { path: OLD, archivedAt: 2 },
+        { path: UNDER, archivedAt: 1 },
+      ]),
+    );
+    await render("archive", { onDeleteProject });
+  });
+
+  afterEach(() => setHomeDir(undefined));
+
+  it("offers no Delete on a path under the Giga workspace", () => {
+    expect(deleteButtons()).toHaveLength(1);
+  });
+
+  it("offers no Delete without a handler", async () => {
+    await render("archive", { onDeleteProject: undefined });
+    expect(deleteButtons()).toHaveLength(0);
+  });
+
+  it("shows a refusal in the group and opens no dialog", async () => {
+    vi.mocked(checkProjectDelete).mockResolvedValue("Take it off that Mono first.");
+    await click(deleteButtons()[0]);
+    expect(checkProjectDelete).toHaveBeenCalledWith(OLD);
+    expect(alert()?.textContent).toBe("Take it off that Mono first.");
+    expect(dialog()).toBeNull();
+  });
+
+  it("clears an old refusal and opens the dialog once the check passes", async () => {
+    vi.mocked(checkProjectDelete).mockResolvedValueOnce("No.");
+    await click(deleteButtons()[0]);
+    expect(alert()).not.toBeNull();
+    await click(deleteButtons()[0]);
+    expect(alert()).toBeNull();
+    expect(dialog()).not.toBeNull();
+  });
+
+  it("deletes on confirm and shows a refusal that comes after it", async () => {
+    onDeleteProject.mockResolvedValue("A session is running.");
+    await click(deleteButtons()[0]);
+    const confirm = [...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Delete",
+    )!;
+    await click(confirm);
+    expect(onDeleteProject).toHaveBeenCalledWith(OLD);
+    expect(dialog()).toBeNull();
+    expect(alert()?.textContent).toBe("A session is running.");
+  });
+
+  it("shows no refusal when the delete goes through", async () => {
+    onDeleteProject.mockResolvedValue(null);
+    await click(deleteButtons()[0]);
+    const confirm = [...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Delete",
+    )!;
+    await click(confirm);
+    expect(alert()).toBeNull();
   });
 });

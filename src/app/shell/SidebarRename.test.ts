@@ -69,8 +69,21 @@ vi.mock("../../features/spaces/model/spaces", async (importOriginal) => {
         .filter(([, space]) => space !== spacesDb.active)
         .map(([path]) => path),
     }),
+    previewProjectDelete: async () => ({
+      lastSpace: true,
+      sessionCount: 0,
+      otherSpaces: [],
+      hiddenSessionCount: 0,
+    }),
+    projectSpace: async (path: string) =>
+      spacesDb.projects.get(path) ?? "space-1",
   };
 });
+
+vi.mock("../../features/sessions/data/sessionStore", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  listSessionsByProject: async () => [],
+}));
 
 // Keep native services out of these menu/input interaction tests.
 vi.mock("../../features/source-control/hooks/useProjectDiffStats", () => ({
@@ -2345,9 +2358,10 @@ describe("collapsed rail Inbox actions", () => {
       const remove = Array.from(
         document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
       ).find((item) => item.textContent?.startsWith("Delete"))!;
-      act(() => {
+      await act(async () => {
         remove.dispatchEvent(new Event("pointerdown", { bubbles: true }));
         remove.click();
+        await new Promise((done) => setTimeout(done));
       });
       expect(projectSearchInput()).not.toBeNull();
       const dialog = document.querySelector('[aria-label="Delete other"]')!;
