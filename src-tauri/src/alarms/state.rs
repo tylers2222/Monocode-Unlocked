@@ -174,7 +174,7 @@ pub(crate) struct Facts {
     /// The last turn end below its settled children: open work it held
     /// while it waited on them counts from there (lead cascade rule 3).
     pub settled_at: Option<i64>,
-    /// The habit runs of a Mono's chat; none for any other agent.
+    /// The habit runs whose id names this agent's session: a Mono's chat.
     pub runs: Runs,
     /// When a wake for the agent (message, reminder, notice) was first seen
     /// waiting for its provider.

@@ -8,17 +8,18 @@ use super::world::World;
 use crate::mono_messages::SessionId;
 use crate::mono_roster::MonoRole;
 
-/// A habit run of `mono`, named as the front end names it.
-fn habit_run(world: &World, mono: &Mono, run: &str) -> SessionId {
+/// Habit run `n` of `mono`, named as the front end names it (a uuid).
+fn habit_run(world: &World, mono: &Mono, n: u32) -> SessionId {
+    let run = format!("00000000-0000-4000-8000-{n:012}");
     world.add_session(&format!("app-{}-habit-{run}", mono.chat.as_str()), P, None)
 }
 
 /// A habit run of `mono` whose turn takes a minute.
-fn ran_a_habit(world: &mut World, mono: &Mono, run: &str) {
-    let session = habit_run(world, mono, run);
-    turn(world, &session, run, true);
+fn ran_a_habit(world: &mut World, mono: &Mono, n: u32) {
+    let session = habit_run(world, mono, n);
+    turn(world, &session, "t1", true);
     world.advance(MINUTE);
-    turn(world, &session, run, false);
+    turn(world, &session, "t1", false);
 }
 
 /// The open and closed episodes of `actor`.
@@ -63,7 +64,7 @@ fn a_mono_working_in_habit_runs_is_not_idle_and_a_stuck_mono_still_alarms() {
 
     // (a) + (b): two hours of habit runs every 14 minutes for the busy Mono.
     for run in 0..9 {
-        ran_a_habit(&mut world, &busy, &format!("r{run}"));
+        ran_a_habit(&mut world, &busy, run);
         world.advance(13 * MINUTE);
     }
     assert_eq!(
@@ -84,7 +85,7 @@ fn a_mono_working_in_habit_runs_is_not_idle_and_a_stuck_mono_still_alarms() {
     );
 
     // (c) A run that hangs is waited on as a background task, and as long.
-    let hang = habit_run(&world, &busy, "hang");
+    let hang = habit_run(&world, &busy, 99);
     let hang_started = world.active_ms();
     turn(&mut world, &hang, "hang", true);
     world.advance(4 * N - PASS);
