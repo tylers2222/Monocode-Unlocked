@@ -19,6 +19,7 @@ SCRIPT = HERE.parent / "ci_changes.py"
 WORKFLOWS = HERE.parents[2] / ".github/workflows"
 sys.path.insert(0, str(HERE.parent))
 from ci_changes import MAP, parse  # noqa: E402
+from workflow_on import on_events  # noqa: E402
 
 REAL_MAP = MAP.read_text()
 JOBS = list(parse(REAL_MAP).jobs)
@@ -396,6 +397,18 @@ class FileClasses(unittest.TestCase):
             "src/notes.md": "browser,check,e2e-linux,e2e-macos,host,mobile",
             "src-tauri/src/remote_bootstrap.sh": "check,e2e-linux,e2e-macos,host,rpm",
         })
+
+
+class WorkflowsInTheMap(unittest.TestCase):
+    """`all` holds exactly the workflows a pull request runs: those on pull_request and the
+    ones they call. Every other workflow is in `none`, so changing it runs no gated job."""
+
+    def test_only_pull_request_workflows_run_every_job(self):
+        text = {f".github/workflows/{path.name}": path.read_text() for path in WORKFLOWS.glob("*.yml")}
+        on_pr = {path for path, body in text.items() if "pull_request" in on_events(body)}
+        called = {path for path in text for caller in on_pr if f"uses: ./{path}" in text[caller]}
+        want = {path: "all" if path in on_pr | called else "none" for path in text}
+        self.assertEqual(classes(sorted(text)), want)
 
 
 class WorkflowWiring(unittest.TestCase):
