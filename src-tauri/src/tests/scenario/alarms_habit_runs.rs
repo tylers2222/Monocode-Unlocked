@@ -30,6 +30,14 @@ fn of(world: &World, actor: &str) -> Vec<Episode> {
         .collect()
 }
 
+/// `episode` as its row reads once it closed.
+fn closed(episode: &Episode) -> Episode {
+    Episode {
+        open: false,
+        ..episode.clone()
+    }
+}
+
 /// `(stalled since, opened, close reason)` of episode `id`.
 fn times(world: &World, id: &str) -> (i64, i64, Option<String>) {
     world
@@ -105,6 +113,12 @@ fn a_mono_working_in_habit_runs_is_not_idle_and_a_stuck_mono_still_alarms() {
         hang_started,
         "(c) stalled since the run started"
     );
+    world.advance(PASS);
+    assert_eq!(
+        of(&world, "mono:ah-busy"),
+        vec![busy_episode.clone()],
+        "(c) the run's own start, where the stall began, is no progress"
+    );
 
     // (d) The run's end is progress; with no run after it, N later the open
     // work alarms again.
@@ -126,6 +140,12 @@ fn a_mono_working_in_habit_runs_is_not_idle_and_a_stuck_mono_still_alarms() {
         times(&world, &again.id).0,
         hang_ended,
         "(d) stalled since the last run ended"
+    );
+    world.advance(PASS);
+    assert_eq!(
+        of(&world, "mono:ah-busy"),
+        vec![closed(&busy_episode), again.clone()],
+        "(d) the run's own end, where the stall began, is no progress"
     );
     assert_eq!(
         of(&world, "mono:ah-stuck"),
