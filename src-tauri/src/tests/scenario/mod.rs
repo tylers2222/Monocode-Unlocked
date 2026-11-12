@@ -9,6 +9,7 @@
 
 mod agent_sandbox;
 mod agents;
+mod alarms_habit_runs;
 mod alarms_limit;
 mod alarms_retry;
 mod alarms_route;

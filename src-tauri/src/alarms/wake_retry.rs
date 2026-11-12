@@ -441,6 +441,7 @@ fn moved(
         open_work: Vec::new(),
         children: Vec::new(),
         settled_at: None,
+        runs: Default::default(),
         wake_pending_since: row.wake_pending_since,
         hold: row.hold,
         episode: None,

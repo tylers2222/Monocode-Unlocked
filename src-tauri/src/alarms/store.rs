@@ -7,10 +7,11 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::activity::{self, Activity};
+use super::habit_runs;
 use super::live::{Live, Taken, Write};
 use super::provisioner;
 use super::state::{
-    self, Cause, CloseReason, Episode, Facts, Hold, OpenWork, Thresholds, Transition, Wake,
+    self, Cause, CloseReason, Episode, Facts, Hold, OpenWork, Runs, Thresholds, Transition, Wake,
 };
 use super::tree::{self, Edge, Edges};
 use super::unseen;
@@ -210,6 +211,8 @@ impl Settings {
 /// one per agent.
 struct Rows {
     activity: Vec<Activity>,
+    /// The habit runs of each Mono chat, by chat session (ADE-306).
+    runs: HashMap<String, Runs>,
     /// Each Mono's current chat session, and the Mono.
     chats: HashMap<String, MonoId>,
     /// Each watched session that has a row, and whether it is archived.
@@ -415,8 +418,10 @@ impl Rows {
             .prepare("SELECT actor, stall_minutes FROM agent_alarm_settings")?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        let activity = activity::all(conn)?;
         Ok(Self {
-            activity: activity::all(conn)?,
+            runs: habit_runs::by_chat(&activity),
+            activity,
             chats,
             archived,
             asks,
@@ -661,6 +666,12 @@ impl Pass<'_> {
             open_work: self.own_open_work(&actor_text, row),
             children: Vec::new(),
             settled_at: None,
+            runs: self
+                .rows
+                .runs
+                .get(row.session.as_str())
+                .copied()
+                .unwrap_or_default(),
             wake_pending_since,
             hold: row.hold.clone(),
             episode: self
