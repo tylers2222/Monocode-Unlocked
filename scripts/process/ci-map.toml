@@ -21,10 +21,19 @@
 # This map is one of two filters. scripts/process/ci_level.py is the other: a draft runs
 # only the fast set, whatever this map says. See that script.
 
-# Files whose change can affect every job: the workflows, the map and its reader,
-# dependency manifests and lockfiles, toolchain pins.
+# Files whose change can affect every job: the workflows a pull request runs, the map and
+# its reader, dependency manifests and lockfiles, toolchain pins. A workflow is listed only
+# when it runs on pull_request or a pull_request workflow calls it; a pull request does not
+# run the others, so they are in `none` (test_ci_changes.WorkflowsInTheMap).
 all = [
-  ".github/**",
+  ".github/rust-version",
+  ".github/workflows/cancel-closed-pr-runs.yml",
+  ".github/workflows/ci.yml",
+  ".github/workflows/e2e.yml",
+  ".github/workflows/gate-mutation.yml",
+  ".github/workflows/gate.yml",
+  ".github/workflows/native.yml",
+  ".github/workflows/stop-useless-runs.yml",
   "scripts/process/ci-map.toml",
   "scripts/process/ci_changes.py",
   "scripts/process/ci_level.py",
@@ -44,7 +53,17 @@ all = [
 
 # Files no gated job reads. The gate scripts and the lint configs are read by gate/lint,
 # which always runs; scripts/spaces and the version and SSH helpers are run by no workflow.
+# The workflows here never run on pull_request: push, tag, schedule, dispatch, comment and
+# workflow_run only, and gate-integrity.yml runs the base branch's copy (pull_request_target).
 none = [
+  ".github/*.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".github/workflows/cache-seed.yml",
+  ".github/workflows/fork-sync.yml",
+  ".github/workflows/gate-integrity-rerun.yml",
+  ".github/workflows/gate-integrity.yml",
+  ".github/workflows/native-release.yml",
+  ".github/workflows/release.yml",
   "docs/**",
   "*.md",
   "LICENSE",
@@ -68,6 +87,8 @@ unmatched = [
   "new-config.ts",
   "scripts/new-tool.sh",
   "crates/new-crate/src/lib.rs",
+  ".github/workflows/new-workflow.yml",
+  ".github/actions/new-action/action.yml",
 ]
 
 # One entry per gated job; the key is the job id and the name of the `changes` output.
